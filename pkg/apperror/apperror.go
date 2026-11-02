@@ -24,13 +24,28 @@ var (
 	ErrBadRequest = func(msg string) *AppError {
 		return New(http.StatusBadRequest, "40000", msg)
 	}
+	ErrUnauthorized = func(msg string) *AppError {
+		return New(http.StatusUnauthorized, "40100", msg)
+	}
+	ErrForbidden = func(msg string) *AppError {
+		return New(http.StatusForbidden, "40300", msg)
+	}
 	ErrNotFound = func(msg string) *AppError {
 		return New(http.StatusNotFound, "40400", msg)
 	}
 	ErrConflict = func(msg string) *AppError {
 		return New(http.StatusConflict, "40900", msg)
 	}
+	ErrUnprocessable = func(msg string) *AppError {
+		return New(http.StatusUnprocessableEntity, "42200", msg)
+	}
+	ErrTooManyRequests = func(msg string) *AppError {
+		return New(http.StatusTooManyRequests, "42900", msg)
+	}
 	ErrInternal = func(msg string) *AppError {
 		return New(http.StatusInternalServerError, "50000", msg)
+	}
+	ErrServiceUnavailable = func(msg string) *AppError {
+		return New(http.StatusServiceUnavailable, "50300", msg)
 	}
 )
