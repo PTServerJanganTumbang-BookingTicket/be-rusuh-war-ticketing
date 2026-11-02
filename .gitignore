@@ -1,0 +1,28 @@
+# Binaries
+bin/
+*.exe
+*.test
+
+# Coverage
+*.out
+*.cov
+coverage/
+
+# Env
+.env
+
+# go.work is COMMITTED (see README) so local + CI share one workspace definition.
+# Its checksum file is machine-generated and need not be committed.
+go.work.sum
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Sonar
+.scannerwork/
+sonar-*.json
+
+# SAM
+.aws-sam/

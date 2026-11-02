@@ -1,0 +1,42 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: rusuh-booking — native Lambda handler (Option B) behind API Gateway HTTP API
+
+Globals:
+  Function:
+    Timeout: 10
+    MemorySize: 256
+    Runtime: provided.al2023
+    Architectures:
+      - arm64
+
+Resources:
+  BookingFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      FunctionName: rusuh-booking
+      Handler: bootstrap
+      CodeUri: .
+      Events:
+        CreateBooking:
+          Type: HttpApi
+          Properties:
+            Path: /bookings
+            Method: POST
+        GetBooking:
+          Type: HttpApi
+          Properties:
+            Path: /bookings/{booking_id}
+            Method: GET
+        HealthCheck:
+          Type: HttpApi
+          Properties:
+            Path: /sys/ping
+            Method: GET
+
+Outputs:
+  ApiUrl:
+    Description: Base URL of the booking HTTP API
+    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com"
