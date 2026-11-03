@@ -10,9 +10,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/dotenv"
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/logger"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/booking/internal/config"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/booking/internal/delivery"
-	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/dotenv"
 )
 
 func main() {
@@ -24,7 +25,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	setupLogger(cfg.Log)
+	logger.Setup(cfg.Log.Level, cfg.Log.Format)
 
 	mux := delivery.New(cfg)
 
@@ -52,27 +53,4 @@ func main() {
 	if err := srv.Shutdown(ctx); err != nil {
 		slog.Error("Server Shutdown:", slog.Any("err", err))
 	}
-}
-
-func setupLogger(logCfg config.Log) {
-	var level slog.Level
-	switch logCfg.Level {
-	case "debug":
-		level = slog.LevelDebug
-	case "warn":
-		level = slog.LevelWarn
-	case "error":
-		level = slog.LevelError
-	default:
-		level = slog.LevelInfo
-	}
-
-	opts := &slog.HandlerOptions{Level: level}
-	var handler slog.Handler
-	if logCfg.Format == "text" {
-		handler = slog.NewTextHandler(os.Stdout, opts)
-	} else {
-		handler = slog.NewJSONHandler(os.Stdout, opts)
-	}
-	slog.SetDefault(slog.New(handler))
 }

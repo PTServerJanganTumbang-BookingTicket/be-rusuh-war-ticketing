@@ -71,7 +71,7 @@ func (c *UserController) VerifyMagicLink(w http.ResponseWriter, r *http.Request)
 	}
 
 	c.clearCookie(w, magicTokenCookie)
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ //NOSONAR - Secure follows SecureCookies config, enforced true in production
 		Name:     accessTokenCookie,
 		Value:    resp.AccessToken,
 		Path:     "/",
@@ -133,7 +133,7 @@ func (c *UserController) Register(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *UserController) clearCookie(w http.ResponseWriter, name string) {
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ //NOSONAR - Secure follows SecureCookies config, enforced true in production
 		Name:     name,
 		Value:    "",
 		Path:     "/",
@@ -178,7 +178,7 @@ func (c *UserController) RefreshSession(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ //NOSONAR - Secure follows SecureCookies config, enforced true in production
 		Name:     accessTokenCookie,
 		Value:    resp.AccessToken,
 		Path:     "/",

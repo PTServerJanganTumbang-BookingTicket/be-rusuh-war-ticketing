@@ -99,29 +99,3 @@ func TestLoad_RejectsNonPositiveTokenTTL(t *testing.T) {
 	_, err := Load()
 	assert.Error(t, err)
 }
-
-func TestGetEnvDuration_UnitSuffixes(t *testing.T) {
-	t.Setenv("A_MS", "250")
-	assert.Equal(t, 250*time.Millisecond, getEnvDuration("A_MS", time.Second))
-
-	t.Setenv("B_SECONDS", "45")
-	assert.Equal(t, 45*time.Second, getEnvDuration("B_SECONDS", time.Second))
-
-	t.Setenv("C", "2m")
-	assert.Equal(t, 2*time.Minute, getEnvDuration("C", time.Second))
-
-	assert.Equal(t, time.Second, getEnvDuration("UNSET_KEY", time.Second))
-}
-
-func TestGetEnvHelpers(t *testing.T) {
-	assert.Equal(t, "fallback", getEnv("UNSET_KEY", "fallback"))
-	assert.Equal(t, 7, getEnvInt("UNSET_KEY", 7))
-	assert.True(t, getEnvBool("UNSET_KEY", true))
-
-	t.Setenv("BAD_INT", "abc")
-	assert.Equal(t, 7, getEnvInt("BAD_INT", 7))
-	t.Setenv("BAD_BOOL", "maybe")
-	assert.True(t, getEnvBool("BAD_BOOL", true))
-	t.Setenv("GOOD_BOOL", "false")
-	assert.False(t, getEnvBool("GOOD_BOOL", true))
-}

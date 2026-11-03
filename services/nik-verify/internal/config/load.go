@@ -3,8 +3,9 @@ package config
 import (
 	"fmt"
 	"os"
-	"strconv"
 	"time"
+
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/envutil"
 )
 
 // Load reads configuration from environment variables and returns a validated
@@ -12,33 +13,33 @@ import (
 func Load() (Config, error) {
 	cfg := Config{
 		App: App{
-			Env:       getEnv("APP_ENV", "local"),
-			Port:      getEnvInt("APP_PORT", 8082),
+			Env:       envutil.Env("APP_ENV", "local"),
+			Port:      envutil.EnvInt("APP_PORT", 8082),
 			NIKPepper: os.Getenv("NIK_PEPPER"),
 		},
 		Log: Log{
-			Level:  getEnv("LOG_LEVEL", "info"),
-			Format: getEnv("LOG_FORMAT", "json"),
+			Level:  envutil.Env("LOG_LEVEL", "info"),
+			Format: envutil.Env("LOG_FORMAT", "json"),
 		},
 		DB: DB{
 			DSN:          os.Getenv("DATABASE_URL"),
-			MaxConns:     int32(getEnvInt("DATABASE_MAX_CONNS", 4)),
-			ConnLifetime: getEnvDuration("DATABASE_CONN_LIFETIME", 30*time.Minute),
+			MaxConns:     int32(envutil.EnvInt("DATABASE_MAX_CONNS", 4)),
+			ConnLifetime: envutil.EnvDuration("DATABASE_CONN_LIFETIME", 30*time.Minute),
 		},
 		Redis: Redis{
-			Addr:     getEnv("REDIS_ADDR", "localhost:6379"),
+			Addr:     envutil.Env("REDIS_ADDR", "localhost:6379"),
 			Password: os.Getenv("REDIS_PASSWORD"),
-			DB:       getEnvInt("REDIS_DB", 0),
+			DB:       envutil.EnvInt("REDIS_DB", 0),
 		},
 		Dukcapil: Dukcapil{
-			Mode:             getEnv("DUKCAPIL_MODE", "live"),
+			Mode:             envutil.Env("DUKCAPIL_MODE", "live"),
 			BaseURL:          os.Getenv("DUKCAPIL_BASE_URL"),
 			APIKey:           os.Getenv("DUKCAPIL_API_KEY"),
-			Timeout:          getEnvDuration("DUKCAPIL_TIMEOUT_MS", 3*time.Second),
-			RateLimitRPS:     getEnvFloat("DUKCAPIL_RATE_LIMIT_RPS", 40),
-			BurstCapacity:    getEnvFloat("DUKCAPIL_BURST_CAPACITY", 80),
-			BreakerThreshold: getEnvInt("DUKCAPIL_BREAKER_FAILURE_THRESHOLD", 5),
-			BreakerOpenFor:   getEnvDuration("DUKCAPIL_BREAKER_OPEN_SECONDS", 30*time.Second),
+			Timeout:          envutil.EnvDuration("DUKCAPIL_TIMEOUT_MS", 3*time.Second),
+			RateLimitRPS:     envutil.EnvFloat("DUKCAPIL_RATE_LIMIT_RPS", 40),
+			BurstCapacity:    envutil.EnvFloat("DUKCAPIL_BURST_CAPACITY", 80),
+			BreakerThreshold: envutil.EnvInt("DUKCAPIL_BREAKER_FAILURE_THRESHOLD", 5),
+			BreakerOpenFor:   envutil.EnvDuration("DUKCAPIL_BREAKER_OPEN_SECONDS", 30*time.Second),
 		},
 	}
 
@@ -77,53 +78,4 @@ func (c Config) validate() error {
 		return fmt.Errorf("DUKCAPIL_RATE_LIMIT_RPS must be positive")
 	}
 	return nil
-}
-
-func getEnv(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
-
-func getEnvInt(key string, fallback int) int {
-	if v := os.Getenv(key); v != "" {
-		if i, err := strconv.Atoi(v); err == nil {
-			return i
-		}
-	}
-	return fallback
-}
-
-func getEnvFloat(key string, fallback float64) float64 {
-	if v := os.Getenv(key); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil {
-			return f
-		}
-	}
-	return fallback
-}
-
-// getEnvDuration reads a duration. Keys ending in _MS are read as
-// milliseconds and _SECONDS as seconds, matching the names ADR-005 §8 uses;
-// anything else accepts a Go duration string.
-func getEnvDuration(key string, fallback time.Duration) time.Duration {
-	v := os.Getenv(key)
-	if v == "" {
-		return fallback
-	}
-	if n, err := strconv.Atoi(v); err == nil {
-		switch {
-		case len(key) > 3 && key[len(key)-3:] == "_MS":
-			return time.Duration(n) * time.Millisecond
-		case len(key) > 8 && key[len(key)-8:] == "_SECONDS":
-			return time.Duration(n) * time.Second
-		default:
-			return time.Duration(n) * time.Second
-		}
-	}
-	if d, err := time.ParseDuration(v); err == nil {
-		return d
-	}
-	return fallback
 }

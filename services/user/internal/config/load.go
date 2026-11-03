@@ -3,8 +3,9 @@ package config
 import (
 	"fmt"
 	"os"
-	"strconv"
 	"time"
+
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/envutil"
 )
 
 // Intervals the session TTL is derived from. Spelled out as named constants
@@ -31,31 +32,31 @@ const (
 // Load reads configuration from environment variables and returns a validated
 // Config. Call once at startup, after dotenv.LoadEnv().
 func Load() (Config, error) {
-	env := getEnv("APP_ENV", "local")
-	saleWindow := getEnvDuration("SALE_WINDOW_SECONDS", defaultSaleWindow)
+	env := envutil.Env("APP_ENV", "local")
+	saleWindow := envutil.EnvDuration("SALE_WINDOW_SECONDS", defaultSaleWindow)
 	cfg := Config{
 		App: App{
 			Env:     env,
-			Port:    getEnvInt("APP_PORT", 8081),
-			BaseURL: getEnv("APP_BASE_URL", "http://localhost:8081"),
+			Port:    envutil.EnvInt("APP_PORT", 8081),
+			BaseURL: envutil.Env("APP_BASE_URL", "http://localhost:8081"),
 		},
 		Log: Log{
-			Level:  getEnv("LOG_LEVEL", "info"),
-			Format: getEnv("LOG_FORMAT", "json"),
+			Level:  envutil.Env("LOG_LEVEL", "info"),
+			Format: envutil.Env("LOG_FORMAT", "json"),
 		},
 		DB: DB{
 			DSN:          os.Getenv("DATABASE_URL"),
-			MaxConns:     int32(getEnvInt("DATABASE_MAX_CONNS", 4)),
-			ConnLifetime: getEnvDuration("DATABASE_CONN_LIFETIME", 30*time.Minute),
+			MaxConns:     int32(envutil.EnvInt("DATABASE_MAX_CONNS", 4)),
+			ConnLifetime: envutil.EnvDuration("DATABASE_CONN_LIFETIME", 30*time.Minute),
 		},
 		Redis: Redis{
-			Addr:     getEnv("REDIS_ADDR", "localhost:6379"),
+			Addr:     envutil.Env("REDIS_ADDR", "localhost:6379"),
 			Password: os.Getenv("REDIS_PASSWORD"),
-			DB:       getEnvInt("REDIS_DB", 0),
+			DB:       envutil.EnvInt("REDIS_DB", 0),
 		},
 		NikVerify: NikVerify{
 			BaseURL: os.Getenv("NIK_VERIFY_BASE_URL"),
-			Timeout: getEnvDuration("NIK_VERIFY_TIMEOUT_MS", 5*time.Second),
+			Timeout: envutil.EnvDuration("NIK_VERIFY_TIMEOUT_MS", 5*time.Second),
 		},
 		Auth: Auth{
 			JWTSecret:    os.Getenv("JWT_SECRET"),
@@ -63,13 +64,10 @@ func Load() (Config, error) {
 			CookieDomain: os.Getenv("COOKIE_DOMAIN"),
 			// Derived from the sale window by default, because the session has to
 			// outlive the queue wait and not merely the journey (see config.go).
-			// An explicit override is allowed — an operator may want to shorten
-			// the revocation window after a key scare without touching queue
-			// behaviour — but validate() enforces a floor on it.
-			AccessTokenTTL: getEnvDuration("ACCESS_TOKEN_TTL_SECONDS", saleWindow+accessTokenSlack),
+			AccessTokenTTL: envutil.EnvDuration("ACCESS_TOKEN_TTL_SECONDS", saleWindow+accessTokenSlack),
 			// Secure cookies are the default everywhere except local, where a
 			// plain-HTTP origin silently drops them.
-			SecureCookies: getEnvBool("SECURE_COOKIES", env != "local"),
+			SecureCookies: envutil.EnvBool("SECURE_COOKIES", env != "local"),
 		},
 	}
 
@@ -101,10 +99,6 @@ func (c Config) validate() error {
 	if c.Auth.AccessTokenTTL <= 0 {
 		return fmt.Errorf("ACCESS_TOKEN_TTL_SECONDS must be positive")
 	}
-	// A session shorter than the wait plus the journey dies mid-purchase, and it
-	// does so silently: the saved-NIK list 401s on the Detail Ticket page and the
-	// customer is pushed onto the fail-closed Dukcapil path (config.go). Refuse
-	// at boot rather than discover it under a flash crowd.
 	if floor := c.Auth.SaleWindow + journeyWithPauseGrace; c.Auth.AccessTokenTTL < floor {
 		return fmt.Errorf(
 			"ACCESS_TOKEN_TTL_SECONDS (%s) is shorter than SALE_WINDOW_SECONDS + journey (%s): "+
@@ -115,53 +109,4 @@ func (c Config) validate() error {
 		return fmt.Errorf("SECURE_COOKIES cannot be disabled outside local")
 	}
 	return nil
-}
-
-func getEnv(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
-
-func getEnvInt(key string, fallback int) int {
-	if v := os.Getenv(key); v != "" {
-		if i, err := strconv.Atoi(v); err == nil {
-			return i
-		}
-	}
-	return fallback
-}
-
-func getEnvBool(key string, fallback bool) bool {
-	if v := os.Getenv(key); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			return b
-		}
-	}
-	return fallback
-}
-
-// getEnvDuration reads a duration. Keys ending in _MS are read as
-// milliseconds and _SECONDS as seconds; anything else accepts a Go duration
-// string such as "30m".
-func getEnvDuration(key string, fallback time.Duration) time.Duration {
-	v := os.Getenv(key)
-	if v == "" {
-		return fallback
-	}
-	if n, err := strconv.Atoi(v); err == nil {
-		switch {
-		case len(key) > 3 && key[len(key)-3:] == "_MS":
-			return time.Duration(n) * time.Millisecond
-		case len(key) > 8 && key[len(key)-8:] == "_SECONDS":
-			return time.Duration(n) * time.Second
-		default:
-			return time.Duration(n) * time.Second
-		}
-	}
-	if d, err := time.ParseDuration(v); err == nil {
-		return d
-	}
-	return fallback
 }

@@ -7,19 +7,13 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/redisutil"
 	portout "github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/user/internal/user/port/outbound"
 )
 
 // NewClient opens a Redis connection and verifies it answers.
 func NewClient(ctx context.Context, addr, password string, db int) (*goredis.Client, error) {
-	client := goredis.NewClient(&goredis.Options{Addr: addr, Password: password, DB: db})
-	pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-	if err := client.Ping(pingCtx).Err(); err != nil {
-		_ = client.Close()
-		return nil, err
-	}
-	return client, nil
+	return redisutil.NewClient(ctx, addr, password, db)
 }
 
 // fixedWindow increments a counter and sets its expiry on first use, in one
