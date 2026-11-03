@@ -6,7 +6,6 @@ import (
 	"errors"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/nik-verify/internal/nik/domain/entity"
 	portout "github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/nik-verify/internal/nik/port/outbound"
@@ -19,11 +18,11 @@ import (
 // without a Dukcapil answer, which is the hole ADR-005 §8 closes with
 // CHECK (verified_at IS NOT NULL).
 type EvidenceRepository struct {
-	pool *pgxpool.Pool
+	pool DBConn
 }
 
 // NewEvidenceRepository returns the evidence adapter.
-func NewEvidenceRepository(pool *pgxpool.Pool) portout.IEvidenceRepository {
+func NewEvidenceRepository(pool DBConn) portout.IEvidenceRepository {
 	return &EvidenceRepository{pool: pool}
 }
 

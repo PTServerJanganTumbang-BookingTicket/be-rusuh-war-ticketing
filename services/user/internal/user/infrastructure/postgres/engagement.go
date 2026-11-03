@@ -5,7 +5,6 @@ import (
 	"errors"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/apperror"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/user/internal/user/domain/entity"
@@ -18,11 +17,11 @@ import (
 // bookings. A write path here would let this service move state it does not
 // understand.
 type EngagementRepository struct {
-	pool *pgxpool.Pool
+	pool DBConn
 }
 
 // NewEngagementRepository returns the engagement adapter.
-func NewEngagementRepository(pool *pgxpool.Pool) portout.IEngagementRepository {
+func NewEngagementRepository(pool DBConn) portout.IEngagementRepository {
 	return &EngagementRepository{pool: pool}
 }
 

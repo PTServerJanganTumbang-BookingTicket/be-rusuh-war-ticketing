@@ -45,11 +45,11 @@ func NewPool(ctx context.Context, dsn string, maxConns int32, connLifetime time.
 // It writes only published_at. The rows themselves belong to whichever service
 // produced them.
 type OutboxRepository struct {
-	pool *pgxpool.Pool
+	pool DBConn
 }
 
 // NewOutboxRepository returns the outbox adapter.
-func NewOutboxRepository(pool *pgxpool.Pool) portout.IOutboxRepository {
+func NewOutboxRepository(pool DBConn) portout.IOutboxRepository {
 	return &OutboxRepository{pool: pool}
 }
 

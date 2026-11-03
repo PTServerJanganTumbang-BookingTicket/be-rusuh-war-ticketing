@@ -5,7 +5,6 @@ import (
 	"errors"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/apperror"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/user/internal/user/domain/entity"
@@ -14,11 +13,11 @@ import (
 
 // UserRepository is the Aurora-backed IUserRepository.
 type UserRepository struct {
-	pool *pgxpool.Pool
+	pool DBConn
 }
 
 // NewUserRepository returns the repository port backed by Postgres.
-func NewUserRepository(pool *pgxpool.Pool) portout.IUserRepository {
+func NewUserRepository(pool DBConn) portout.IUserRepository {
 	return &UserRepository{pool: pool}
 }
 
