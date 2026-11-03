@@ -13,7 +13,7 @@ import (
 	context "context"
 	reflect "reflect"
 
-	dto "gitlab-cicd-ee.telkomsel.co.id/my-telkomsel/be-rusuh-war-ticketing/services/user/internal/user/domain/dto"
+	dto "github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/user/internal/user/domain/dto"
 	gomock "go.uber.org/mock/gomock"
 )
 
@@ -41,78 +41,33 @@ func (m *MockIUserUsecase) EXPECT() *MockIUserUsecaseMockRecorder {
 	return m.recorder
 }
 
-// AddSavedNIK mocks base method.
-func (m *MockIUserUsecase) AddSavedNIK(ctx context.Context, accountID string, req dto.AddSavedNIKRequest) (dto.SavedNIKItem, error) {
+// RequestMagicLink mocks base method.
+func (m *MockIUserUsecase) RequestMagicLink(ctx context.Context, req dto.RequestMagicLinkRequest) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "AddSavedNIK", ctx, accountID, req)
-	ret0, _ := ret[0].(dto.SavedNIKItem)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// AddSavedNIK indicates an expected call of AddSavedNIK.
-func (mr *MockIUserUsecaseMockRecorder) AddSavedNIK(ctx, accountID, req any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AddSavedNIK", reflect.TypeOf((*MockIUserUsecase)(nil).AddSavedNIK), ctx, accountID, req)
-}
-
-// DeleteSavedNIK mocks base method.
-func (m *MockIUserUsecase) DeleteSavedNIK(ctx context.Context, accountID, nikID string) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "DeleteSavedNIK", ctx, accountID, nikID)
+	ret := m.ctrl.Call(m, "RequestMagicLink", ctx, req)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
-// DeleteSavedNIK indicates an expected call of DeleteSavedNIK.
-func (mr *MockIUserUsecaseMockRecorder) DeleteSavedNIK(ctx, accountID, nikID any) *gomock.Call {
+// RequestMagicLink indicates an expected call of RequestMagicLink.
+func (mr *MockIUserUsecaseMockRecorder) RequestMagicLink(ctx, req any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteSavedNIK", reflect.TypeOf((*MockIUserUsecase)(nil).DeleteSavedNIK), ctx, accountID, nikID)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RequestMagicLink", reflect.TypeOf((*MockIUserUsecase)(nil).RequestMagicLink), ctx, req)
 }
 
-// GetETicket mocks base method.
-func (m *MockIUserUsecase) GetETicket(ctx context.Context, accountID, ticketID string) (dto.ETicketResponse, error) {
+// VerifyMagicLink mocks base method.
+func (m *MockIUserUsecase) VerifyMagicLink(ctx context.Context, token string) (dto.VerifyMagicLinkResponse, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetETicket", ctx, accountID, ticketID)
-	ret0, _ := ret[0].(dto.ETicketResponse)
+	ret := m.ctrl.Call(m, "VerifyMagicLink", ctx, token)
+	ret0, _ := ret[0].(dto.VerifyMagicLinkResponse)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
-// GetETicket indicates an expected call of GetETicket.
-func (mr *MockIUserUsecaseMockRecorder) GetETicket(ctx, accountID, ticketID any) *gomock.Call {
+// VerifyMagicLink indicates an expected call of VerifyMagicLink.
+func (mr *MockIUserUsecaseMockRecorder) VerifyMagicLink(ctx, token any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetETicket", reflect.TypeOf((*MockIUserUsecase)(nil).GetETicket), ctx, accountID, ticketID)
-}
-
-// GetMyTickets mocks base method.
-func (m *MockIUserUsecase) GetMyTickets(ctx context.Context, accountID string, req dto.GetMyTicketsRequest) (dto.MyTicketsResponse, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetMyTickets", ctx, accountID, req)
-	ret0, _ := ret[0].(dto.MyTicketsResponse)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// GetMyTickets indicates an expected call of GetMyTickets.
-func (mr *MockIUserUsecaseMockRecorder) GetMyTickets(ctx, accountID, req any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMyTickets", reflect.TypeOf((*MockIUserUsecase)(nil).GetMyTickets), ctx, accountID, req)
-}
-
-// GetSavedNIKs mocks base method.
-func (m *MockIUserUsecase) GetSavedNIKs(ctx context.Context, accountID string) (dto.SavedNIKsResponse, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetSavedNIKs", ctx, accountID)
-	ret0, _ := ret[0].(dto.SavedNIKsResponse)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// GetSavedNIKs indicates an expected call of GetSavedNIKs.
-func (mr *MockIUserUsecaseMockRecorder) GetSavedNIKs(ctx, accountID any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetSavedNIKs", reflect.TypeOf((*MockIUserUsecase)(nil).GetSavedNIKs), ctx, accountID)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "VerifyMagicLink", reflect.TypeOf((*MockIUserUsecase)(nil).VerifyMagicLink), ctx, token)
 }
 
 // Register mocks base method.
@@ -130,18 +85,33 @@ func (mr *MockIUserUsecaseMockRecorder) Register(ctx, req any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Register", reflect.TypeOf((*MockIUserUsecase)(nil).Register), ctx, req)
 }
 
-// RequestMagicLink mocks base method.
-func (m *MockIUserUsecase) RequestMagicLink(ctx context.Context, req dto.RequestMagicLinkRequest) error {
+// VerifyEmail mocks base method.
+func (m *MockIUserUsecase) VerifyEmail(ctx context.Context, token string) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "RequestMagicLink", ctx, req)
+	ret := m.ctrl.Call(m, "VerifyEmail", ctx, token)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
-// RequestMagicLink indicates an expected call of RequestMagicLink.
-func (mr *MockIUserUsecaseMockRecorder) RequestMagicLink(ctx, req any) *gomock.Call {
+// VerifyEmail indicates an expected call of VerifyEmail.
+func (mr *MockIUserUsecaseMockRecorder) VerifyEmail(ctx, token any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RequestMagicLink", reflect.TypeOf((*MockIUserUsecase)(nil).RequestMagicLink), ctx, req)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "VerifyEmail", reflect.TypeOf((*MockIUserUsecase)(nil).VerifyEmail), ctx, token)
+}
+
+// RefreshSession mocks base method.
+func (m *MockIUserUsecase) RefreshSession(ctx context.Context, refreshToken string) (dto.RefreshSessionResponse, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "RefreshSession", ctx, refreshToken)
+	ret0, _ := ret[0].(dto.RefreshSessionResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// RefreshSession indicates an expected call of RefreshSession.
+func (mr *MockIUserUsecaseMockRecorder) RefreshSession(ctx, refreshToken any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RefreshSession", reflect.TypeOf((*MockIUserUsecase)(nil).RefreshSession), ctx, refreshToken)
 }
 
 // ValidateAccessToken mocks base method.
@@ -159,17 +129,76 @@ func (mr *MockIUserUsecaseMockRecorder) ValidateAccessToken(ctx, token any) *gom
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ValidateAccessToken", reflect.TypeOf((*MockIUserUsecase)(nil).ValidateAccessToken), ctx, token)
 }
 
-// VerifyMagicLink mocks base method.
-func (m *MockIUserUsecase) VerifyMagicLink(ctx context.Context, token string) (dto.VerifyMagicLinkResponse, error) {
+// GetSavedNIKs mocks base method.
+func (m *MockIUserUsecase) GetSavedNIKs(ctx context.Context, accountID string) (dto.SavedNIKsResponse, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "VerifyMagicLink", ctx, token)
-	ret0, _ := ret[0].(dto.VerifyMagicLinkResponse)
+	ret := m.ctrl.Call(m, "GetSavedNIKs", ctx, accountID)
+	ret0, _ := ret[0].(dto.SavedNIKsResponse)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
-// VerifyMagicLink indicates an expected call of VerifyMagicLink.
-func (mr *MockIUserUsecaseMockRecorder) VerifyMagicLink(ctx, token any) *gomock.Call {
+// GetSavedNIKs indicates an expected call of GetSavedNIKs.
+func (mr *MockIUserUsecaseMockRecorder) GetSavedNIKs(ctx, accountID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "VerifyMagicLink", reflect.TypeOf((*MockIUserUsecase)(nil).VerifyMagicLink), ctx, token)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetSavedNIKs", reflect.TypeOf((*MockIUserUsecase)(nil).GetSavedNIKs), ctx, accountID)
+}
+
+// AddSavedNIK mocks base method.
+func (m *MockIUserUsecase) AddSavedNIK(ctx context.Context, accountID string, req dto.AddSavedNIKRequest) (dto.SavedNIKItem, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "AddSavedNIK", ctx, accountID, req)
+	ret0, _ := ret[0].(dto.SavedNIKItem)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// AddSavedNIK indicates an expected call of AddSavedNIK.
+func (mr *MockIUserUsecaseMockRecorder) AddSavedNIK(ctx, accountID, req any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AddSavedNIK", reflect.TypeOf((*MockIUserUsecase)(nil).AddSavedNIK), ctx, accountID, req)
+}
+
+// DeleteSavedNIK mocks base method.
+func (m *MockIUserUsecase) DeleteSavedNIK(ctx context.Context, accountID string, nikID string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DeleteSavedNIK", ctx, accountID, nikID)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// DeleteSavedNIK indicates an expected call of DeleteSavedNIK.
+func (mr *MockIUserUsecaseMockRecorder) DeleteSavedNIK(ctx, accountID, nikID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteSavedNIK", reflect.TypeOf((*MockIUserUsecase)(nil).DeleteSavedNIK), ctx, accountID, nikID)
+}
+
+// GetMyTickets mocks base method.
+func (m *MockIUserUsecase) GetMyTickets(ctx context.Context, accountID string, req dto.GetMyTicketsRequest) (dto.MyTicketsResponse, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetMyTickets", ctx, accountID, req)
+	ret0, _ := ret[0].(dto.MyTicketsResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetMyTickets indicates an expected call of GetMyTickets.
+func (mr *MockIUserUsecaseMockRecorder) GetMyTickets(ctx, accountID, req any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMyTickets", reflect.TypeOf((*MockIUserUsecase)(nil).GetMyTickets), ctx, accountID, req)
+}
+
+// GetETicket mocks base method.
+func (m *MockIUserUsecase) GetETicket(ctx context.Context, accountID string, ticketID string) (dto.ETicketResponse, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetETicket", ctx, accountID, ticketID)
+	ret0, _ := ret[0].(dto.ETicketResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetETicket indicates an expected call of GetETicket.
+func (mr *MockIUserUsecaseMockRecorder) GetETicket(ctx, accountID, ticketID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetETicket", reflect.TypeOf((*MockIUserUsecase)(nil).GetETicket), ctx, accountID, ticketID)
 }

@@ -3,6 +3,7 @@ package apperror
 import (
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -38,4 +39,35 @@ func TestPredefinedErrors(t *testing.T) {
 			assert.Equal(t, "x", tt.err.Message)
 		})
 	}
+}
+
+func TestWithCode(t *testing.T) {
+	err := ErrConflict("NIK is bound to another account").WithCode(CodeNIKAlreadyRegistered)
+	assert.Equal(t, http.StatusConflict, err.HTTPStatus)
+	assert.Equal(t, CodeNIKAlreadyRegistered, err.ErrorCode)
+	assert.Equal(t, "NIK is bound to another account", err.Message)
+}
+
+func TestWithCode_EmptyByDefault(t *testing.T) {
+	assert.Empty(t, ErrInternal("boom").ErrorCode)
+}
+
+func TestNewErrorsAreDistinctInstances(t *testing.T) {
+	// WithCode mutates the receiver, so the constructors must hand back a fresh
+	// value each call — otherwise one caller's code leaks into another's error.
+	a := ErrConflict("a").WithCode(CodeNIKAlreadySaved)
+	b := ErrConflict("b")
+	assert.Equal(t, CodeNIKAlreadySaved, a.ErrorCode)
+	assert.Empty(t, b.ErrorCode)
+}
+
+func TestWithRetryAfter(t *testing.T) {
+	err := ErrTooManyRequests("slow down").WithCode(CodeTooManyRequests).WithRetryAfter(90 * time.Second)
+	assert.Equal(t, http.StatusTooManyRequests, err.HTTPStatus)
+	assert.Equal(t, CodeTooManyRequests, err.ErrorCode)
+	assert.Equal(t, 90*time.Second, err.RetryAfter)
+}
+
+func TestRetryAfter_ZeroByDefault(t *testing.T) {
+	assert.Zero(t, ErrBadRequest("x").RetryAfter)
 }

@@ -1,15 +1,16 @@
 package main
 
 import (
+	"context"
 	"log/slog"
 	"os"
 
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/awslabs/aws-lambda-go-api-proxy/httpadapter"
 
-	"gitlab-cicd-ee.telkomsel.co.id/my-telkomsel/be-rusuh-war-ticketing/pkg/dotenv"
-	"gitlab-cicd-ee.telkomsel.co.id/my-telkomsel/be-rusuh-war-ticketing/services/user/internal/config"
-	"gitlab-cicd-ee.telkomsel.co.id/my-telkomsel/be-rusuh-war-ticketing/services/user/internal/delivery"
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/dotenv"
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/user/internal/config"
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/user/internal/delivery"
 )
 
 func main() {
@@ -21,6 +22,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	mux := delivery.New(cfg)
-	lambda.Start(httpadapter.NewV2(mux).ProxyWithContext)
+	ctx := context.Background()
+	server, err := delivery.New(ctx, cfg)
+	if err != nil {
+		slog.Error("Failed to wire dependencies", slog.Any("err", err))
+		os.Exit(1)
+	}
+	// Wired once per container, not per invocation: the pool and the Redis
+	// client are the expensive part, and rebuilding them on every request
+	// would exhaust database connections under a flash crowd.
+	lambda.Start(httpadapter.NewV2(server.Handler).ProxyWithContext)
 }

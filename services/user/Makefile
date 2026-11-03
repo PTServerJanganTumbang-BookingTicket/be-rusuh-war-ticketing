@@ -18,8 +18,16 @@ mock:
 		-destination=$(MOCK_DIR)/user/port/outbound/user_mock.go \
 		-package=mock_outbound
 	$(MOCKGEN) \
-		-source=internal/user/port/outbound/dukcapil.go \
-		-destination=$(MOCK_DIR)/user/port/outbound/dukcapil_mock.go \
+		-source=internal/user/port/outbound/nikverify.go \
+		-destination=$(MOCK_DIR)/user/port/outbound/nikverify_mock.go \
+		-package=mock_outbound
+	$(MOCKGEN) \
+		-source=internal/user/port/outbound/engagement.go \
+		-destination=$(MOCK_DIR)/user/port/outbound/engagement_mock.go \
+		-package=mock_outbound
+	$(MOCKGEN) \
+		-source=internal/user/port/outbound/ratelimit.go \
+		-destination=$(MOCK_DIR)/user/port/outbound/ratelimit_mock.go \
 		-package=mock_outbound
 	@echo "Done."
 

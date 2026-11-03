@@ -1,0 +1,92 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: rusuh-nik-verify — native Lambda handler (Option B) behind API Gateway HTTP API
+
+Parameters:
+  VpcSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Private subnets with reachability to Aurora, Redis and the Dukcapil egress path
+  SecurityGroupIds:
+    Type: List<AWS::EC2::SecurityGroup::Id>
+    Description: Security group permitting Aurora (5432) and Redis (6379) egress
+  DatabaseSecretArn:
+    Type: String
+    Description: Secrets Manager ARN holding the RDS Proxy connection string
+  NikPepperSecretArn:
+    Type: String
+    Description: >
+      Secrets Manager ARN holding the NIK HMAC pepper. This secret can never be
+      rotated (ADR-005 §8) and must be the SAME value every service that hashes
+      a NIK resolves. Back it up: losing it breaks BR-02 permanently.
+  DukcapilApiKeySecretArn:
+    Type: String
+    Description: Secrets Manager ARN holding the Dukcapil API key
+  DukcapilBaseUrl:
+    Type: String
+    Description: Dukcapil API base URL
+  RedisAddr:
+    Type: String
+    Description: ElastiCache primary endpoint, host:port
+
+Globals:
+  Function:
+    Timeout: 10
+    MemorySize: 512
+    Runtime: provided.al2023
+    Architectures:
+      - arm64
+
+Resources:
+  NikVerifyFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      FunctionName: rusuh-nik-verify
+      Handler: bootstrap
+      CodeUri: .
+      # Provisioned concurrency is set at T-30 per the ADR-005 runbook rather
+      # than pinned here, so an idle preprod stack costs nothing.
+      VpcConfig:
+        SubnetIds: !Ref VpcSubnetIds
+        SecurityGroupIds: !Ref SecurityGroupIds
+      Environment:
+        Variables:
+          APP_ENV: production
+          DUKCAPIL_MODE: live
+          DUKCAPIL_BASE_URL: !Ref DukcapilBaseUrl
+          DUKCAPIL_TIMEOUT_MS: "3000"
+          DUKCAPIL_RATE_LIMIT_RPS: "40"
+          DUKCAPIL_BURST_CAPACITY: "80"
+          DUKCAPIL_BREAKER_FAILURE_THRESHOLD: "5"
+          DUKCAPIL_BREAKER_OPEN_SECONDS: "30"
+          REDIS_ADDR: !Ref RedisAddr
+          # Keep small: every warm container holds its own pool, and a few
+          # hundred of them will exhaust Postgres. RDS Proxy fronts this.
+          DATABASE_MAX_CONNS: "4"
+      Policies:
+        - AWSLambdaVPCAccessExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DatabaseSecretArn
+                - !Ref NikPepperSecretArn
+                - !Ref DukcapilApiKeySecretArn
+      Events:
+        ValidateNik:
+          Type: HttpApi
+          Properties:
+            Path: /nik/validate
+            Method: POST
+        HealthCheck:
+          Type: HttpApi
+          Properties:
+            Path: /sys/ping
+            Method: GET
+
+Outputs:
+  ApiUrl:
+    Description: Base URL of the nik-verify HTTP API
+    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com"

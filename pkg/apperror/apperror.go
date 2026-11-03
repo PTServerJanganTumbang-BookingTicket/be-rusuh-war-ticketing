@@ -1,6 +1,9 @@
 package apperror
 
-import "net/http"
+import (
+	"net/http"
+	"time"
+)
 
 // AppError is a transport-agnostic application error carrying an HTTP status,
 // a stable machine code, and a human-readable message.
@@ -8,6 +11,32 @@ type AppError struct {
 	HTTPStatus int    `json:"-"`
 	Code       string `json:"code"`
 	Message    string `json:"message"`
+
+	// ErrorCode is the identifier from the API contract's Appendix A
+	// (NIK_ALREADY_REGISTERED, CONSENT_REQUIRED, DUKCAPIL_UNAVAILABLE, …).
+	// Clients switch on this; Message is for humans and may be reworded freely.
+	// Empty means the handler has no contract code for this condition.
+	ErrorCode string `json:"error_code,omitempty"`
+
+	// RetryAfter is how long the caller should wait before trying again. Set
+	// on 429 responses, where the contract returns a retry_after field
+	// alongside the message (§1.1). Zero means "not applicable".
+	RetryAfter time.Duration `json:"-"`
+}
+
+// WithCode attaches an Appendix A error code and returns the error, so call
+// sites read as one expression:
+//
+//	apperror.ErrConflict("NIK is bound to another account").WithCode(apperror.CodeNIKAlreadyRegistered)
+func (e *AppError) WithCode(errorCode string) *AppError {
+	e.ErrorCode = errorCode
+	return e
+}
+
+// WithRetryAfter attaches a retry hint, for rate-limited responses.
+func (e *AppError) WithRetryAfter(d time.Duration) *AppError {
+	e.RetryAfter = d
+	return e
 }
 
 func (e *AppError) Error() string {
@@ -48,4 +77,23 @@ var (
 	ErrServiceUnavailable = func(msg string) *AppError {
 		return New(http.StatusServiceUnavailable, "50300", msg)
 	}
+)
+
+// Appendix A error codes. Only the ones reachable from the user and nik-verify
+// domains are listed; add the rest as their owning services need them.
+const (
+	CodeValidationError      = "VALIDATION_ERROR"
+	CodeNIKNotFound          = "NIK_NOT_FOUND"
+	CodeNIKInactive          = "NIK_INACTIVE"
+	CodeNIKValidationFailed  = "NIK_VALIDATION_FAILED"
+	CodeDukcapilUnavailable  = "DUKCAPIL_UNAVAILABLE"
+	CodeNIKAlreadyRegistered = "NIK_ALREADY_REGISTERED"
+	CodeNIKAlreadySaved      = "NIK_ALREADY_SAVED"
+	CodeMaxSavedNIKsReached  = "MAX_SAVED_NIKS_REACHED"
+	CodeConsentRequired      = "CONSENT_REQUIRED"
+	CodeEmailAlreadyUsed     = "EMAIL_ALREADY_REGISTERED"
+	CodeTooManyRequests      = "TOO_MANY_REQUESTS"
+	CodeTokenExpired         = "TOKEN_EXPIRED"
+	CodeTokenInvalid         = "TOKEN_INVALID"
+	CodeAdmissionPaused      = "ADMISSION_PAUSED"
 )

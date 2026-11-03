@@ -9,7 +9,9 @@ func RegisterRoutes(mux *http.ServeMux, h User) {
 	mux.HandleFunc("POST /auth/magic-link", h.RequestMagicLink)
 	mux.HandleFunc("POST /auth/magic-link/resend", h.ResendMagicLink)
 	mux.HandleFunc("GET /auth/verify", h.VerifyMagicLink)
+	mux.HandleFunc("GET /auth/verify-email", h.VerifyEmail)
 	mux.HandleFunc("POST /auth/register", h.Register)
+	mux.HandleFunc("POST /auth/refresh", h.RefreshSession)
 
 	// Account / Saved NIKs
 	mux.HandleFunc("GET /accounts/me/saved-niks", h.GetSavedNIKs)

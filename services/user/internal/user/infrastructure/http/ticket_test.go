@@ -2,129 +2,100 @@ package http
 
 import (
 	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	mock_inbound "gitlab-cicd-ee.telkomsel.co.id/my-telkomsel/be-rusuh-war-ticketing/services/user/_mock/user/port/inbound"
-	"gitlab-cicd-ee.telkomsel.co.id/my-telkomsel/be-rusuh-war-ticketing/services/user/internal/user/domain/dto"
-	"gitlab-cicd-ee.telkomsel.co.id/my-telkomsel/be-rusuh-war-ticketing/pkg/apperror"
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/apperror"
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/user/internal/user/domain/dto"
 )
 
-// ---- GetMyTickets ----
-
-func TestGetMyTickets_success(t *testing.T) {
-	c, uc := newTestController(t)
-	expectAuth(uc)
-	uc.EXPECT().GetMyTickets(gomock.Any(), testAccID, gomock.Any()).Return(dto.MyTicketsResponse{
-		Pagination: dto.PaginationMeta{TotalData: 1, TotalPage: 1, Limit: 10, Offset: 0},
-		Tickets:    []dto.MyTicketItem{{TicketID: "TKT-001", Category: "VIP"}},
+func TestGetMyTickets_EmitsPagination(t *testing.T) {
+	// The gap this closes: the total was computed and then dropped, so clients
+	// had no row count to page on (contract §6.1).
+	mux, uc := newTestServer(t)
+	expectAuth(uc, "USR-001")
+	uc.EXPECT().GetMyTickets(gomock.Any(), "USR-001", gomock.Any()).Return(dto.MyTicketsResponse{
+		Total: 23, Limit: 10, Offset: 0,
+		Tickets: []dto.MyTicketItem{{TicketID: "TKT-001", BookingID: "RB-00912"}},
 	}, nil)
 
-	rec := httptest.NewRecorder()
-	req := authHeader(httptest.NewRequest(http.MethodGet, "/users/me/tickets", nil))
-	c.GetMyTickets(rec, req)
+	rec := authed(t, mux, http.MethodGet, "/users/me/tickets", "")
+	assert.Equal(t, http.StatusOK, rec.Code)
 
-	if rec.Code != http.StatusOK {
-		t.Errorf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "TKT-001") {
-		t.Errorf("body missing ticket id: %s", rec.Body.String())
-	}
+	meta := metaOf(t, rec)
+	page, ok := meta["pagination"].(map[string]any)
+	require.True(t, ok, "meta.pagination must be present on a list endpoint")
+	assert.Equal(t, float64(23), page["totalData"])
+	assert.Equal(t, float64(3), page["totalPage"])
+	assert.Equal(t, float64(10), page["limit"])
+	assert.Equal(t, float64(0), page["offset"])
+	assert.Len(t, decode(t, rec)["data"], 1)
 }
 
-func TestGetMyTickets_unauthorized(t *testing.T) {
-	c, _ := newTestController(t)
+func TestGetMyTickets_PassesQueryParams(t *testing.T) {
+	mux, uc := newTestServer(t)
+	expectAuth(uc, "USR-001")
+	uc.EXPECT().GetMyTickets(gomock.Any(), "USR-001",
+		dto.GetMyTicketsRequest{Status: "upcoming", Limit: 25, Offset: 50}).
+		Return(dto.MyTicketsResponse{Limit: 25, Offset: 50, Tickets: []dto.MyTicketItem{}}, nil)
 
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/users/me/tickets", nil)
-	c.GetMyTickets(rec, req)
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, want 401", rec.Code)
-	}
+	rec := authed(t, mux, http.MethodGet, "/users/me/tickets?status=upcoming&limit=25&offset=50", "")
+	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
-func TestGetMyTickets_usecaseError(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	uc := mock_inbound.NewMockIUserUsecase(ctrl)
-	c := NewUser(uc).(*UserController)
+func TestGetMyTickets_IgnoresUnparseableParams(t *testing.T) {
+	// A bad limit is a client mistake, not a reason to 400 a read-only listing.
+	mux, uc := newTestServer(t)
+	expectAuth(uc, "USR-001")
+	uc.EXPECT().GetMyTickets(gomock.Any(), gomock.Any(), dto.GetMyTicketsRequest{Limit: 0, Offset: 0}).
+		Return(dto.MyTicketsResponse{Limit: 10, Tickets: []dto.MyTicketItem{}}, nil)
 
-	uc.EXPECT().ValidateAccessToken(gomock.Any(), validToken).Return(testAccID, nil)
-	uc.EXPECT().GetMyTickets(gomock.Any(), testAccID, gomock.Any()).Return(dto.MyTicketsResponse{}, apperror.ErrInternal("db error"))
-
-	rec := httptest.NewRecorder()
-	req := authHeader(httptest.NewRequest(http.MethodGet, "/users/me/tickets", nil))
-	c.GetMyTickets(rec, req)
-
-	if rec.Code != http.StatusInternalServerError {
-		t.Errorf("status = %d, want 500", rec.Code)
-	}
+	rec := authed(t, mux, http.MethodGet, "/users/me/tickets?limit=abc&offset=-5", "")
+	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
-// ---- GetETicket ----
+func TestGetMyTickets_Unauthenticated(t *testing.T) {
+	mux, _ := newTestServer(t)
+	req := httptestNewGet("/users/me/tickets")
+	rec := serve(mux, req)
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+}
 
-func TestGetETicket_success(t *testing.T) {
-	c, uc := newTestController(t)
-	expectAuth(uc)
-	uc.EXPECT().GetETicket(gomock.Any(), testAccID, "TKT-001").Return(dto.ETicketResponse{
+func TestGetETicket_Success(t *testing.T) {
+	mux, uc := newTestServer(t)
+	expectAuth(uc, "USR-001")
+	uc.EXPECT().GetETicket(gomock.Any(), "USR-001", "TKT-001").Return(dto.ETicketResponse{
 		TicketID: "TKT-001",
-		Category: "VIP",
-		Instructions: "Tunjukkan QR code dan identitas pemegang saat masuk venue.",
+		Holder:   dto.ETicketHolder{NIKMasked: "3171**********22"},
+		QRValue:  "TKT-001.nonce-abc",
+		QRCode:   "TKT-001.nonce-abc",
 	}, nil)
 
-	rec := httptest.NewRecorder()
-	req := authHeader(httptest.NewRequest(http.MethodGet, "/tickets/TKT-001/eticket", nil))
-	req.SetPathValue("ticket_id", "TKT-001")
-	c.GetETicket(rec, req)
+	rec := authed(t, mux, http.MethodGet, "/tickets/TKT-001/eticket", "")
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.NotContains(t, rec.Body.String(), "3171000000000022")
 
-	if rec.Code != http.StatusOK {
-		t.Errorf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
-	}
+	data := decode(t, rec)["data"].(map[string]any)
+	assert.Equal(t, "TKT-001.nonce-abc", data["qr_value"])
 }
 
-func TestGetETicket_notFound(t *testing.T) {
-	c, uc := newTestController(t)
-	expectAuth(uc)
-	uc.EXPECT().GetETicket(gomock.Any(), testAccID, "TKT-missing").Return(dto.ETicketResponse{}, apperror.ErrNotFound("not found"))
+func TestGetETicket_NotFound(t *testing.T) {
+	mux, uc := newTestServer(t)
+	expectAuth(uc, "USR-001")
+	uc.EXPECT().GetETicket(gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(dto.ETicketResponse{}, apperror.ErrNotFound("ticket not found"))
 
-	rec := httptest.NewRecorder()
-	req := authHeader(httptest.NewRequest(http.MethodGet, "/tickets/TKT-missing/eticket", nil))
-	req.SetPathValue("ticket_id", "TKT-missing")
-	c.GetETicket(rec, req)
-
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("status = %d, want 404", rec.Code)
-	}
+	rec := authed(t, mux, http.MethodGet, "/tickets/TKT-other/eticket", "")
+	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
-func TestGetETicket_missingPathParam(t *testing.T) {
-	c, uc := newTestController(t)
-	expectAuth(uc)
-
-	rec := httptest.NewRecorder()
-	// ticket_id path value not set
-	req := authHeader(httptest.NewRequest(http.MethodGet, "/tickets//eticket", nil))
-	c.GetETicket(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want 400", rec.Code)
-	}
-}
-
-// ---- parseQueryInt ----
-
-func TestParseQueryInt_validPositive(t *testing.T) {
-	assert := func(got, want int) {
-		t.Helper()
-		if got != want {
-			t.Errorf("got %d, want %d", got, want)
-		}
-	}
-	assert(parseQueryInt("10", 5), 10)
-	assert(parseQueryInt("", 5), 5)        // empty → fallback
-	assert(parseQueryInt("-1", 5), 5)      // negative → fallback
-	assert(parseQueryInt("abc", 5), 5)     // non-numeric → fallback
+func TestParseQueryInt(t *testing.T) {
+	assert.Equal(t, 7, parseQueryInt("", 7))
+	assert.Equal(t, 7, parseQueryInt("abc", 7))
+	assert.Equal(t, 7, parseQueryInt("-1", 7))
+	assert.Equal(t, 42, parseQueryInt("42", 7))
+	assert.Equal(t, 0, parseQueryInt("0", 7))
 }

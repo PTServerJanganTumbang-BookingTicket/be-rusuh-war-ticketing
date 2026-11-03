@@ -1,4 +1,4 @@
-module gitlab-cicd-ee.telkomsel.co.id/my-telkomsel/be-rusuh-war-ticketing/pkg
+module github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg
 
 go 1.26.0
 

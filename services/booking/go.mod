@@ -1,13 +1,13 @@
-module gitlab-cicd-ee.telkomsel.co.id/my-telkomsel/be-rusuh-war-ticketing/services/booking
+module github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/booking
 
 go 1.26.0
 
 require (
+	github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg v0.0.0
 	github.com/aws/aws-lambda-go v1.55.1
 	github.com/awslabs/aws-lambda-go-api-proxy v0.16.2
 	github.com/go-playground/validator/v10 v10.27.0
 	github.com/stretchr/testify v1.11.1
-	gitlab-cicd-ee.telkomsel.co.id/my-telkomsel/be-rusuh-war-ticketing/pkg v0.0.0
 	go.uber.org/mock v0.6.0
 )
 
@@ -28,4 +28,4 @@ require (
 )
 
 // Shared library lives in this monorepo; resolved locally (no proxy publish).
-replace gitlab-cicd-ee.telkomsel.co.id/my-telkomsel/be-rusuh-war-ticketing/pkg => ../../pkg
+replace github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg => ../../pkg

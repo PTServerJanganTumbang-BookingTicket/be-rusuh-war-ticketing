@@ -3,5 +3,8 @@ go 1.26.0
 use (
 	./pkg
 	./services/booking
+	./services/nik-verify
+	./services/notification
+	./services/outbox-publisher
 	./services/user
 )

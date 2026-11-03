@@ -1,0 +1,4 @@
+BEGIN;
+DROP TABLE IF EXISTS queue_entries;
+DROP TABLE IF EXISTS bookings;
+COMMIT;

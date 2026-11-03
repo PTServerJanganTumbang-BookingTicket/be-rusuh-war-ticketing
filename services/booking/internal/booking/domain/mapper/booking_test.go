@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"gitlab-cicd-ee.telkomsel.co.id/my-telkomsel/be-rusuh-war-ticketing/services/booking/internal/booking/domain/entity"
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/booking/internal/booking/domain/entity"
 )
 
 func TestMaskNIK(t *testing.T) {

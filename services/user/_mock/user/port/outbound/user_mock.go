@@ -13,8 +13,9 @@ import (
 	context "context"
 	reflect "reflect"
 
-	dto "gitlab-cicd-ee.telkomsel.co.id/my-telkomsel/be-rusuh-war-ticketing/services/user/internal/user/domain/dto"
-	entity "gitlab-cicd-ee.telkomsel.co.id/my-telkomsel/be-rusuh-war-ticketing/services/user/internal/user/domain/entity"
+	dto "github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/user/internal/user/domain/dto"
+	entity "github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/user/internal/user/domain/entity"
+	portout "github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/user/internal/user/port/outbound"
 	gomock "go.uber.org/mock/gomock"
 )
 
@@ -40,50 +41,6 @@ func NewMockIUserRepository(ctrl *gomock.Controller) *MockIUserRepository {
 // EXPECT returns an object that allows the caller to indicate expected use.
 func (m *MockIUserRepository) EXPECT() *MockIUserRepositoryMockRecorder {
 	return m.recorder
-}
-
-// CountSavedNIKsByAccountID mocks base method.
-func (m *MockIUserRepository) CountSavedNIKsByAccountID(ctx context.Context, accountID string) (int, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "CountSavedNIKsByAccountID", ctx, accountID)
-	ret0, _ := ret[0].(int)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// CountSavedNIKsByAccountID indicates an expected call of CountSavedNIKsByAccountID.
-func (mr *MockIUserRepositoryMockRecorder) CountSavedNIKsByAccountID(ctx, accountID any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CountSavedNIKsByAccountID", reflect.TypeOf((*MockIUserRepository)(nil).CountSavedNIKsByAccountID), ctx, accountID)
-}
-
-// DeleteSavedNIK mocks base method.
-func (m *MockIUserRepository) DeleteSavedNIK(ctx context.Context, accountID, id string) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "DeleteSavedNIK", ctx, accountID, id)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// DeleteSavedNIK indicates an expected call of DeleteSavedNIK.
-func (mr *MockIUserRepositoryMockRecorder) DeleteSavedNIK(ctx, accountID, id any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteSavedNIK", reflect.TypeOf((*MockIUserRepository)(nil).DeleteSavedNIK), ctx, accountID, id)
-}
-
-// FindAccessTokenByValue mocks base method.
-func (m *MockIUserRepository) FindAccessTokenByValue(ctx context.Context, token string) (entity.AccessToken, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "FindAccessTokenByValue", ctx, token)
-	ret0, _ := ret[0].(entity.AccessToken)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// FindAccessTokenByValue indicates an expected call of FindAccessTokenByValue.
-func (mr *MockIUserRepositoryMockRecorder) FindAccessTokenByValue(ctx, token any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FindAccessTokenByValue", reflect.TypeOf((*MockIUserRepository)(nil).FindAccessTokenByValue), ctx, token)
 }
 
 // FindAccountByEmail mocks base method.
@@ -116,34 +73,135 @@ func (mr *MockIUserRepositoryMockRecorder) FindAccountByID(ctx, id any) *gomock.
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FindAccountByID", reflect.TypeOf((*MockIUserRepository)(nil).FindAccountByID), ctx, id)
 }
 
-// FindMagicTokenByValue mocks base method.
-func (m *MockIUserRepository) FindMagicTokenByValue(ctx context.Context, token string) (entity.MagicToken, error) {
+// MarkEmailVerified mocks base method.
+func (m *MockIUserRepository) MarkEmailVerified(ctx context.Context, accountID string) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "FindMagicTokenByValue", ctx, token)
+	ret := m.ctrl.Call(m, "MarkEmailVerified", ctx, accountID)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// MarkEmailVerified indicates an expected call of MarkEmailVerified.
+func (mr *MockIUserRepositoryMockRecorder) MarkEmailVerified(ctx, accountID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MarkEmailVerified", reflect.TypeOf((*MockIUserRepository)(nil).MarkEmailVerified), ctx, accountID)
+}
+
+// RegisterAccount mocks base method.
+func (m *MockIUserRepository) RegisterAccount(ctx context.Context, reg portout.Registration) (entity.Account, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "RegisterAccount", ctx, reg)
+	ret0, _ := ret[0].(entity.Account)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// RegisterAccount indicates an expected call of RegisterAccount.
+func (mr *MockIUserRepositoryMockRecorder) RegisterAccount(ctx, reg any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RegisterAccount", reflect.TypeOf((*MockIUserRepository)(nil).RegisterAccount), ctx, reg)
+}
+
+// HasConsent mocks base method.
+func (m *MockIUserRepository) HasConsent(ctx context.Context, accountID string) (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "HasConsent", ctx, accountID)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// HasConsent indicates an expected call of HasConsent.
+func (mr *MockIUserRepositoryMockRecorder) HasConsent(ctx, accountID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "HasConsent", reflect.TypeOf((*MockIUserRepository)(nil).HasConsent), ctx, accountID)
+}
+
+// SaveMagicTokenWithEvent mocks base method.
+func (m *MockIUserRepository) SaveMagicTokenWithEvent(ctx context.Context, token entity.MagicToken, event entity.OutboxEvent) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SaveMagicTokenWithEvent", ctx, token, event)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// SaveMagicTokenWithEvent indicates an expected call of SaveMagicTokenWithEvent.
+func (mr *MockIUserRepositoryMockRecorder) SaveMagicTokenWithEvent(ctx, token, event any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SaveMagicTokenWithEvent", reflect.TypeOf((*MockIUserRepository)(nil).SaveMagicTokenWithEvent), ctx, token, event)
+}
+
+// ConsumeMagicToken mocks base method.
+func (m *MockIUserRepository) ConsumeMagicToken(ctx context.Context, tokenHash string, purpose entity.Purpose) (entity.MagicToken, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ConsumeMagicToken", ctx, tokenHash, purpose)
 	ret0, _ := ret[0].(entity.MagicToken)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
-// FindMagicTokenByValue indicates an expected call of FindMagicTokenByValue.
-func (mr *MockIUserRepositoryMockRecorder) FindMagicTokenByValue(ctx, token any) *gomock.Call {
+// ConsumeMagicToken indicates an expected call of ConsumeMagicToken.
+func (mr *MockIUserRepositoryMockRecorder) ConsumeMagicToken(ctx, tokenHash, purpose any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FindMagicTokenByValue", reflect.TypeOf((*MockIUserRepository)(nil).FindMagicTokenByValue), ctx, token)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ConsumeMagicToken", reflect.TypeOf((*MockIUserRepository)(nil).ConsumeMagicToken), ctx, tokenHash, purpose)
 }
 
-// FindSavedNIKByID mocks base method.
-func (m *MockIUserRepository) FindSavedNIKByID(ctx context.Context, accountID, id string) (entity.SavedNIK, error) {
+// CreateRefreshToken mocks base method.
+func (m *MockIUserRepository) CreateRefreshToken(ctx context.Context, token entity.RefreshToken) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "FindSavedNIKByID", ctx, accountID, id)
+	ret := m.ctrl.Call(m, "CreateRefreshToken", ctx, token)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// CreateRefreshToken indicates an expected call of CreateRefreshToken.
+func (mr *MockIUserRepositoryMockRecorder) CreateRefreshToken(ctx, token any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CreateRefreshToken", reflect.TypeOf((*MockIUserRepository)(nil).CreateRefreshToken), ctx, token)
+}
+
+// RotateRefreshToken mocks base method.
+func (m *MockIUserRepository) RotateRefreshToken(ctx context.Context, presentedHash string, replacement entity.RefreshToken) (entity.RefreshToken, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "RotateRefreshToken", ctx, presentedHash, replacement)
+	ret0, _ := ret[0].(entity.RefreshToken)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// RotateRefreshToken indicates an expected call of RotateRefreshToken.
+func (mr *MockIUserRepositoryMockRecorder) RotateRefreshToken(ctx, presentedHash, replacement any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RotateRefreshToken", reflect.TypeOf((*MockIUserRepository)(nil).RotateRefreshToken), ctx, presentedHash, replacement)
+}
+
+// RevokeRefreshFamily mocks base method.
+func (m *MockIUserRepository) RevokeRefreshFamily(ctx context.Context, familyID string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "RevokeRefreshFamily", ctx, familyID)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// RevokeRefreshFamily indicates an expected call of RevokeRefreshFamily.
+func (mr *MockIUserRepositoryMockRecorder) RevokeRefreshFamily(ctx, familyID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RevokeRefreshFamily", reflect.TypeOf((*MockIUserRepository)(nil).RevokeRefreshFamily), ctx, familyID)
+}
+
+// CreateSavedNIKWithinCap mocks base method.
+func (m *MockIUserRepository) CreateSavedNIKWithinCap(ctx context.Context, nik entity.SavedNIK, maxEntries int) (entity.SavedNIK, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CreateSavedNIKWithinCap", ctx, nik, maxEntries)
 	ret0, _ := ret[0].(entity.SavedNIK)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
-// FindSavedNIKByID indicates an expected call of FindSavedNIKByID.
-func (mr *MockIUserRepositoryMockRecorder) FindSavedNIKByID(ctx, accountID, id any) *gomock.Call {
+// CreateSavedNIKWithinCap indicates an expected call of CreateSavedNIKWithinCap.
+func (mr *MockIUserRepositoryMockRecorder) CreateSavedNIKWithinCap(ctx, nik, maxEntries any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FindSavedNIKByID", reflect.TypeOf((*MockIUserRepository)(nil).FindSavedNIKByID), ctx, accountID, id)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CreateSavedNIKWithinCap", reflect.TypeOf((*MockIUserRepository)(nil).CreateSavedNIKWithinCap), ctx, nik, maxEntries)
 }
 
 // FindSavedNIKsByAccountID mocks base method.
@@ -161,19 +219,18 @@ func (mr *MockIUserRepositoryMockRecorder) FindSavedNIKsByAccountID(ctx, account
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FindSavedNIKsByAccountID", reflect.TypeOf((*MockIUserRepository)(nil).FindSavedNIKsByAccountID), ctx, accountID)
 }
 
-// FindTicketByID mocks base method.
-func (m *MockIUserRepository) FindTicketByID(ctx context.Context, accountID, ticketID string) (entity.UserTicket, error) {
+// DeleteSavedNIK mocks base method.
+func (m *MockIUserRepository) DeleteSavedNIK(ctx context.Context, accountID string, id string) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "FindTicketByID", ctx, accountID, ticketID)
-	ret0, _ := ret[0].(entity.UserTicket)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
+	ret := m.ctrl.Call(m, "DeleteSavedNIK", ctx, accountID, id)
+	ret0, _ := ret[0].(error)
+	return ret0
 }
 
-// FindTicketByID indicates an expected call of FindTicketByID.
-func (mr *MockIUserRepositoryMockRecorder) FindTicketByID(ctx, accountID, ticketID any) *gomock.Call {
+// DeleteSavedNIK indicates an expected call of DeleteSavedNIK.
+func (mr *MockIUserRepositoryMockRecorder) DeleteSavedNIK(ctx, accountID, id any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FindTicketByID", reflect.TypeOf((*MockIUserRepository)(nil).FindTicketByID), ctx, accountID, ticketID)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteSavedNIK", reflect.TypeOf((*MockIUserRepository)(nil).DeleteSavedNIK), ctx, accountID, id)
 }
 
 // FindTicketsByAccountID mocks base method.
@@ -192,133 +249,17 @@ func (mr *MockIUserRepositoryMockRecorder) FindTicketsByAccountID(ctx, accountID
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FindTicketsByAccountID", reflect.TypeOf((*MockIUserRepository)(nil).FindTicketsByAccountID), ctx, accountID, req)
 }
 
-// IsNIKAlreadySaved mocks base method.
-func (m *MockIUserRepository) IsNIKAlreadySaved(ctx context.Context, accountID, nikHmac string) (bool, error) {
+// FindTicketByID mocks base method.
+func (m *MockIUserRepository) FindTicketByID(ctx context.Context, accountID string, ticketID string) (entity.UserTicket, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "IsNIKAlreadySaved", ctx, accountID, nikHmac)
-	ret0, _ := ret[0].(bool)
+	ret := m.ctrl.Call(m, "FindTicketByID", ctx, accountID, ticketID)
+	ret0, _ := ret[0].(entity.UserTicket)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
-// IsNIKAlreadySaved indicates an expected call of IsNIKAlreadySaved.
-func (mr *MockIUserRepositoryMockRecorder) IsNIKAlreadySaved(ctx, accountID, nikHmac any) *gomock.Call {
+// FindTicketByID indicates an expected call of FindTicketByID.
+func (mr *MockIUserRepositoryMockRecorder) FindTicketByID(ctx, accountID, ticketID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsNIKAlreadySaved", reflect.TypeOf((*MockIUserRepository)(nil).IsNIKAlreadySaved), ctx, accountID, nikHmac)
-}
-
-// IsNIKRegistered mocks base method.
-func (m *MockIUserRepository) IsNIKRegistered(ctx context.Context, nikHmac string) (bool, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "IsNIKRegistered", ctx, nikHmac)
-	ret0, _ := ret[0].(bool)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// IsNIKRegistered indicates an expected call of IsNIKRegistered.
-func (mr *MockIUserRepositoryMockRecorder) IsNIKRegistered(ctx, nikHmac any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsNIKRegistered", reflect.TypeOf((*MockIUserRepository)(nil).IsNIKRegistered), ctx, nikHmac)
-}
-
-// MarkMagicTokenUsed mocks base method.
-func (m *MockIUserRepository) MarkMagicTokenUsed(ctx context.Context, tokenID string) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "MarkMagicTokenUsed", ctx, tokenID)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// MarkMagicTokenUsed indicates an expected call of MarkMagicTokenUsed.
-func (mr *MockIUserRepositoryMockRecorder) MarkMagicTokenUsed(ctx, tokenID any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MarkMagicTokenUsed", reflect.TypeOf((*MockIUserRepository)(nil).MarkMagicTokenUsed), ctx, tokenID)
-}
-
-// SaveAccessToken mocks base method.
-func (m *MockIUserRepository) SaveAccessToken(ctx context.Context, token entity.AccessToken) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "SaveAccessToken", ctx, token)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// SaveAccessToken indicates an expected call of SaveAccessToken.
-func (mr *MockIUserRepositoryMockRecorder) SaveAccessToken(ctx, token any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SaveAccessToken", reflect.TypeOf((*MockIUserRepository)(nil).SaveAccessToken), ctx, token)
-}
-
-// SaveAccount mocks base method.
-func (m *MockIUserRepository) SaveAccount(ctx context.Context, account entity.Account) (entity.Account, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "SaveAccount", ctx, account)
-	ret0, _ := ret[0].(entity.Account)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// SaveAccount indicates an expected call of SaveAccount.
-func (mr *MockIUserRepositoryMockRecorder) SaveAccount(ctx, account any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SaveAccount", reflect.TypeOf((*MockIUserRepository)(nil).SaveAccount), ctx, account)
-}
-
-// SaveConsentRecord mocks base method.
-func (m *MockIUserRepository) SaveConsentRecord(ctx context.Context, record entity.ConsentRecord) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "SaveConsentRecord", ctx, record)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// SaveConsentRecord indicates an expected call of SaveConsentRecord.
-func (mr *MockIUserRepositoryMockRecorder) SaveConsentRecord(ctx, record any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SaveConsentRecord", reflect.TypeOf((*MockIUserRepository)(nil).SaveConsentRecord), ctx, record)
-}
-
-// SaveMagicToken mocks base method.
-func (m *MockIUserRepository) SaveMagicToken(ctx context.Context, token entity.MagicToken) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "SaveMagicToken", ctx, token)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// SaveMagicToken indicates an expected call of SaveMagicToken.
-func (mr *MockIUserRepositoryMockRecorder) SaveMagicToken(ctx, token any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SaveMagicToken", reflect.TypeOf((*MockIUserRepository)(nil).SaveMagicToken), ctx, token)
-}
-
-// SaveSavedNIK mocks base method.
-func (m *MockIUserRepository) SaveSavedNIK(ctx context.Context, nik entity.SavedNIK) (entity.SavedNIK, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "SaveSavedNIK", ctx, nik)
-	ret0, _ := ret[0].(entity.SavedNIK)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// SaveSavedNIK indicates an expected call of SaveSavedNIK.
-func (mr *MockIUserRepositoryMockRecorder) SaveSavedNIK(ctx, nik any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SaveSavedNIK", reflect.TypeOf((*MockIUserRepository)(nil).SaveSavedNIK), ctx, nik)
-}
-
-// UpdateAccount mocks base method.
-func (m *MockIUserRepository) UpdateAccount(ctx context.Context, account entity.Account) (entity.Account, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "UpdateAccount", ctx, account)
-	ret0, _ := ret[0].(entity.Account)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// UpdateAccount indicates an expected call of UpdateAccount.
-func (mr *MockIUserRepositoryMockRecorder) UpdateAccount(ctx, account any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateAccount", reflect.TypeOf((*MockIUserRepository)(nil).UpdateAccount), ctx, account)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FindTicketByID", reflect.TypeOf((*MockIUserRepository)(nil).FindTicketByID), ctx, accountID, ticketID)
 }

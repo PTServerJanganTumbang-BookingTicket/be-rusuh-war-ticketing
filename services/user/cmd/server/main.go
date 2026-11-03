@@ -10,9 +10,9 @@ import (
 	"syscall"
 	"time"
 
-	"gitlab-cicd-ee.telkomsel.co.id/my-telkomsel/be-rusuh-war-ticketing/pkg/dotenv"
-	"gitlab-cicd-ee.telkomsel.co.id/my-telkomsel/be-rusuh-war-ticketing/services/user/internal/config"
-	"gitlab-cicd-ee.telkomsel.co.id/my-telkomsel/be-rusuh-war-ticketing/services/user/internal/delivery"
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/dotenv"
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/user/internal/config"
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/user/internal/delivery"
 )
 
 func main() {
@@ -26,12 +26,18 @@ func main() {
 
 	setupLogger(cfg.Log)
 
-	mux := delivery.New(cfg)
+	ctx := context.Background()
+	server, err := delivery.New(ctx, cfg)
+	if err != nil {
+		slog.Error("Failed to wire dependencies", slog.Any("err", err))
+		os.Exit(1)
+	}
+	defer server.Close()
 
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.App.Port),
 		ReadHeaderTimeout: 1 * time.Second,
-		Handler:           mux,
+		Handler:           server.Handler,
 	}
 
 	go func() {
@@ -47,9 +53,9 @@ func main() {
 	<-quit
 	slog.Info("Shutdown Server ...")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := srv.Shutdown(ctx); err != nil {
+	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("Server Shutdown:", slog.Any("err", err))
 	}
 }
