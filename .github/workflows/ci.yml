@@ -16,6 +16,9 @@ jobs:
   detect-changes:
     name: Detect Changed Modules
     runs-on: ubuntu-latest
+    permissions:
+      contents: read        # checkout
+      pull-requests: read   # dorny/paths-filter needs this to list PR changed files
     outputs:
       modules: ${{ steps.set.outputs.modules }}
       booking: ${{ steps.filter.outputs.booking }}
