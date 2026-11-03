@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/dotenv"
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/logger"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/outbox-publisher/internal/config"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/outbox-publisher/internal/delivery"
 )
@@ -22,7 +23,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	setupLogger(cfg.Log)
+	logger.Setup(cfg.Log.Level, cfg.Log.Format)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -64,27 +65,4 @@ func main() {
 			}
 		}
 	}
-}
-
-func setupLogger(logCfg config.Log) {
-	var level slog.Level
-	switch logCfg.Level {
-	case "debug":
-		level = slog.LevelDebug
-	case "warn":
-		level = slog.LevelWarn
-	case "error":
-		level = slog.LevelError
-	default:
-		level = slog.LevelInfo
-	}
-
-	opts := &slog.HandlerOptions{Level: level}
-	var handler slog.Handler
-	if logCfg.Format == "text" {
-		handler = slog.NewTextHandler(os.Stdout, opts)
-	} else {
-		handler = slog.NewJSONHandler(os.Stdout, opts)
-	}
-	slog.SetDefault(slog.New(handler))
 }

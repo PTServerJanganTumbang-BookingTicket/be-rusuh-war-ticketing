@@ -3,9 +3,9 @@ package config
 import (
 	"fmt"
 	"os"
-	"strconv"
 	"time"
 
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/envutil"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/outbox-publisher/internal/outbox/domain/entity"
 )
 
@@ -14,30 +14,30 @@ import (
 func Load() (Config, error) {
 	cfg := Config{
 		App: App{
-			Env:         getEnv("APP_ENV", "local"),
-			Port:        getEnvInt("APP_PORT", 8083),
-			Interval:    getEnvDuration("PUBLISH_INTERVAL_MS", time.Second),
-			DrainBudget: getEnvDuration("DRAIN_BUDGET_SECONDS", 45*time.Second),
-			BatchSize:   getEnvInt("PUBLISH_BATCH_SIZE", entity.BatchSize),
+			Env:         envutil.Env("APP_ENV", "local"),
+			Port:        envutil.EnvInt("APP_PORT", 8083),
+			Interval:    envutil.EnvDuration("PUBLISH_INTERVAL_MS", time.Second),
+			DrainBudget: envutil.EnvDuration("DRAIN_BUDGET_SECONDS", 45*time.Second),
+			BatchSize:   envutil.EnvInt("PUBLISH_BATCH_SIZE", entity.BatchSize),
 		},
 		Log: Log{
-			Level:  getEnv("LOG_LEVEL", "info"),
-			Format: getEnv("LOG_FORMAT", "json"),
+			Level:  envutil.Env("LOG_LEVEL", "info"),
+			Format: envutil.Env("LOG_FORMAT", "json"),
 		},
 		DB: DB{
 			DSN:          os.Getenv("DATABASE_URL"),
-			MaxConns:     int32(getEnvInt("DATABASE_MAX_CONNS", 4)),
-			ConnLifetime: getEnvDuration("DATABASE_CONN_LIFETIME", 30*time.Minute),
+			MaxConns:     int32(envutil.EnvInt("DATABASE_MAX_CONNS", 4)),
+			ConnLifetime: envutil.EnvDuration("DATABASE_CONN_LIFETIME", 30*time.Minute),
 		},
 		Redis: Redis{
-			Addr:     getEnv("REDIS_ADDR", "localhost:6379"),
+			Addr:     envutil.Env("REDIS_ADDR", "localhost:6379"),
 			Password: os.Getenv("REDIS_PASSWORD"),
-			DB:       getEnvInt("REDIS_DB", 0),
+			DB:       envutil.EnvInt("REDIS_DB", 0),
 		},
 		Queue: Queue{
 			NotificationURL: os.Getenv("NOTIFICATION_QUEUE_URL"),
-			LeaseTTL:        getEnvDuration("OUTBOX_LEASE_SECONDS", entity.LeaseTTL),
-			LeaseDoneTTL:    getEnvDuration("OUTBOX_LEASE_DONE_SECONDS", entity.LeaseDoneTTL),
+			LeaseTTL:        envutil.EnvDuration("OUTBOX_LEASE_SECONDS", entity.LeaseTTL),
+			LeaseDoneTTL:    envutil.EnvDuration("OUTBOX_LEASE_DONE_SECONDS", entity.LeaseDoneTTL),
 		},
 	}
 
@@ -70,44 +70,4 @@ func (c Config) validate() error {
 			c.Queue.LeaseTTL, c.App.Interval)
 	}
 	return nil
-}
-
-func getEnv(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
-
-func getEnvInt(key string, fallback int) int {
-	if v := os.Getenv(key); v != "" {
-		if i, err := strconv.Atoi(v); err == nil {
-			return i
-		}
-	}
-	return fallback
-}
-
-// getEnvDuration reads a duration. Keys ending in _MS are read as
-// milliseconds and _SECONDS as seconds; anything else accepts a Go duration
-// string such as "30m".
-func getEnvDuration(key string, fallback time.Duration) time.Duration {
-	v := os.Getenv(key)
-	if v == "" {
-		return fallback
-	}
-	if n, err := strconv.Atoi(v); err == nil {
-		switch {
-		case len(key) > 3 && key[len(key)-3:] == "_MS":
-			return time.Duration(n) * time.Millisecond
-		case len(key) > 8 && key[len(key)-8:] == "_SECONDS":
-			return time.Duration(n) * time.Second
-		default:
-			return time.Duration(n) * time.Second
-		}
-	}
-	if d, err := time.ParseDuration(v); err == nil {
-		return d
-	}
-	return fallback
 }

@@ -9,35 +9,14 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/events"
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/pgutil"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/outbox-publisher/internal/outbox/domain/entity"
 	portout "github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/outbox-publisher/internal/outbox/port/outbound"
 )
 
 // NewPool opens a connection pool and verifies the database answers.
 func NewPool(ctx context.Context, dsn string, maxConns int32, connLifetime time.Duration) (*pgxpool.Pool, error) {
-	cfg, err := pgxpool.ParseConfig(dsn)
-	if err != nil {
-		return nil, fmt.Errorf("postgres: parse DSN: %w", err)
-	}
-	if maxConns > 0 {
-		cfg.MaxConns = maxConns
-	}
-	if connLifetime > 0 {
-		cfg.MaxConnLifetime = connLifetime
-	}
-
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
-	if err != nil {
-		return nil, fmt.Errorf("postgres: open pool: %w", err)
-	}
-
-	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	if err := pool.Ping(pingCtx); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("postgres: ping: %w", err)
-	}
-	return pool, nil
+	return pgutil.NewPool(ctx, dsn, maxConns, connLifetime)
 }
 
 // OutboxRepository reads and retires outbox rows.
