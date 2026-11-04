@@ -20,12 +20,12 @@ source below, the source wins and the plan gets fixed.
 
 | Folder | Apidog folder | Service(s) | Status |
 |---|---|---|---|
-| `01-authentication/` | Authentication | `services/user` | built on branch `feature/user-notif-nikverify-outboxpublisher` |
-| `02-accounts/` | Accounts | `services/user` | built on branch |
+| [`01-authentication/`](01-authentication/README.md) | Authentication | `services/user` | **documented** — branch `feature/user-notif-nikverify-outboxpublisher` |
+| [`02-accounts/`](02-accounts/README.md) | Accounts | `services/user` | **documented** — branch |
 | `03-events/` | Events | `services/events` | not started |
 | [`04-queue/`](04-queue/README.md) | Queue | `services/queue`, `services/sse-server`, `services/admission-ctl` | **planning** |
 | `05-booking/` | Booking | `services/booking` | scaffold only |
-| `06-nik/` | NIK | `services/nik-verify` | built on branch |
+| [`06-nik/`](06-nik/README.md) | NIK | `services/nik-verify` | **documented** — branch |
 | `07-payment/` | Payment | `services/payment-api` | not started |
 | `08-user/` | User | `services/user` | not started |
 | `09-admin/` | Admin | `services/payment-api` | not started |
