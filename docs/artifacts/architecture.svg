@@ -1,0 +1,571 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Rusuh Booking Tiket — POC Infrastructure (v5)
+  Canvas : 1920 × 1200
+
+  v5 — reconciled against ADR-005 (final architecture, 180 KB rev):
+    + INGRESS GUARD at POST /queue/join, in order: (1) rl:join:{ip} 20/5min,
+      (2) invisible CAPTCHA, fail-open.  Order is mandatory — §6.
+      This is what REPLACES WAF; WAF itself is correctly absent (§1, §16).
+    + CloudFront in front of GET /events, 30 s cache (§5 FR-01; §11 T-30min:
+      the pre-open crowd is served by Lambda + CloudFront, no ECS).
+    + CAPTCHA provider as the THIRD external dependency (§6), + arrow A20.
+    + API GW: /payments/webhook resource-policy IP allowlist + HMAC (§4, ex-WAF rule).
+    ~ admission-ctl 1 task -> 2 (leader + standby, ctl:leader lease, §11).
+      The old "never scale out" note was ADR-004's model and is superseded.
+    ~ Midtrans: credit card removed — cards + OTC excluded because custom_expiry
+      does not apply to them, which is also what puts PCI-DSS out of scope (§8).
+    ~ RDS: queue_entries added (durable queue position / RPO, §4).
+  New zones (y):  CloudFront 636–740 · Ingress guard 760–966  (internet-facing column)
+  New lane:       y=1030 horizontal, between A19 (y=1000) and AWS Cloud bottom (y=1050)
+  ─────────────────────────────────────────────
+  Zones (x):
+    10–148   External-left (Client)
+    148–368  Internet-facing column (API GW + ALB)
+    368–680  VPC left: ECS + Redis + RDS
+    680–830  Routing corridor (150 px, always empty)
+    830–1210 Lambda group
+    1210–1465 Wide routing gap (255 px for label/arrow space)
+    1465–1663 AWS Managed column
+  Zones (y):
+    1065+    External APIs (outside AWS Cloud)
+  ─────────────────────────────────────────────
+  Routing rules
+  • nik-verify → Dukcapil  : exits Lambda LEFT x=830, corridor x=710, drops to y=1065
+  • payment-api → Midtrans : exits Lambda LEFT x=830, corridor x=724, drops to y=1073
+  • SQS → SES              : routes RIGHT of column (x=1670) bypassing DLQ box
+  • Client → API GW        : upper arm exits client at (148, 240) → straight right
+  • Client → ALB           : lower arm exits client at (148, 460) → straight right
+-->
+<svg width="2000" height="1350" viewBox="-80 -50 2000 1350" xmlns="http://www.w3.org/2000/svg" font-family="'Segoe UI',Arial,Helvetica,sans-serif">
+<defs>
+  <marker id="acx" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#455A64"/></marker>
+  <marker id="ap" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#6A1B9A"/></marker>
+  <marker id="ab" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#1565C0"/></marker>
+  <marker id="ar" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#C62828"/></marker>
+  <marker id="ao" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#E65100"/></marker>
+  <marker id="ag" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#2E7D32"/></marker>
+  <marker id="am" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#C2185B"/></marker>
+  <marker id="at" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#00838F"/></marker>
+  <marker id="ad" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#9E9E9E"/></marker>
+  <marker id="apay" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#795548"/></marker>
+</defs>
+
+<!-- canvas -->
+<rect x="-80" y="-50" width="2000" height="1350" fill="#ECEFF1"/>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<!--  CLIENT                                                   -->
+<!-- ══════════════════════════════════════════════════════════ -->
+<!-- box spans y=185–555 so both connection points are reachable without crossing -->
+<g transform="translate(-80,0)">
+<rect x="10" y="185" width="132" height="370" rx="12" fill="white" stroke="#90A4AE" stroke-width="1.5"/>
+<!-- browser -->
+<rect x="24" y="200" width="104" height="72" rx="4" fill="#1E88E5"/>
+<rect x="24" y="200" width="104" height="20" rx="4" fill="#1976D2"/>
+<circle cx="40" cy="210" r="4" fill="#FF8A80"/>
+<circle cx="54" cy="210" r="4" fill="#FFE082"/>
+<circle cx="68" cy="210" r="4" fill="#A5D6A7"/>
+<rect x="32" y="230" width="88" height="7" rx="2" fill="rgba(255,255,255,0.3)"/>
+<rect x="32" y="243" width="70" height="7" rx="2" fill="rgba(255,255,255,0.3)"/>
+<rect x="32" y="256" width="80" height="7" rx="2" fill="rgba(255,255,255,0.3)"/>
+<line x1="76" y1="272" x2="76" y2="288" stroke="#B0BEC5" stroke-width="3"/>
+<rect x="56" y="288" width="40" height="6" rx="2" fill="#B0BEC5"/>
+<!-- divider -->
+<line x1="20" y1="322" x2="132" y2="322" stroke="#ECEFF1" stroke-width="2"/>
+<!-- phone -->
+<rect x="36" y="334" width="70" height="116" rx="10" fill="#37474F"/>
+<rect x="42" y="342" width="58" height="96" rx="6" fill="#546E7A"/>
+<rect x="62" y="444" width="18" height="4" rx="2" fill="#78909C"/>
+<text x="76" y="478" text-anchor="middle" font-size="12" font-weight="700" fill="#37474F">Browser</text>
+<text x="76" y="497" text-anchor="middle" font-size="12" font-weight="700" fill="#37474F">/ Mobile</text>
+<!-- upper connection dot (→ API GW bottom) -->
+<circle cx="142" cy="300" r="5" fill="#7B1FA2"/>
+<!-- lower connection dot (→ ALB top) -->
+<circle cx="142" cy="440" r="5" fill="#6A1B9A"/>
+</g>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<!--  AWS CLOUD                                               -->
+<!-- ══════════════════════════════════════════════════════════ -->
+<rect x="135" y="-40" width="1770" height="1090" rx="12" fill="#FAFAFA" stroke="#232F3E" stroke-width="2.5" stroke-dasharray="8,4"/>
+<rect x="1787" y="-40" width="118" height="28" rx="7" fill="#232F3E"/>
+<text x="1800" y="-21" font-size="11" fill="white" font-weight="700">◽ AWS Cloud</text>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<!--  INTERNET-FACING COLUMN                                  -->
+<!-- ══════════════════════════════════════════════════════════ -->
+<g transform="translate(-20,0)">
+<rect x="163" y="26" width="198" height="1018" rx="7" fill="#E3F2FD" stroke="#42A5F5" stroke-width="1.2"/>
+<text x="262" y="46" text-anchor="middle" font-size="9" fill="#1565C0" font-weight="700">Internet-facing  (outside VPC)</text>
+
+<!-- API Gateway  top of column, center y=120 -->
+<rect x="174" y="58" width="176" height="144" rx="7" fill="white" stroke="#7B1FA2" stroke-width="1.5"/>
+<rect x="174" y="58" width="176" height="32" rx="7" fill="#7B1FA2"/>
+<rect x="174" y="80" width="176" height="10" fill="#7B1FA2"/>
+<circle cx="202" cy="74" r="12" fill="white" opacity="0.85"/>
+<text x="202" y="79" text-anchor="middle" font-size="13" fill="#7B1FA2" font-weight="900">+</text>
+<text x="289" y="76" text-anchor="middle" font-size="9.5" fill="white" font-weight="700">API Gateway HTTP</text>
+<text x="262" y="120" text-anchor="middle" font-size="9" font-weight="700" fill="#37474F">:443  HTTPS</text>
+<text x="262" y="134" text-anchor="middle" font-size="8" fill="#607D8B">/auth  /events  /queue (REST)</text>
+<text x="262" y="147" text-anchor="middle" font-size="8" fill="#607D8B">/bookings  /payments  /nik</text>
+<text x="262" y="162" text-anchor="middle" font-size="7.5" fill="#C62828" font-weight="700">/payments/webhook: resource policy</text>
+<text x="262" y="173" text-anchor="middle" font-size="7.5" fill="#C62828">IP allowlist + HMAC  (ex-WAF rule)</text>
+<text x="262" y="187" text-anchor="middle" font-size="7.5" fill="#1565C0">GET /events fronted by CloudFront ↓</text>
+<text x="262" y="198" text-anchor="middle" font-size="7.5" fill="#9E9E9E" font-style="italic">All REST — no SSE here (29 s timeout)</text>
+
+<!-- ALB  lower of column, center y=552 -->
+<rect x="174" y="493" width="176" height="118" rx="7" fill="white" stroke="#6A1B9A" stroke-width="1.5"/>
+<rect x="174" y="493" width="176" height="32" rx="7" fill="#6A1B9A"/>
+<rect x="174" y="515" width="176" height="10" fill="#6A1B9A"/>
+<circle cx="202" cy="509" r="12" fill="white" opacity="0.85"/>
+<text x="202" y="514" text-anchor="middle" font-size="13" fill="#6A1B9A" font-weight="900">=</text>
+<text x="289" y="512" text-anchor="middle" font-size="9.5" fill="white" font-weight="700">ALB  rusuh-poc</text>
+<text x="262" y="552" text-anchor="middle" font-size="9" font-weight="700" fill="#37474F">:443  HTTPS — SSE only</text>
+<text x="262" y="567" text-anchor="middle" font-size="8" fill="#607D8B">:80 → 443 redirect only</text>
+<text x="262" y="581" text-anchor="middle" font-size="8" fill="#607D8B">idle_timeout = 3,600 s</text>
+<text x="262" y="595" text-anchor="middle" font-size="7.5" fill="#0D47A1">TLS terminates → HTTP :3000 (ECS)</text>
+
+<!-- CloudFront  y=636..740  (ADR-005 §5 FR-01, §11 T-30min) -->
+<rect x="174" y="636" width="176" height="104" rx="7" fill="white" stroke="#1565C0" stroke-width="1.5"/>
+<rect x="174" y="636" width="176" height="30" rx="7" fill="#1565C0"/>
+<rect x="174" y="656" width="176" height="10" fill="#1565C0"/>
+<text x="262" y="655" text-anchor="middle" font-size="9.5" fill="white" font-weight="700">CloudFront</text>
+<text x="262" y="687" text-anchor="middle" font-size="8.5" font-weight="700" fill="#37474F">in front of GET /events (FR-01)</text>
+<text x="262" y="701" text-anchor="middle" font-size="8" fill="#607D8B">cache 30 s — no per-customer freshness</text>
+<text x="262" y="716" text-anchor="middle" font-size="7.5" fill="#0D47A1">pre-open page: Lambda + CloudFront,</text>
+<text x="262" y="727" text-anchor="middle" font-size="7.5" fill="#0D47A1">no ECS — absorbs the waiting crowd</text>
+<text x="262" y="738" text-anchor="middle" font-size="7" fill="#9E9E9E" font-style="italic">ADR-005 §5, §11 T-30min</text>
+
+<!-- INGRESS GUARD  y=760..966  — replaces WAF (ADR-005 §1, §6) -->
+<rect x="174" y="760" width="176" height="206" rx="7" fill="#FFF8E1" stroke="#C62828" stroke-width="2"/>
+<rect x="174" y="760" width="176" height="30" rx="7" fill="#C62828"/>
+<rect x="174" y="780" width="176" height="10" fill="#C62828"/>
+<text x="262" y="779" text-anchor="middle" font-size="9.5" fill="white" font-weight="700">🛡 INGRESS GUARD</text>
+<text x="262" y="806" text-anchor="middle" font-size="8.5" font-weight="700" fill="#B71C1C">POST /queue/join — in this order</text>
+<rect x="182" y="814" width="160" height="30" rx="4" fill="white" stroke="#EF9A9A" stroke-width="1"/>
+<text x="190" y="827" font-size="7.5" fill="#37474F" font-weight="700">① rate limit  rl:join:{ip}</text>
+<text x="190" y="838" font-size="7.5" fill="#607D8B">20 / 5 min — local Redis, cheap</text>
+<rect x="182" y="848" width="160" height="30" rx="4" fill="white" stroke="#EF9A9A" stroke-width="1"/>
+<text x="190" y="861" font-size="7.5" fill="#37474F" font-weight="700">② CAPTCHA verify (invisible)</text>
+<text x="190" y="872" font-size="7.5" fill="#607D8B">external call — FAIL-OPEN</text>
+<text x="262" y="893" text-anchor="middle" font-size="7.5" fill="#B71C1C" font-weight="700">① before ② is mandatory:</text>
+<text x="262" y="904" text-anchor="middle" font-size="7" fill="#607D8B">verify-then-limit would pay an external</text>
+<text x="262" y="914" text-anchor="middle" font-size="7" fill="#607D8B">call per rejected attempt</text>
+<text x="262" y="929" text-anchor="middle" font-size="7.5" fill="#37474F">token issued PRE-GATE, refreshed ~60 s</text>
+<text x="262" y="940" text-anchor="middle" font-size="7" fill="#607D8B">never interactive — would invert fairness</text>
+<text x="262" y="951" text-anchor="middle" font-size="7.5" fill="#607D8B">also  rl:sse:{ip}  5 conn / s</text>
+<text x="262" y="962" text-anchor="middle" font-size="7" fill="#9E9E9E" font-style="italic">replaces WAF · runs in queue-service</text>
+</g>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<!--  VPC                                                     -->
+<!-- ══════════════════════════════════════════════════════════ -->
+<rect x="372" y="26" width="980" height="1018" rx="8" fill="#E8F5E9" stroke="#388E3C" stroke-width="1.5" stroke-dasharray="5,3"/>
+<text x="390" y="46" font-size="9.5" fill="#2E7D32" font-weight="700">🔒  VPC  10.0.0.0/16  —  Private Subnets  +  1 NAT Gateway  (ap-southeast-1a / 1b)</text>
+
+<!-- NAT GW  center≈(452,100) -->
+<rect x="382" y="58" width="140" height="78" rx="7" fill="white" stroke="#F57F17" stroke-width="1.5"/>
+<rect x="382" y="58" width="140" height="28" rx="7" fill="#F57F17"/>
+<rect x="382" y="76" width="140" height="10" fill="#F57F17"/>
+<text x="452" y="74" text-anchor="middle" font-size="9.5" fill="white" font-weight="700">NAT Gateway</text>
+<text x="452" y="106" text-anchor="middle" font-size="8" fill="#607D8B">ECS + Lambda → internet</text>
+<text x="452" y="119" text-anchor="middle" font-size="8" fill="#607D8B">Dukcapil · Midtrans</text>
+
+<!-- ── ECS CLUSTER ──────────────────────────────────────── -->
+<rect x="378" y="164" width="290" height="444" rx="8" fill="#FFF8E1" stroke="#F9A825" stroke-width="1.5"/>
+<text x="523" y="183" text-anchor="middle" font-size="9" fill="#E65100" font-weight="700">⬡  ECS Cluster  rusuh-poc</text>
+
+<!-- sse-server  y=192..382, center y=287 -->
+<rect x="388" y="192" width="270" height="186" rx="6" fill="white" stroke="#F57C00" stroke-width="1.5"/>
+<rect x="388" y="192" width="270" height="30" rx="6" fill="#F57C00"/>
+<rect x="388" y="212" width="270" height="10" fill="#F57C00"/>
+<text x="523" y="211" text-anchor="middle" font-size="9.5" fill="white" font-weight="700">rusuh-sse-server</text>
+<text x="523" y="250" text-anchor="middle" font-size="9" font-weight="700" fill="#37474F">0.5 vCPU · 1 GB · 1 task</text>
+<text x="523" y="265" text-anchor="middle" font-size="8" fill="#607D8B">Persistent SSE connections</text>
+<text x="523" y="280" text-anchor="middle" font-size="8" fill="#607D8B">SUBSCRIBE pub/sub channels</text>
+<text x="523" y="295" text-anchor="middle" font-size="8" fill="#607D8B">keepalive 15 s · 410 on sold-out</text>
+<text x="523" y="310" text-anchor="middle" font-size="7.5" fill="#1A237E">Entry: GET /events/{id}/queue/stream</text>
+<text x="523" y="325" text-anchor="middle" font-size="7.5" fill="#9E9E9E">fan-out 500 chunks · backpressure</text>
+<text x="523" y="340" text-anchor="middle" font-size="7.5" fill="#9E9E9E">Port 3000 — private subnet only</text>
+<text x="523" y="358" text-anchor="middle" font-size="7.5" fill="#E65100" font-weight="600">NOT behind API GW (29 s limit)</text>
+<text x="523" y="373" text-anchor="middle" font-size="7.5" fill="#9E9E9E">SIGTERM → jitter reconnect event</text>
+
+<!-- admission-ctl  y=394..575, center y=484 -->
+<rect x="388" y="394" width="270" height="174" rx="6" fill="white" stroke="#F57C00" stroke-width="1.5"/>
+<rect x="388" y="394" width="270" height="30" rx="6" fill="#F57C00"/>
+<rect x="388" y="414" width="270" height="10" fill="#F57C00"/>
+<text x="523" y="413" text-anchor="middle" font-size="9.5" fill="white" font-weight="700">rusuh-admission-ctl</text>
+<text x="523" y="452" text-anchor="middle" font-size="9" font-weight="700" fill="#37474F">0.25 vCPU · 512 MB · 2 tasks</text>
+<text x="523" y="468" text-anchor="middle" font-size="8" fill="#607D8B">500 ms tick loop</text>
+<text x="523" y="483" text-anchor="middle" font-size="8" fill="#607D8B">EVALSHA Lua · PUBLISH · sweep</text>
+<text x="523" y="498" text-anchor="middle" font-size="8" fill="#607D8B">advance queue · reconcile slots</text>
+<text x="523" y="513" text-anchor="middle" font-size="7.5" fill="#BF360C">desired_count=2 — 1 leader + 1 standby</text>
+<text x="523" y="528" text-anchor="middle" font-size="7.5" fill="#9E9E9E">ctl:leader lease + ctl:epoch fencing (≤5.5 s)</text>
+<text x="523" y="543" text-anchor="middle" font-size="7.5" fill="#9E9E9E">pause when Dukcapil / PG breaker OPEN</text>
+<text x="523" y="558" text-anchor="middle" font-size="7.5" fill="#9E9E9E">guards: compare-and-adjust · grace NX</text>
+
+<!-- ── DATA STORES (x=378–668, safely left of Lambda x=830) ── -->
+<!-- Redis  y=628..772, center y=700 -->
+<rect x="378" y="628" width="290" height="140" rx="7" fill="white" stroke="#C62828" stroke-width="1.8"/>
+<rect x="378" y="628" width="290" height="32" rx="7" fill="#C62828"/>
+<rect x="378" y="650" width="290" height="10" fill="#C62828"/>
+<text x="523" y="649" text-anchor="middle" font-size="9.5" fill="white" font-weight="700">ElastiCache Redis</text>
+<text x="523" y="688" text-anchor="middle" font-size="9" font-weight="700" fill="#37474F">cache.t4g.micro · single node</text>
+<text x="523" y="703" text-anchor="middle" font-size="8" fill="#607D8B">Queue counters · PubSub channels</text>
+<text x="523" y="718" text-anchor="middle" font-size="8" fill="#607D8B">Rate limiters · Circuit breakers</text>
+<text x="523" y="733" text-anchor="middle" font-size="8" fill="#607D8B">Lua atomic ops · Leases</text>
+<text x="523" y="748" text-anchor="middle" font-size="7.5" fill="#9E9E9E">~80 MB working set</text>
+<text x="523" y="762" text-anchor="middle" font-size="7.5" fill="#9E9E9E">no auth / no TLS in POC (VPC-only)</text>
+
+<!-- RDS  y=786..928, center y=857 -->
+<rect x="378" y="786" width="290" height="140" rx="7" fill="white" stroke="#1565C0" stroke-width="1.8"/>
+<rect x="378" y="786" width="290" height="32" rx="7" fill="#1565C0"/>
+<rect x="378" y="808" width="290" height="10" fill="#1565C0"/>
+<text x="523" y="807" text-anchor="middle" font-size="9.5" fill="white" font-weight="700">RDS PostgreSQL 16</text>
+<text x="523" y="847" text-anchor="middle" font-size="9" font-weight="700" fill="#37474F">db.t4g.micro · single AZ</text>
+<text x="523" y="862" text-anchor="middle" font-size="8" fill="#607D8B">System of record</text>
+<text x="523" y="877" text-anchor="middle" font-size="8" fill="#607D8B">bookings · nik_claims · outbox</text>
+<text x="523" y="892" text-anchor="middle" font-size="8" fill="#607D8B">tickets · accounts · queue_entries</text>
+<text x="523" y="907" text-anchor="middle" font-size="8" fill="#607D8B">direct connection (no RDS Proxy)</text>
+<text x="523" y="922" text-anchor="middle" font-size="7.5" fill="#9E9E9E">writer endpoint via Secrets Manager</text>
+
+<!-- ── LAMBDA GROUP  x=830–1200 ─────────────────────────── -->
+<rect x="960" y="58" width="370" height="910" rx="8" fill="#FFF3E0" stroke="#FF6F00" stroke-width="1.5"/>
+<text x="1145" y="77" text-anchor="middle" font-size="9" fill="#E65100" font-weight="700">λ  Lambda Functions — ARM64 · 256 MB each</text>
+
+<!-- queue-service  y=86..198 -->
+<rect x="970" y="86" width="350" height="108" rx="5" fill="white" stroke="#FF9800" stroke-width="1.2"/>
+<circle cx="1002" cy="122" r="22" fill="#FF9800"/>
+<text x="1002" y="129" text-anchor="middle" font-size="17" fill="white" font-weight="900">λ</text>
+<text x="1150" y="118" text-anchor="middle" font-size="9.5" font-weight="700" fill="#37474F">queue-service</text>
+<text x="1150" y="133" text-anchor="middle" font-size="8" fill="#607D8B">join · re-entrancy (me) · serving · auth</text>
+<text x="1150" y="147" text-anchor="middle" font-size="7.5" fill="#455A64">POST /queue/join  ·  GET /queue/me  ·  GET /queue/serving</text>
+<text x="1150" y="162" text-anchor="middle" font-size="7.5" fill="#9E9E9E" font-style="italic">GET /queue/stream → ALB (not API GW)</text>
+<text x="1150" y="177" text-anchor="middle" font-size="7.5" fill="#607D8B">Sets HttpOnly cookie (web) / Bearer header (mobile)</text>
+
+<!-- booking-service  y=210..312 -->
+<rect x="970" y="210" width="350" height="102" rx="5" fill="white" stroke="#FF9800" stroke-width="1.2"/>
+<circle cx="1002" cy="244" r="22" fill="#FF9800"/>
+<text x="1002" y="251" text-anchor="middle" font-size="17" fill="white" font-weight="900">λ</text>
+<text x="1150" y="240" text-anchor="middle" font-size="9.5" font-weight="700" fill="#37474F">booking-service</text>
+<text x="1150" y="255" text-anchor="middle" font-size="8" fill="#607D8B">ticket selection · bookings · saved-niks</text>
+<text x="1150" y="269" text-anchor="middle" font-size="7.5" fill="#455A64">GET /tickets  ·  POST /bookings  ·  /saved-niks CRUD</text>
+<text x="1150" y="283" text-anchor="middle" font-size="7.5" fill="#607D8B">hold_booking Lua · NIK verification gate</text>
+<text x="1150" y="297" text-anchor="middle" font-size="7.5" fill="#9E9E9E">idempotent hold via SELECT … FOR UPDATE</text>
+
+<!-- nik-verify  y=324..426  ← green arrow exits LEFT edge x=830 -->
+<rect x="970" y="324" width="350" height="102" rx="5" fill="white" stroke="#FF9800" stroke-width="1.2"/>
+<circle cx="1002" cy="358" r="22" fill="#FF9800"/>
+<text x="1002" y="365" text-anchor="middle" font-size="17" fill="white" font-weight="900">λ</text>
+<text x="1150" y="355" text-anchor="middle" font-size="9.5" font-weight="700" fill="#37474F">nik-verify</text>
+<text x="1150" y="370" text-anchor="middle" font-size="8" fill="#607D8B">Dukcapil API · circuit breaker · cache 24 h</text>
+<text x="1150" y="384" text-anchor="middle" font-size="7.5" fill="#455A64">POST /nik/validate</text>
+<text x="1150" y="399" text-anchor="middle" font-size="7.5" fill="#C62828" font-weight="600">Fail-closed: Dukcapil down → pause admission</text>
+<text x="1150" y="413" text-anchor="middle" font-size="7.5" fill="#9E9E9E">NIK only sent — no name/DOB (FR-15a)</text>
+
+<!-- payment-api  y=438..548  ← blue arrow exits LEFT edge x=830 -->
+<rect x="970" y="438" width="350" height="110" rx="5" fill="white" stroke="#FF9800" stroke-width="1.2"/>
+<circle cx="1002" cy="475" r="22" fill="#FF9800"/>
+<text x="1002" y="482" text-anchor="middle" font-size="17" fill="white" font-weight="900">λ</text>
+<text x="1150" y="471" text-anchor="middle" font-size="9.5" font-weight="700" fill="#37474F">payment-api</text>
+<text x="1150" y="486" text-anchor="middle" font-size="8" fill="#607D8B">charge · retry · webhook · admin</text>
+<text x="1150" y="500" text-anchor="middle" font-size="7.5" fill="#455A64">/payments/*  ·  /admin/reconciliation/disputed</text>
+<text x="1150" y="514" text-anchor="middle" font-size="7.5" fill="#607D8B">Midtrans Core API · HMAC webhook verify</text>
+<text x="1150" y="528" text-anchor="middle" font-size="7.5" fill="#9E9E9E">idempotent: order_id = booking_id:attempt</text>
+<text x="1150" y="542" text-anchor="middle" font-size="7.5" fill="#9E9E9E">outbox inline publish after payment confirm</text>
+
+<!-- outbox-publisher  y=560..660 -->
+<rect x="970" y="560" width="350" height="100" rx="5" fill="white" stroke="#FF9800" stroke-width="1.2"/>
+<circle cx="1002" cy="594" r="22" fill="#FF9800"/>
+<text x="1002" y="601" text-anchor="middle" font-size="17" fill="white" font-weight="900">λ</text>
+<text x="1150" y="590" text-anchor="middle" font-size="9.5" font-weight="700" fill="#37474F">outbox-publisher</text>
+<text x="1150" y="605" text-anchor="middle" font-size="8" fill="#607D8B">fallback path · email dispatch · 1-min trigger</text>
+<text x="1150" y="619" text-anchor="middle" font-size="7.5" fill="#455A64">FOR UPDATE SKIP LOCKED · lease guard</text>
+<text x="1150" y="633" text-anchor="middle" font-size="7.5" fill="#607D8B">ticket.issue · booking.expired → SQS</text>
+<text x="1150" y="647" text-anchor="middle" font-size="7.5" fill="#9E9E9E">inline path handles real-time; this is fallback</text>
+
+<!-- metrics-scraper  y=672..770 -->
+<rect x="970" y="672" width="350" height="98" rx="5" fill="white" stroke="#FF9800" stroke-width="1.2"/>
+<circle cx="1002" cy="706" r="22" fill="#FF9800"/>
+<text x="1002" y="713" text-anchor="middle" font-size="17" fill="white" font-weight="900">λ</text>
+<text x="1150" y="702" text-anchor="middle" font-size="9.5" font-weight="700" fill="#37474F">metrics-scraper</text>
+<text x="1150" y="717" text-anchor="middle" font-size="8" fill="#607D8B">CloudWatch EMF · 1-min EventBridge trigger</text>
+<text x="1150" y="731" text-anchor="middle" font-size="7.5" fill="#455A64">FR-33 queue depth · FR-34 conversion · FR-35 expiry</text>
+<text x="1150" y="745" text-anchor="middle" font-size="7.5" fill="#607D8B">namespace: RusuhBooking/Queue</text>
+<text x="1150" y="759" text-anchor="middle" font-size="7.5" fill="#9E9E9E">reads Redis + Aurora writer, emits EMF</text>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<!--  AWS MANAGED COLUMN  x=1465–1653  (far right, 255 px gap) -->
+<!-- ══════════════════════════════════════════════════════════ -->
+<rect x="1565" y="26" width="188" height="1018" rx="7" fill="#FCE4EC" stroke="#E91E63" stroke-width="1.2"/>
+<text x="1659" y="46" text-anchor="middle" font-size="9" fill="#880E4F" font-weight="700">AWS Managed  (outside VPC)</text>
+
+<!-- EventBridge  y=58–145 -->
+<rect x="1573" y="58" width="172" height="87" rx="7" fill="white" stroke="#C2185B" stroke-width="1.5"/>
+<rect x="1573" y="58" width="172" height="30" rx="7" fill="#C2185B"/>
+<rect x="1573" y="78" width="172" height="10" fill="#C2185B"/>
+<text x="1659" y="76" text-anchor="middle" font-size="9.5" fill="white" font-weight="700">EventBridge</text>
+<text x="1659" y="112" text-anchor="middle" font-size="8.5" font-weight="700" fill="#37474F">1-minute schedule</text>
+<text x="1659" y="128" text-anchor="middle" font-size="8" fill="#607D8B">triggers outbox + metrics-scraper</text>
+
+<!-- SQS Queue  y=162–260 -->
+<rect x="1573" y="162" width="172" height="98" rx="7" fill="white" stroke="#FF8F00" stroke-width="1.5"/>
+<rect x="1573" y="162" width="172" height="30" rx="7" fill="#FF8F00"/>
+<rect x="1573" y="182" width="172" height="10" fill="#FF8F00"/>
+<text x="1659" y="180" text-anchor="middle" font-size="9.5" fill="white" font-weight="700">SQS  Email Queue</text>
+<text x="1659" y="218" text-anchor="middle" font-size="8.5" font-weight="700" fill="#37474F">rusuh-poc-email-queue</text>
+<text x="1659" y="233" text-anchor="middle" font-size="8" fill="#607D8B">visibility 120 s · retain 4 days</text>
+<text x="1659" y="248" text-anchor="middle" font-size="8" fill="#607D8B">max receive count 3 → DLQ</text>
+
+<!-- SQS DLQ  y=338–420 (shifted +60 to make room for "on failure" label) -->
+<rect x="1573" y="338" width="172" height="82" rx="7" fill="white" stroke="#E53935" stroke-width="1.5"/>
+<rect x="1573" y="338" width="172" height="28" rx="7" fill="#E53935"/>
+<rect x="1573" y="356" width="172" height="10" fill="#E53935"/>
+<text x="1659" y="354" text-anchor="middle" font-size="9.5" fill="white" font-weight="700">SQS  DLQ</text>
+<text x="1659" y="390" text-anchor="middle" font-size="8.5" font-weight="700" fill="#37474F">rusuh-poc-email-dlq</text>
+<text x="1659" y="405" text-anchor="middle" font-size="8" fill="#607D8B">after 3 failed retries</text>
+<text x="1659" y="417" text-anchor="middle" font-size="7.5" fill="#9E9E9E">alarm: DLQDepth &gt; 0</text>
+
+<!-- SES  y=440–538 (shifted +60) -->
+<rect x="1573" y="440" width="172" height="98" rx="7" fill="white" stroke="#1565C0" stroke-width="1.5"/>
+<rect x="1573" y="440" width="172" height="30" rx="7" fill="#1565C0"/>
+<rect x="1573" y="460" width="172" height="10" fill="#1565C0"/>
+<text x="1659" y="458" text-anchor="middle" font-size="9.5" fill="white" font-weight="700">Amazon SES</text>
+<text x="1659" y="495" text-anchor="middle" font-size="8.5" font-weight="700" fill="#37474F">rusuhtiket.com</text>
+<text x="1659" y="509" text-anchor="middle" font-size="8" fill="#607D8B">ticket · expired · failed notice</text>
+<text x="1659" y="523" text-anchor="middle" font-size="8" fill="#607D8B">one email per NIK holder (FR-26)</text>
+
+<!-- CloudWatch  y=558–648 (shifted +60) -->
+<rect x="1573" y="558" width="172" height="90" rx="7" fill="white" stroke="#C62828" stroke-width="1.5"/>
+<rect x="1573" y="558" width="172" height="30" rx="7" fill="#C62828"/>
+<rect x="1573" y="578" width="172" height="10" fill="#C62828"/>
+<text x="1659" y="576" text-anchor="middle" font-size="9.5" fill="white" font-weight="700">CloudWatch</text>
+<text x="1659" y="613" text-anchor="middle" font-size="8.5" font-weight="700" fill="#37474F">Alarms · Logs · EMF</text>
+<text x="1659" y="628" text-anchor="middle" font-size="8" fill="#607D8B">RusuhBooking/Queue namespace</text>
+<text x="1659" y="640" text-anchor="middle" font-size="8" fill="#607D8B">3 alarms: DLQ · CPU · 5xx</text>
+
+<!-- Secrets Manager  y=668–770 (shifted +60) -->
+<rect x="1573" y="668" width="172" height="102" rx="7" fill="white" stroke="#AD1457" stroke-width="1.5"/>
+<rect x="1573" y="668" width="172" height="30" rx="7" fill="#AD1457"/>
+<rect x="1573" y="688" width="172" height="10" fill="#AD1457"/>
+<text x="1659" y="686" text-anchor="middle" font-size="9.5" fill="white" font-weight="700">Secrets Manager</text>
+<text x="1659" y="724" text-anchor="middle" font-size="8.5" font-weight="700" fill="#37474F">DB · Midtrans · Dukcapil</text>
+<text x="1659" y="739" text-anchor="middle" font-size="8" fill="#607D8B">rusuh-poc/db-credentials</text>
+<text x="1659" y="753" text-anchor="middle" font-size="8" fill="#607D8B">rusuh-poc/midtrans-server-key</text>
+<text x="1659" y="767" text-anchor="middle" font-size="7.5" fill="#607D8B">rusuh-poc/dukcapil-api-key</text>
+
+<!-- ECR  y=790–880 (shifted +60) -->
+<rect x="1573" y="790" width="172" height="90" rx="7" fill="white" stroke="#FF8F00" stroke-width="1.5"/>
+<rect x="1573" y="790" width="172" height="30" rx="7" fill="#FF8F00"/>
+<rect x="1573" y="810" width="172" height="10" fill="#FF8F00"/>
+<text x="1659" y="808" text-anchor="middle" font-size="9.5" fill="white" font-weight="700">Amazon ECR</text>
+<text x="1659" y="845" text-anchor="middle" font-size="8.5" font-weight="700" fill="#37474F">Container Images</text>
+<text x="1659" y="860" text-anchor="middle" font-size="8" fill="#607D8B">rusuh-sse-server</text>
+<text x="1659" y="874" text-anchor="middle" font-size="8" fill="#607D8B">rusuh-admission-ctl</text>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<!--  EXTERNAL APIS  (below AWS Cloud y=1050)                 -->
+<!-- ══════════════════════════════════════════════════════════ -->
+<text x="700" y="1062" text-anchor="middle" font-size="9.5" fill="#546E7A" font-style="italic">— External APIs  (outside AWS Cloud) —</text>
+
+<!-- Midtrans  center≈(590,1120) -->
+<rect x="464" y="1072" width="252" height="94" rx="8" fill="white" stroke="#2196F3" stroke-width="2"/>
+<rect x="464" y="1072" width="252" height="32" rx="8" fill="#2196F3"/>
+<rect x="464" y="1094" width="252" height="10" fill="#2196F3"/>
+<text x="590" y="1092" text-anchor="middle" font-size="10" fill="white" font-weight="700">Midtrans Core API</text>
+<text x="590" y="1128" text-anchor="middle" font-size="9" font-weight="700" fill="#37474F">Payment Gateway</text>
+<text x="590" y="1143" text-anchor="middle" font-size="8" fill="#607D8B">Bank Transfer VA (BCA/BNI/BRI/CIMB) · GoPay</text>
+<text x="590" y="1157" text-anchor="middle" font-size="7.5" fill="#9E9E9E" font-style="italic">cards + OTC excluded — PCI-DSS out of scope</text>
+
+<!-- CAPTCHA provider  center≈(242,1120) — third external dependency (ADR-005 §6) -->
+<rect x="116" y="1072" width="252" height="94" rx="8" fill="white" stroke="#455A64" stroke-width="2"/>
+<rect x="116" y="1072" width="252" height="32" rx="8" fill="#455A64"/>
+<rect x="116" y="1094" width="252" height="10" fill="#455A64"/>
+<text x="242" y="1092" text-anchor="middle" font-size="10" fill="white" font-weight="700">CAPTCHA Provider</text>
+<text x="242" y="1128" text-anchor="middle" font-size="9" font-weight="700" fill="#37474F">invisible / score-based only</text>
+<text x="242" y="1143" text-anchor="middle" font-size="8" fill="#607D8B">FAIL-OPEN — fairness, not correctness</text>
+<text x="242" y="1157" text-anchor="middle" font-size="7.5" fill="#9E9E9E" font-style="italic">external · 3rd dependency · quota T-7d</text>
+
+<!-- Dukcapil  center≈(1176,1120) — moved right so green A10 line routes near Lambda -->
+<rect x="1050" y="1072" width="252" height="94" rx="8" fill="white" stroke="#4CAF50" stroke-width="2"/>
+<rect x="1050" y="1072" width="252" height="32" rx="8" fill="#4CAF50"/>
+<rect x="1050" y="1094" width="252" height="10" fill="#4CAF50"/>
+<text x="1176" y="1092" text-anchor="middle" font-size="10" fill="white" font-weight="700">Dukcapil API</text>
+<text x="1176" y="1128" text-anchor="middle" font-size="9" font-weight="700" fill="#37474F">NIK Verification</text>
+<text x="1176" y="1143" text-anchor="middle" font-size="8" fill="#607D8B">NIK only · fail-closed</text>
+<text x="1176" y="1157" text-anchor="middle" font-size="7.5" fill="#9E9E9E" font-style="italic">external · SPOF accepted in POC</text>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<!--  ARROWS                                                  -->
+<!-- ══════════════════════════════════════════════════════════ -->
+
+<!-- ── A1. Client → API Gateway  (enters API GW from BOTTOM at y=174) ── -->
+<!-- Horizontal at y=300 → vertical up to API GW bottom y=174 -->
+<path d="M62,300 L242,300 L242,202" fill="none" stroke="#7B1FA2" stroke-width="2.5" marker-end="url(#ap)"/>
+<!-- label sits below the A1 line -->
+<rect x="154" y="308" width="130" height="28" rx="5" fill="#EDE7F6" stroke="#7B1FA2" stroke-width="1.2"/>
+<text x="219" y="323" text-anchor="middle" font-size="8.5" fill="#4A148C" font-weight="700">REST API  (HTTPS :443)</text>
+<text x="219" y="334" text-anchor="middle" font-size="7.5" fill="#6A1B9A">API Gateway → Lambda</text>
+
+<!-- ── A2. Client → ALB  (enters ALB from TOP at y=493) ── -->
+<!-- Horizontal at y=440 → vertical down to ALB top y=493 -->
+<path d="M62,440 L242,440 L242,493" fill="none" stroke="#6A1B9A" stroke-width="2.5" marker-end="url(#ap)"/>
+<!-- label sits above ALB, below the A1 label — clearly in its own space -->
+<rect x="154" y="395" width="130" height="28" rx="5" fill="#EDE7F6" stroke="#6A1B9A" stroke-width="1.2"/>
+<text x="219" y="409" text-anchor="middle" font-size="8.5" fill="#4A148C" font-weight="700">SSE stream  (HTTPS :443)</text>
+<text x="219" y="420" text-anchor="middle" font-size="7.5" fill="#6A1B9A">ALB → ECS :3000</text>
+
+<!-- ── A3. API GW → Lambda (routes above NAT GW, lands at Lambda top-centre) ── -->
+<!-- Exit top of API GW, arc into new crown space, arrive at Lambda top-centre -->
+<path d="M242,58 L242,-15 L1145,-15 L1145,58" fill="none" stroke="#7B1FA2" stroke-width="1.8" marker-end="url(#ap)"/>
+<rect x="560" y="-12" width="148" height="28" rx="5" fill="#EDE7F6" stroke="#7B1FA2" stroke-width="1.2"/>
+<text x="634" y="3" text-anchor="middle" font-size="8.5" fill="#4A148C" font-weight="700">routes REST request</text>
+<text x="634" y="14" text-anchor="middle" font-size="8" fill="#6A1B9A">queue · booking · nik · payment</text>
+
+<!-- ── A4. ALB → sse-server  (HTTP :3000) ────────────── -->
+<!-- Exit ALB right, vertical at x=355 (gap between IF-column and VPC), drop to sse-server left y=287 -->
+<path d="M330,552 L355,552 L355,287 L388,287" fill="none" stroke="#6A1B9A" stroke-width="2.2" marker-end="url(#ap)"/>
+<rect x="267" y="356" width="110" height="30" rx="5" fill="#EDE7F6" stroke="#6A1B9A" stroke-width="1.2"/>
+<text x="322" y="371" text-anchor="middle" font-size="8.5" fill="#4A148C" font-weight="700">HTTP :3000</text>
+<text x="322" y="384" text-anchor="middle" font-size="8" fill="#6A1B9A">TLS ends at ALB</text>
+
+<!-- ── A5. sse-server → Redis  (SUBSCRIBE, via right corridor) ── -->
+<path d="M658,287 L690,287 L690,700 L668,700" fill="none" stroke="#C62828" stroke-width="1.8" marker-end="url(#ar)"/>
+<!-- label at x=694 (right of A5 vertical x=690), y=393 — kept left of A8 red vertical x=820 -->
+<rect x="694" y="393" width="116" height="30" rx="5" fill="#FFEBEE" stroke="#C62828" stroke-width="1.2"/>
+<text x="752" y="408" text-anchor="middle" font-size="8.5" fill="#B71C1C" font-weight="700">SUBSCRIBE</text>
+<text x="752" y="421" text-anchor="middle" font-size="8" fill="#C62828">pub/sub channels</text>
+
+<!-- ── A6. admission-ctl → Redis  (EVALSHA, straight down) ── -->
+<!-- admission-ctl bottom center = (523, 568), Redis top = (523, 628) -->
+<path d="M523,568 L523,628" fill="none" stroke="#C62828" stroke-width="1.8" marker-end="url(#ar)"/>
+<rect x="530" y="590" width="120" height="30" rx="5" fill="#FFEBEE" stroke="#C62828" stroke-width="1.2"/>
+<text x="590" y="605" text-anchor="middle" font-size="8.5" fill="#B71C1C" font-weight="700">EVALSHA · PUBLISH</text>
+<text x="590" y="618" text-anchor="middle" font-size="8" fill="#C62828">INCR · DECR counters</text>
+
+<!-- ── A7. admission-ctl → RDS  (sweep, via right corridor) ── -->
+<path d="M658,484 L708,484 L708,857 L668,857" fill="none" stroke="#1565C0" stroke-width="1.8" marker-end="url(#ab)"/>
+<!-- A7 label merged with A9 — see merged Aurora label below -->
+
+<!-- ── A8. Lambda → Redis  (rate limit, via corridor) ── -->
+<path d="M960,594 L820,594 L820,700 L668,700" fill="none" stroke="#C62828" stroke-width="1.8" marker-end="url(#ar)"/>
+<!-- label at x=824 beside A8 vertical (y=594–700), before A9 starts at y=706 — no crossing -->
+<rect x="824" y="600" width="112" height="30" rx="5" fill="#FFEBEE" stroke="#C62828" stroke-width="1.2"/>
+<text x="880" y="615" text-anchor="middle" font-size="8.5" fill="#B71C1C" font-weight="700">rate limit</text>
+<text x="880" y="628" text-anchor="middle" font-size="8" fill="#C62828">circuit breaker</text>
+
+<!-- ── A9. Lambda → RDS  (read/write, solid — real data flow) ── -->
+<path d="M960,706 L840,706 L840,857 L668,857" fill="none" stroke="#1565C0" stroke-width="1.8" marker-end="url(#ab)"/>
+<!-- merged Aurora label: covers both A7 (sweep) and A9 (read/write) → RDS -->
+<rect x="844" y="730" width="92" height="38" rx="5" fill="#E3F2FD" stroke="#1565C0" stroke-width="1.2"/>
+<text x="890" y="746" text-anchor="middle" font-size="8.5" fill="#0D47A1" font-weight="700">→ Aurora RDS</text>
+<text x="890" y="760" text-anchor="middle" font-size="7.5" fill="#1565C0">read/write · sweep</text>
+
+<!-- ── A10. nik-verify → Dukcapil  (green, x=940 stays near Lambda, no corridor crossings) ── -->
+<!-- Exit nik-verify RIGHT x=960 → small hop left to x=940 (near Lambda) → drop → Dukcapil (moved right) -->
+<path d="M960,375 L940,375 L940,1119 L1050,1119" fill="none" stroke="#2E7D32" stroke-width="2.2" marker-end="url(#ag)"/>
+<!-- label at x=820 (LEFT of green vertical x=940), y=430 — stays in corridor, outside Lambda box -->
+<rect x="820" y="430" width="116" height="30" rx="5" fill="#E8F5E9" stroke="#388E3C" stroke-width="1.2"/>
+<text x="878" y="445" text-anchor="middle" font-size="8.5" fill="#1B5E20" font-weight="700">NIK validate</text>
+<text x="878" y="458" text-anchor="middle" font-size="8" fill="#2E7D32">fail-closed</text>
+
+<!-- ── A11. payment-api → Midtrans  (brown — distinct from Aurora blue) ── -->
+<path d="M960,493 L790,493 L790,1119 L716,1119" fill="none" stroke="#795548" stroke-width="2.2" marker-end="url(#apay)"/>
+<rect x="796" y="930" width="112" height="30" rx="5" fill="#EFEBE9" stroke="#795548" stroke-width="1.2"/>
+<text x="852" y="945" text-anchor="middle" font-size="8.5" fill="#4E342E" font-weight="700">charge · cancel</text>
+<text x="852" y="958" text-anchor="middle" font-size="8" fill="#795548">status query</text>
+
+<!-- ── A12. outbox-publisher → SQS  (orange, arrives upper-left of SQS) ── -->
+<path d="M1330,598 L1510,598 L1510,185 L1565,185" fill="none" stroke="#E65100" stroke-width="1.8" marker-end="url(#ao)"/>
+<rect x="1360" y="560" width="138" height="30" rx="5" fill="#FFF8E1" stroke="#FF8F00" stroke-width="1.2"/>
+<text x="1429" y="575" text-anchor="middle" font-size="8.5" fill="#E65100" font-weight="700">ticket.issue</text>
+<text x="1429" y="588" text-anchor="middle" font-size="8" fill="#E65100">booking.expired → SQS</text>
+
+<!-- payment also sends failed_notice to SQS (arrives lower-left of SQS) — solid, real data flow -->
+<path d="M1330,493 L1500,493 L1500,235 L1565,235" fill="none" stroke="#E65100" stroke-width="1.8" marker-end="url(#ao)"/>
+<rect x="1360" y="460" width="120" height="26" rx="5" fill="#FFF8E1" stroke="#FF8F00" stroke-width="1.2"/>
+<text x="1420" y="475" text-anchor="middle" font-size="7.5" fill="#E65100">failed_notice (webhook)</text>
+
+<!-- ── A13. SQS → SES  (RIGHT side: SQS center y=211, SES new center y=489) ── -->
+<path d="M1745,211 L1820,211 L1820,489 L1745,489" fill="none" stroke="#1565C0" stroke-width="1.8" marker-end="url(#ab)"/>
+<rect x="1826" y="336" width="70" height="30" rx="5" fill="#E3F2FD" stroke="#1565C0" stroke-width="1.2"/>
+<text x="1861" y="351" text-anchor="middle" font-size="8" fill="#0D47A1" font-weight="700">send email</text>
+<text x="1861" y="363" text-anchor="middle" font-size="7.5" fill="#1565C0">→ SES</text>
+
+<!-- ── A14. SQS → DLQ  (arrow at x=1659; label LEFT of arrow in gap, amber bg for visibility) ── -->
+<path d="M1659,260 L1659,338" fill="none" stroke="#E53935" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#ar)"/>
+<rect x="1575" y="272" width="78" height="36" rx="5" fill="#FFFDE7" stroke="#E65100" stroke-width="1.5"/>
+<text x="1614" y="287" text-anchor="middle" font-size="8.5" fill="#BF360C" font-weight="700">on failure</text>
+<text x="1614" y="301" text-anchor="middle" font-size="8.5" fill="#BF360C" font-weight="700">(x3) → DLQ</text>
+
+<!-- ── A15. EventBridge → outbox-publisher (1-min trigger) ── -->
+<path d="M1565,101 L1520,101 L1520,610 L1330,610" fill="none" stroke="#C2185B" stroke-width="1.8" marker-end="url(#am)"/>
+
+<!-- ── A16. EventBridge → metrics-scraper (same 1-min schedule, shares A15 horizontal) ── -->
+<path d="M1520,101 L1520,700 L1330,700" fill="none" stroke="#C2185B" stroke-width="1.8" marker-end="url(#am)"/>
+
+<!-- single combined label — moved right to sit beside vertical line at x=1520 -->
+<rect x="1390" y="80" width="126" height="46" rx="5" fill="#FCE4EC" stroke="#C2185B" stroke-width="1.2"/>
+<text x="1453" y="95" text-anchor="middle" font-size="8.5" fill="#880E4F" font-weight="700">1-min trigger</text>
+<text x="1453" y="109" text-anchor="middle" font-size="8" fill="#C2185B">→ outbox-publisher</text>
+<text x="1453" y="122" text-anchor="middle" font-size="8" fill="#C2185B">→ metrics-scraper</text>
+
+<!-- ── A17. metrics-scraper → CloudWatch (teal, CloudWatch new center y=603) ── -->
+<path d="M1330,722 L1530,722 L1530,603 L1565,603" fill="none" stroke="#00838F" stroke-width="1.8" marker-end="url(#at)"/>
+<rect x="1354" y="730" width="104" height="30" rx="5" fill="#E0F7FA" stroke="#00838F" stroke-width="1.2"/>
+<text x="1406" y="745" text-anchor="middle" font-size="8.5" fill="#006064" font-weight="700">EMF metrics</text>
+<text x="1406" y="758" text-anchor="middle" font-size="8" fill="#00838F">→ CloudWatch</text>
+
+<!-- ── A18. Secrets Manager → Lambda (creds at runtime, dashed) ── -->
+<!-- SM left x=1465 → wide gap x=1420 → down to y=950 → left below Lambda → Lambda bottom -->
+<path d="M1565,719 L1520,719 L1520,960 L1145,960 L1145,968" fill="none" stroke="#9E9E9E" stroke-width="1.3" stroke-dasharray="4,3" marker-end="url(#ad)"/>
+<rect x="1090" y="946" width="112" height="26" rx="5" fill="#F5F5F5" stroke="#9E9E9E" stroke-width="1.2"/>
+<text x="1146" y="963" text-anchor="middle" font-size="7.5" fill="#616161">creds at runtime</text>
+
+<!-- ── A19. ECR → ECS  (image pull, dashed) ── -->
+<!-- ECR left → wide gap → below Lambda → routing corridor → ECS right -->
+<path d="M1565,835 L1520,835 L1520,1000 L730,1000 L730,530 L668,530" fill="none" stroke="#FF8F00" stroke-width="1.3" stroke-dasharray="4,3" marker-end="url(#ao)"/>
+<rect x="1108" y="986" width="96" height="26" rx="5" fill="#FFF8E1" stroke="#FF8F00" stroke-width="1.2"/>
+<text x="1156" y="1003" text-anchor="middle" font-size="7.5" fill="#E65100">image pull (ECS)</text>
+
+<!-- ── A20. Ingress guard → CAPTCHA provider (verify at /join) ── -->
+<!-- straight drop from guard bottom (242,966) into the box top (242,1072).
+     Stays left of the VPC (x>=372) and right of nothing — no crossings. -->
+<path d="M242,966 L242,1072" fill="none" stroke="#455A64" stroke-width="1.8" marker-end="url(#acx)"/>
+<rect x="258" y="1000" width="150" height="28" rx="5" fill="#ECEFF1" stroke="#455A64" stroke-width="1.2"/>
+<text x="333" y="1014" text-anchor="middle" font-size="8.5" fill="#263238" font-weight="700">CAPTCHA verify (token)</text>
+<text x="333" y="1025" text-anchor="middle" font-size="7.5" fill="#455A64">server-side · fail-open</text>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<!--  LEGEND                                                  -->
+<!-- ══════════════════════════════════════════════════════════ -->
+<g transform="translate(1180,210)">
+<rect x="163" y="850" width="280" height="232" rx="7" fill="white" stroke="#BDBDBD" stroke-width="1"/>
+<text x="303" y="868" text-anchor="middle" font-size="9.5" font-weight="700" fill="#37474F">Legend</text>
+<line x1="175" y1="884" x2="215" y2="884" stroke="#7B1FA2" stroke-width="2" marker-end="url(#ap)"/>
+<text x="224" y="888" font-size="8" fill="#37474F">Client → internet-facing (HTTPS)</text>
+<line x1="175" y1="902" x2="215" y2="902" stroke="#6A1B9A" stroke-width="2" marker-end="url(#ap)"/>
+<text x="224" y="906" font-size="8" fill="#37474F">ALB → ECS  (HTTP :3000)</text>
+<line x1="175" y1="920" x2="215" y2="920" stroke="#C62828" stroke-width="2" marker-end="url(#ar)"/>
+<text x="224" y="924" font-size="8" fill="#37474F">Redis pub/sub</text>
+<line x1="175" y1="938" x2="215" y2="938" stroke="#1565C0" stroke-width="2" marker-end="url(#ab)"/>
+<text x="224" y="942" font-size="8" fill="#37474F">DB / API / REST call</text>
+<line x1="175" y1="956" x2="215" y2="956" stroke="#E65100" stroke-width="2" marker-end="url(#ao)"/>
+<text x="224" y="960" font-size="8" fill="#37474F">Async  (SQS / email)</text>
+<line x1="175" y1="974" x2="215" y2="974" stroke="#2E7D32" stroke-width="2" marker-end="url(#ag)"/>
+<text x="224" y="978" font-size="8" fill="#37474F">Dukcapil  (ext NIK verify)</text>
+<line x1="175" y1="992" x2="215" y2="992" stroke="#C2185B" stroke-width="2" marker-end="url(#am)"/>
+<text x="224" y="996" font-size="8" fill="#37474F">EventBridge schedule</text>
+<line x1="175" y1="1010" x2="215" y2="1010" stroke="#9E9E9E" stroke-width="2" stroke-dasharray="4,2" marker-end="url(#ad)"/>
+<text x="224" y="1014" font-size="8" fill="#37474F">Config / image pull  (dashed)</text>
+<line x1="175" y1="1028" x2="215" y2="1028" stroke="#00838F" stroke-width="2" marker-end="url(#at)"/>
+<text x="224" y="1032" font-size="8" fill="#37474F">metrics-scraper → CloudWatch</text>
+<line x1="175" y1="1046" x2="215" y2="1046" stroke="#795548" stroke-width="2" marker-end="url(#apay)"/>
+<text x="224" y="1050" font-size="8" fill="#37474F">payment-api → Midtrans</text>
+<line x1="175" y1="1064" x2="215" y2="1064" stroke="#455A64" stroke-width="2" marker-end="url(#acx)"/>
+<text x="224" y="1068" font-size="8" fill="#37474F">CAPTCHA verify  (/join ingress)</text>
+<text x="303" y="1078" text-anchor="middle" font-size="7.5" fill="#9E9E9E" font-style="italic">Routing corridor  x=668–960  (always empty)</text>
+</g>
+
+</svg>
