@@ -116,11 +116,19 @@ jobs:
       - name: Run tests with coverage
         working-directory: ${{ matrix.module }}
         run: go test -coverprofile=coverage.out ./...
+      # Unique file name per module (services/user -> services-user.out) so the
+      # single root Sonar scan can merge every profile without overwriting.
+      - name: Name coverage report
+        id: cov
+        run: |
+          name=$(echo "${{ matrix.module }}" | tr '/' '-')
+          cp "${{ matrix.module }}/coverage.out" "$name.out"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
       - name: Upload coverage report
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: coverage-${{ strategy.job-index }}
-          path: ${{ matrix.module }}/coverage.out
+          name: coverage-${{ steps.cov.outputs.name }}
+          path: ${{ steps.cov.outputs.name }}.out
       - name: Check code coverage (80% gate)
         working-directory: ${{ matrix.module }}
         # Gate on testable code only. Excluded from the denominator:
@@ -192,51 +200,21 @@ jobs:
           echo "SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}"
           echo "SONAR_TOKEN set: ${{ secrets.SONAR_TOKEN != '' }}"
           echo "SONAR_TOKEN length: ${#SONAR_TOKEN}"
-      - name: SonarQube Scan (booking)
+      - name: Collect coverage report paths
+        id: cov
+        run: |
+          paths=$(ls coverage/*.out | paste -sd, -)
+          echo "Coverage reports: $paths"
+          echo "paths=$paths" >> "$GITHUB_OUTPUT"
+      # One scan for the whole monorepo, configured by the root sonar-project.properties.
+      - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@2500896589ef8f7247069a56136f8dc177c27ccf # v5.2.0
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
         with:
-          projectBaseDir: services/booking
           args: >
-            -Dsonar.go.coverage.reportPaths=../../coverage/coverage.out
-      - name: SonarQube Scan (user)
-        uses: SonarSource/sonarqube-scan-action@2500896589ef8f7247069a56136f8dc177c27ccf # v5.2.0
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
-        with:
-          projectBaseDir: services/user
-          args: >
-            -Dsonar.go.coverage.reportPaths=../../coverage/coverage.out
-      - name: SonarQube Scan (nik-verify)
-        uses: SonarSource/sonarqube-scan-action@2500896589ef8f7247069a56136f8dc177c27ccf # v5.2.0
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
-        with:
-          projectBaseDir: services/nik-verify
-          args: >
-            -Dsonar.go.coverage.reportPaths=../../coverage/coverage.out
-      - name: SonarQube Scan (notification)
-        uses: SonarSource/sonarqube-scan-action@2500896589ef8f7247069a56136f8dc177c27ccf # v5.2.0
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
-        with:
-          projectBaseDir: services/notification
-          args: >
-            -Dsonar.go.coverage.reportPaths=../../coverage/coverage.out
-      - name: SonarQube Scan (outbox-publisher)
-        uses: SonarSource/sonarqube-scan-action@2500896589ef8f7247069a56136f8dc177c27ccf # v5.2.0
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
-        with:
-          projectBaseDir: services/outbox-publisher
-          args: >
-            -Dsonar.go.coverage.reportPaths=../../coverage/coverage.out
+            -Dsonar.go.coverage.reportPaths=${{ steps.cov.outputs.paths }}
 
   deploy-booking:
     name: Deploy booking → AWS Lambda (SAM)

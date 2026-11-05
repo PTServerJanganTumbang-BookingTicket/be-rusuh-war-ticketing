@@ -38,7 +38,7 @@ be-rusuh-war-ticketing/
         │   ├── config/
         │   └── delivery/       #   HTTP wiring + lambda proxy
         ├── _mock/              #   go.uber.org/mock generated mocks
-    │   ├── Dockerfile  template.yaml  sonar-project.properties
+    │   ├── Dockerfile  template.yaml
     │   └── Makefile
     ├── user/                   # USER SERVICE — accounts, consent, saved NIKs, tickets
     ├── nik-verify/             # NIK VERIFY — the only service that calls Dukcapil
@@ -162,9 +162,8 @@ CI deploys automatically on `push` to `main` when `services/booking/**` or `pkg/
 
 ## CI/CD
 
-A single root workflow (`.github/workflows/ci.yml`) runs per-module, triggered only for the
-modules whose files changed. Every service needs three files or its jobs fail:
-`sonar-project.properties` (scan), `template.yaml` (SAM deploy) and a
+A single root workflow (`.github/workflows/cicd.yml`) runs per-module, triggered only for the
+modules whose files changed. Every service needs `template.yaml` (SAM deploy) and a
 `build-<Name>Function` Makefile target that `template.yaml` names via
 `BuildMethod: makefile`. A service with a server binary also needs a
 `Dockerfile`, and `notification` has none on purpose — it is SQS-driven, so it
@@ -174,7 +173,9 @@ has no `cmd/server` and is excluded from the hadolint trigger.
 2. **lint / test / govulncheck** — matrix over changed modules; each builds with
    `GOWORK=off` (isolation), tests `./...`, and enforces the 80% coverage gate.
 3. **hadolint** — Dockerfile lint.
-4. **sonarqube** — gated on lint+test+govulncheck.
+4. **sonarqube** — gated on lint+test+govulncheck. One scan from the repo root
+   (root `sonar-project.properties`) over `pkg/` and every service, fed with
+   each module's coverage profile.
 5. **deploy-booking / deploy-user / deploy-nik-verify / deploy-notification /
    deploy-outbox-publisher** — gated on sonarqube; each runs only when its own
    service or the shared lib changed. `deploy-outbox-publisher` additionally
