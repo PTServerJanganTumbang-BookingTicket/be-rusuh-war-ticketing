@@ -4,7 +4,7 @@
 |---|---|
 | **Service** | `services/user` (Lambda) |
 | **Auth** | None |
-| **Contract** | OpenAPI `POST /auth/magic-link/resend` · api-contracts §1.2 |
+| **Contract** | Apidog `POST /auth/magic-link/resend` · api-contracts §1.2 |
 | **Requirements** | FR-31 |
 | **Status** | done |
 

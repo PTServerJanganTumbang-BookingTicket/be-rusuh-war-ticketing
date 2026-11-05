@@ -4,7 +4,7 @@
 |---|---|
 | **Service** | `services/user` (Lambda) |
 | **Auth** | `Authorization: Bearer <access_token>` required |
-| **Contract** | OpenAPI `GET /accounts/me/saved-niks` · api-contracts §1.6 |
+| **Contract** | Apidog `GET /accounts/me/saved-niks` · api-contracts §1.6 |
 | **Requirements** | FR-32a, FR-32b, FR-32c |
 | **Status** | done |
 

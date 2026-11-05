@@ -4,7 +4,7 @@
 |---|---|
 | **Service** | `services/user` (Lambda) |
 | **Auth** | Same-Origin required |
-| **Contract** | OpenAPI `POST /auth/refresh` · api-contracts §1.4 |
+| **Contract** | Apidog `POST /auth/refresh` · api-contracts §1.4 |
 | **Requirements** | FR-31, BR-09, NFR-02, NFR-07 |
 | **Status** | done |
 

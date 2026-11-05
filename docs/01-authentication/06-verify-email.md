@@ -4,7 +4,7 @@
 |---|---|
 | **Service** | `services/user` (Lambda) |
 | **Auth** | `magic_token` cookie (single-use verification token) |
-| **Contract** | OpenAPI `GET /auth/verify-email` · api-contracts §1.7 |
+| **Contract** | Apidog `GET /auth/verify-email` · api-contracts §1.7 |
 | **Requirements** | FR-31 |
 | **Status** | done |
 

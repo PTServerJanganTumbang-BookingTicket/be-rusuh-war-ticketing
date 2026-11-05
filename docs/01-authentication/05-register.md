@@ -4,7 +4,7 @@
 |---|---|
 | **Service** | `services/user` (Lambda) |
 | **Auth** | Same-Origin required |
-| **Contract** | OpenAPI `POST /auth/register` · api-contracts §1.5 |
+| **Contract** | Apidog `POST /auth/register` · api-contracts §1.5 |
 | **Requirements** | FR-29, FR-30, FR-31 · BR-11, BR-13 · NFR-11 |
 | **Status** | done |
 

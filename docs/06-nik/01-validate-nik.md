@@ -4,7 +4,7 @@
 |---|---|
 | **Service** | `services/nik-verify` (Lambda) |
 | **Auth** | None (internal service; network-level isolation in VPC) |
-| **Contract** | OpenAPI `POST /nik/validate` · api-contracts §4.2 |
+| **Contract** | Apidog `POST /nik/validate` · api-contracts §4.2 |
 | **Requirements** | FR-15a · BR-13, BR-13a · NFR-12 |
 | **Status** | done |
 

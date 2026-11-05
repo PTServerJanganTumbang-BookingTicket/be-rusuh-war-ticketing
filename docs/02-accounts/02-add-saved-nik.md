@@ -4,7 +4,7 @@
 |---|---|
 | **Service** | `services/user` (Lambda) |
 | **Auth** | `Authorization: Bearer <access_token>` + Same-Origin required |
-| **Contract** | OpenAPI `POST /accounts/me/saved-niks` · api-contracts §1.6 |
+| **Contract** | Apidog `POST /accounts/me/saved-niks` · api-contracts §1.6 |
 | **Requirements** | FR-15a, FR-32a, FR-32b · BR-12, BR-13 · NFR-11 |
 | **Status** | done |
 

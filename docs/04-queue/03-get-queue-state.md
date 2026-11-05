@@ -4,7 +4,7 @@
 |---|---|
 | **Service** | `services/queue` (Lambda) |
 | **Auth** | **one of** cookie `queue_token` · `X-Queue-Token` · `Authorization: Bearer` (cross-device recovery) |
-| **Contract** | OpenAPI `GET /events/{event_id}/queue/me` · api-contracts §3.3 |
+| **Contract** | Apidog `GET /events/{event_id}/queue/me` · api-contracts §3.3 |
 | **Requirements** | FR-08, FR-10, BR-09, NFR-02 |
 | **Detail** | impl-plan §7.3 · ADR-005 §12 (queue recovery) |
 | **Status** | planning |
@@ -13,7 +13,8 @@
 
 The **only** recovery path, and it's a read. It answers "where should this customer be right
 now?": waiting room, Detail Ticket, Payment, done, or expired. It also hands out the
-`grant_token` after the `grant` SSE event. No CAPTCHA and no join rate limit (ADR-005 §12).
+`grant_token` once the broadcast shows `nowServing ≥ ticket_no` (S3: this is how every customer
+enters, not only a fallback). No CAPTCHA and no join rate limit (ADR-005 §12).
 
 ## 2. Flow
 
@@ -42,7 +43,13 @@ sequenceDiagram
     end
 
     Q->>DB: SELECT status, deadlines, payment_ref FROM bookings WHERE queue_token = uuid
-    alt no row
+    alt no row and ticket_no ≤ now_serving
+        Q->>DB: re-SELECT on the WRITER (replica may lag)
+        Note over Q: row found → continue with that row
+        Q->>R: ZSCORE by_ticket uuid
+        Note over Q: still no row: in by_ticket = pending grant, "almost there".<br/>Not in by_ticket either = LostGrant metric
+        Q-->>C: 200 QUEUED, ticket_no, now_serving
+    else no row and ticket_no > now_serving
         Q-->>C: 200 QUEUED, ticket_no, now_serving
     else GRANTED / SELECTING / HELD
         Q->>R: HGETALL grant:{token} (must still be alive)
@@ -60,15 +67,15 @@ sequenceDiagram
 
 | `bookings.status` | `data.state` returned | Client page |
 |---|---|---|
-| no row | `QUEUED` | Waiting Room |
+| no row | `QUEUED` (`ticket_no`, `now_serving`) | Waiting Room |
 | `GRANTED` | `GRANTED` | Detail Ticket |
 | `SELECTING`, `HELD` | `SELECTING` | Detail Ticket (countdown continues) |
 | `AWAITING_PAYMENT`, `PENDING_CANCELLATION` | `AWAITING_PAYMENT` | Payment ("verifying payment…" during grace) |
 | `CONFIRMED` | `CONFIRMED` | Success |
 | `EXPIRED`, `LAPSED`, `ABANDONED` | `EXPIRED` | Expired screen |
 
-Deadlines are **always read from Aurora**. A pause can shift them by `PAUSE_TTL_GRACE_SECONDS`
-(BR-22), so never compute them from `granted_at` + constant.
+Deadlines are **always read from Aurora** and returned as absolute timestamps; the client counts
+down against `server_time`. They never shift (pause and BR-22 removed, ADR-006 §4.3).
 
 ## 4. Data touched
 
@@ -77,6 +84,7 @@ Deadlines are **always read from Aurora**. A pause can shift them by `PAUSE_TTL_
 | Redis | `acct:{ev}:{account_id}` | GET (Bearer path) |
 | Redis | `token:{uuid}`, `settled:{uuid}`, `grant:{token}` | HGETALL / GET |
 | Redis | `queue:{ev}` → `now_serving` | HGET |
+| Redis | `queue:{ev}:by_ticket` | ZSCORE (no-row path only) |
 | Aurora | `bookings` | SELECT (reader) |
 
 ## 5. Responses and errors
@@ -88,26 +96,32 @@ Deadlines are **always read from Aurora**. A pause can shift them by `PAUSE_TTL_
 
 ## 6. Edge cases and decisions
 
-- **OPEN:** "no row" plus `ticket_no <= now_serving` is the **symptom of a dropped grant** (see
-  [05 §6](05-admission-controller.md#6-edge-cases-and-decisions)). With the `granting` fix,
-  this endpoint should check `queue:{ev}:granting` and report `QUEUED` with "almost there". Without
-  the fix, the customer waits forever. Emit a metric whenever this case is seen.
-- **OPEN:** Reader lag. A just-inserted `GRANTED` row may not be on the replica yet when the
-  client calls right after the `grant` event. Read from the writer for the `grant`-triggered
-  call, or retry once on "no row and ticket_no <= now_serving".
+- **"No row" plus `ticket_no <= now_serving`** means the grant is **pending** (option B,
+  [05 §3.1](05-admission-controller.md#31-pending-grant-rule)). It normally
+  resolves within one tick. Return `QUEUED` (with `ticket_no ≤ now_serving`, which the client shows as "almost there") and let the client retry after 1 s.
+  If the uuid is **also missing from `by_ticket`**, the grant has been lost, which should be
+  impossible. Emit the metric `LostGrant` and log the uuid.
+- **DECIDED (2026-11-05): reader lag.** A just-inserted `GRANTED` row may not be on the replica yet when the
+  client calls right after the broadcast shows its turn. Under option B the token has also left `by_ticket`,
+  so without a fix `/me` would answer `QUEUED` *and* fire a false `LostGrant`. Rule: **"no row"
+  with `ticket_no ≤ now_serving` is re-checked once on the writer** before answering or emitting
+  the metric. Customers still behind `now_serving` never reach the writer, so writer load stays limited
+  to the few customers being granted at that moment.
 - Polling `/me` is not cacheable (`Cache-Control: no-store`).
 
 ## 7. Tests
 
 - [ ] unit: every row of the mapping table
 - [ ] unit: tombstone path returns `CONFIRMED` and clears the cookie
+- [ ] unit: no row + pending (in `by_ticket`, score ≤ now_serving) → `QUEUED` position 0; no row + not in `by_ticket` → `QUEUED` + `LostGrant` metric
 - [ ] integration: Bearer-only recovery re-issues the cookie for the existing uuid
 - [ ] integration: LAPSED → `grant:{token}` deleted → returns `EXPIRED`, never a dead grant token
-- [ ] integration: replica lag simulation → client still gets `GRANTED` on first call after `grant`
+- [ ] integration: replica lag simulation (row only on writer) → `GRANTED` on first call, no `LostGrant`
+- [ ] unit: `ticket_no > now_serving` + no row → `QUEUED` with **no** writer call
 
 ## 8. Tasks
 
-- [ ] postgres reader adapter `BookingReader.FindByQueueToken`
+- [ ] postgres adapter `BookingReader.FindByQueueToken` with a reader and a writer pool (writer used only for the re-check)
 - [ ] usecase `GetMe` + mapper
 - [ ] auth resolution middleware (cookie | header | Bearer)
-- [ ] metric `QueuedBehindWatermark`
+- [ ] metric `LostGrant`

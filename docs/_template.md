@@ -4,7 +4,7 @@
 |---|---|
 | **Service** | `services/<name>` (Lambda / ECS) |
 | **Auth** | <credential slot> |
-| **Contract** | OpenAPI `operationId: <id>` · api-contracts §<n> |
+| **Contract** | Apidog `<METHOD> <path>` · api-contracts §<n> |
 | **Requirements** | FR-.. · BR-.. · NFR-.. |
 | **Status** | planning / in progress / done |
 

@@ -18,6 +18,8 @@ BR-12, BR-13 · NFR-11, NFR-12, NFR-14.
 | 02 | [02-add-saved-nik.md](02-add-saved-nik.md) | `POST /accounts/me/saved-niks` |
 | 03 | [03-delete-saved-nik.md](03-delete-saved-nik.md) | `DELETE /accounts/me/saved-niks/{id}` |
 
+**Subfolder `tickets/`** (Apidog: Accounts › Tickets, previously the top-level *User* folder): `GET /users/me/tickets`, `GET /tickets/{ticket_id}/eticket`. Not started.
+
 ## 1. Design constraints
 
 - **No raw NIK ever stored or returned**: only `nik_hmac` (HMAC-SHA256 keyed by

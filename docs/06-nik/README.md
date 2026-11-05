@@ -74,8 +74,10 @@ storing proof at the moment it matters most.
 - **Always 200 for valid/invalid NIK**: the call succeeded; the answer was yes or
   no. Non-2xx is reserved for "no answer obtainable", which is what callers must
   fail closed on.
-- **Circuit breaker state shared via Redis**: `admission-ctl` reads the same key
-  (`nik:breaker:state`) to pause admissions when Dukcapil is unusable (BR-13a).
+- **Circuit breaker state shared via Redis** (`nik:breaker:state`) across Lambda instances.
+  ~~`admission-ctl` reads the same key to pause admissions when Dukcapil is unusable (BR-13a).~~
+  **Changed (ADR-006 §4.3, 2026-11-05):** admission pause is removed; `admission-ctl` no longer
+  reads this key. Breaker OPEN only makes NIK validation fail fast with a retryable error.
 - **Only positive answers cached**: caching a rejection would strand a customer
   who mistyped once behind a 24-hour window.
 

@@ -4,7 +4,7 @@
 |---|---|
 | **Service** | `services/user` (Lambda) |
 | **Auth** | `magic_token` cookie (single-use link token) |
-| **Contract** | OpenAPI `GET /auth/verify` · api-contracts §1.3 |
+| **Contract** | Apidog `GET /auth/verify` · api-contracts §1.3 |
 | **Requirements** | FR-31, BR-09 |
 | **Status** | done |
 

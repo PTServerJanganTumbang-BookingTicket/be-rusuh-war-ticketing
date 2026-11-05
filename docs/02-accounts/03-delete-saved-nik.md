@@ -4,7 +4,7 @@
 |---|---|
 | **Service** | `services/user` (Lambda) |
 | **Auth** | `Authorization: Bearer <access_token>` + Same-Origin required |
-| **Contract** | OpenAPI `DELETE /accounts/me/saved-niks/{id}` · api-contracts §1.6 |
+| **Contract** | Apidog `DELETE /accounts/me/saved-niks/{id}` · api-contracts §1.6 |
 | **Requirements** | FR-32d |
 | **Status** | done |
 
