@@ -3,7 +3,7 @@ package inbound
 import (
 	"context"
 
-	"gitlab-cicd-ee.telkomsel.co.id/my-telkomsel/be-rusuh-war-ticketing/services/booking/internal/booking/domain/dto"
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/booking/internal/booking/domain/dto"
 )
 
 // IBookingUsecase defines the inbound port (driving port) for booking business logic.

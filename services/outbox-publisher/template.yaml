@@ -1,0 +1,81 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: rusuh-outbox-publisher — drains the transactional outbox onto SQS
+
+Parameters:
+  VpcSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Private subnets with reachability to Aurora and Redis
+  SecurityGroupIds:
+    Type: List<AWS::EC2::SecurityGroup::Id>
+    Description: Security group permitting Aurora (5432) and Redis (6379) egress
+  DatabaseSecretArn:
+    Type: String
+    Description: Secrets Manager ARN holding the RDS Proxy connection string
+  NotificationQueueArn:
+    Type: String
+    Description: ARN of the notification queue this publisher writes to
+  NotificationQueueUrl:
+    Type: String
+    Description: URL of the notification queue this publisher writes to
+  RedisAddr:
+    Type: String
+    Description: ElastiCache primary endpoint, host:port
+
+Globals:
+  Function:
+    Timeout: 60
+    MemorySize: 512
+    Runtime: provided.al2023
+    Architectures:
+      - arm64
+
+Resources:
+  OutboxPublisherFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      FunctionName: rusuh-outbox-publisher
+      Handler: bootstrap
+      CodeUri: .
+      # One concurrent execution. More would not go faster — SKIP LOCKED lets
+      # workers take disjoint slices, but every extra worker also holds a
+      # database connection, and this is the fallback path, not the hot one.
+      # Raise it only if OutboxLag stays non-zero between invocations.
+      ReservedConcurrentExecutions: 1
+      VpcConfig:
+        SubnetIds: !Ref VpcSubnetIds
+        SecurityGroupIds: !Ref SecurityGroupIds
+      Environment:
+        Variables:
+          APP_ENV: production
+          REDIS_ADDR: !Ref RedisAddr
+          NOTIFICATION_QUEUE_URL: !Ref NotificationQueueUrl
+          PUBLISH_BATCH_SIZE: "500"
+          # EventBridge cannot schedule faster than once a minute, so each
+          # invocation drains repeatedly inside this budget. Kept under the
+          # 60s function timeout so the handler returns rather than being
+          # killed mid-pass.
+          DRAIN_BUDGET_SECONDS: "45"
+          OUTBOX_LEASE_SECONDS: "30"
+          DATABASE_MAX_CONNS: "4"
+      Policies:
+        - AWSLambdaVPCAccessExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DatabaseSecretArn
+            - Effect: Allow
+              Action:
+                - sqs:SendMessage
+              Resource:
+                - !Ref NotificationQueueArn
+      Events:
+        EveryMinute:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 minute)
+            Description: Fallback drain; latency-sensitive effects run inline in their own services

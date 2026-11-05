@@ -1,0 +1,113 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: rusuh-notification — SQS to SES. Owns the notification queue and its DLQ.
+
+Parameters:
+  VpcSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Private subnets with reachability to Redis and the SES endpoint
+  SecurityGroupIds:
+    Type: List<AWS::EC2::SecurityGroup::Id>
+    Description: Security group permitting Redis (6379) egress
+  RedisAddr:
+    Type: String
+    Description: ElastiCache primary endpoint, host:port
+  AppBaseUrl:
+    Type: String
+    Description: >
+      Public FRONTEND base URL for emailed links. Not the API: the verify
+      endpoint reads its token from a cookie, so the app route sets the cookie
+      and then calls the API. Must be https — these links carry login tokens.
+  EmailFromAddress:
+    Type: String
+    Description: Verified SES identity to send from
+  SesConfigurationSet:
+    Type: String
+    Default: ""
+    Description: >
+      SES configuration set routing bounces and complaints to SNS. Strongly
+      recommended: without it a bouncing address is invisible and SES
+      eventually throttles the account for poor reputation.
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 512
+    Runtime: provided.al2023
+    Architectures:
+      - arm64
+
+Resources:
+  # The DLQ is declared before the main queue it serves, so a message that
+  # cannot be delivered is parked for inspection rather than retried forever.
+  # NFR-10 requires exactly this: async with retry plus DLQ.
+  NotificationDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: rusuh-notification-dlq
+      # Two weeks: long enough that a holiday weekend does not lose the
+      # evidence of what failed.
+      MessageRetentionPeriod: 1209600
+
+  NotificationQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: rusuh-notification
+      # Six times the function timeout, per AWS guidance, so a slow send is
+      # not redelivered while the first attempt is still running.
+      VisibilityTimeout: 180
+      MessageRetentionPeriod: 1209600
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt NotificationDLQ.Arn
+        # Five attempts. SES throttling is the common transient failure and
+        # clears in seconds; beyond five the problem is not transient.
+        maxReceiveCount: 5
+
+  NotificationFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      FunctionName: rusuh-notification
+      Handler: bootstrap
+      CodeUri: .
+      VpcConfig:
+        SubnetIds: !Ref VpcSubnetIds
+        SecurityGroupIds: !Ref SecurityGroupIds
+      Environment:
+        Variables:
+          APP_ENV: production
+          APP_BASE_URL: !Ref AppBaseUrl
+          REDIS_ADDR: !Ref RedisAddr
+          EMAIL_FROM_ADDRESS: !Ref EmailFromAddress
+          SES_CONFIGURATION_SET: !Ref SesConfigurationSet
+          MAGIC_TOKEN_TTL_MINUTES: "15"
+      Policies:
+        - AWSLambdaVPCAccessExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action:
+                - ses:SendEmail
+              Resource: "*"
+      Events:
+        Queue:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt NotificationQueue.Arn
+            BatchSize: 10
+            # Required for the handler's per-message failure report. Without
+            # it, one failing message redelivers the whole batch and the other
+            # nine recipients get a duplicate email.
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+
+Outputs:
+  QueueUrl:
+    Description: URL of the notification queue — pass to outbox-publisher as NOTIFICATION_QUEUE_URL
+    Value: !Ref NotificationQueue
+  QueueArn:
+    Description: ARN of the notification queue — pass to outbox-publisher as NotificationQueueArn
+    Value: !GetAtt NotificationQueue.Arn
+  DLQUrl:
+    Description: URL of the dead-letter queue
+    Value: !Ref NotificationDLQ

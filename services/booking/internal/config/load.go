@@ -2,8 +2,8 @@ package config
 
 import (
 	"fmt"
-	"os"
-	"strconv"
+
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/envutil"
 )
 
 // Load reads configuration from environment variables and returns a validated Config.
@@ -11,12 +11,12 @@ import (
 func Load() (Config, error) {
 	cfg := Config{
 		App: App{
-			Env:  getEnv("APP_ENV", "local"),
-			Port: getEnvInt("APP_PORT", 8080),
+			Env:  envutil.Env("APP_ENV", "local"),
+			Port: envutil.EnvInt("APP_PORT", 8080),
 		},
 		Log: Log{
-			Level:  getEnv("LOG_LEVEL", "info"),
-			Format: getEnv("LOG_FORMAT", "json"),
+			Level:  envutil.Env("LOG_LEVEL", "info"),
+			Format: envutil.Env("LOG_FORMAT", "json"),
 		},
 	}
 
@@ -31,20 +31,4 @@ func (c Config) validate() error {
 		return fmt.Errorf("APP_PORT out of range: %d", c.App.Port)
 	}
 	return nil
-}
-
-func getEnv(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
-
-func getEnvInt(key string, fallback int) int {
-	if v := os.Getenv(key); v != "" {
-		if i, err := strconv.Atoi(v); err == nil {
-			return i
-		}
-	}
-	return fallback
 }

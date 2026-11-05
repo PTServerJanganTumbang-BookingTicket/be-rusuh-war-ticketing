@@ -1,4 +1,4 @@
-MODULES := pkg services/booking
+MODULES := pkg services/*
 
 .PHONY: build test tidy isolation-check lint booking-run booking-build-lambda
 

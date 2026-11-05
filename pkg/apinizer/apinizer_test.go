@@ -55,3 +55,66 @@ func TestWriteEnvelope_WithData(t *testing.T) {
 	data := body["data"].(map[string]any)
 	assert.Equal(t, "abc", data["id"])
 }
+
+func TestNewPagination(t *testing.T) {
+	cases := []struct {
+		name                 string
+		total, limit, offset int
+		wantTotalPage        int
+	}{
+		{"exact multiple", 20, 10, 0, 2},
+		{"partial last page", 21, 10, 20, 3},
+		{"single short page", 3, 10, 0, 1},
+		{"empty result", 0, 10, 0, 1},
+		{"zero limit does not divide by zero", 5, 0, 0, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := NewPagination(tc.total, tc.limit, tc.offset)
+			assert.Equal(t, tc.wantTotalPage, p.TotalPage)
+			assert.Equal(t, tc.total, p.TotalData)
+			assert.Equal(t, tc.limit, p.Limit)
+			assert.Equal(t, tc.offset, p.Offset)
+		})
+	}
+}
+
+func TestWriteList_EmitsPagination(t *testing.T) {
+	rec := httptest.NewRecorder()
+	WriteList(rec, http.StatusOK, "Success", []map[string]string{{"id": "TKT-001"}}, NewPagination(1, 10, 0))
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	meta := body["meta"].(map[string]any)
+	page := meta["pagination"].(map[string]any)
+	assert.Equal(t, float64(1), page["totalData"])
+	assert.Equal(t, float64(1), page["totalPage"])
+	assert.Equal(t, float64(10), page["limit"])
+	assert.Equal(t, float64(0), page["offset"])
+	assert.Len(t, body["data"], 1)
+}
+
+func TestWriteEnvelope_OmitsPaginationAndErrorCode(t *testing.T) {
+	rec := httptest.NewRecorder()
+	WriteEnvelope(rec, http.StatusOK, "Success", nil)
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	meta := body["meta"].(map[string]any)
+	_, hasPage := meta["pagination"]
+	_, hasCode := meta["error_code"]
+	assert.False(t, hasPage)
+	assert.False(t, hasCode)
+}
+
+func TestWriteErrorEnvelope_EmitsErrorCode(t *testing.T) {
+	rec := httptest.NewRecorder()
+	WriteErrorEnvelope(rec, http.StatusConflict, "NIK_ALREADY_REGISTERED", "NIK is bound to another account", nil)
+
+	assert.Equal(t, http.StatusConflict, rec.Code)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	meta := body["meta"].(map[string]any)
+	assert.Equal(t, "NIK_ALREADY_REGISTERED", meta["error_code"])
+	assert.Equal(t, "NIK is bound to another account", meta["message"])
+}

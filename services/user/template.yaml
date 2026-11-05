@@ -1,0 +1,138 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: rusuh-user — native Lambda handler (Option B) behind API Gateway HTTP API
+
+Parameters:
+  VpcSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Private subnets with reachability to Aurora, Redis and nik-verify
+  SecurityGroupIds:
+    Type: List<AWS::EC2::SecurityGroup::Id>
+    Description: Security group permitting Aurora (5432) and Redis (6379) egress
+  DatabaseSecretArn:
+    Type: String
+    Description: Secrets Manager ARN holding the RDS Proxy connection string
+  JwtSecretArn:
+    Type: String
+    Description: >
+      Secrets Manager ARN holding the access-token signing secret. Shared with
+      every service that verifies these tokens. This is NOT the NIK pepper and
+      must be a different secret — unlike the pepper, this one is rotatable.
+  NikVerifyBaseUrl:
+    Type: String
+    Description: Base URL of the nik-verify service
+  RedisAddr:
+    Type: String
+    Description: ElastiCache primary endpoint, host:port
+  CookieDomain:
+    Type: String
+    Default: ""
+    Description: Domain scope for the session cookie; empty means host-only
+
+Globals:
+  Function:
+    Timeout: 15
+    MemorySize: 512
+    Runtime: provided.al2023
+    Architectures:
+      - arm64
+
+Resources:
+  UserFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      FunctionName: rusuh-user
+      Handler: bootstrap
+      CodeUri: .
+      VpcConfig:
+        SubnetIds: !Ref VpcSubnetIds
+        SecurityGroupIds: !Ref SecurityGroupIds
+      Environment:
+        Variables:
+          APP_ENV: production
+          NIK_VERIFY_BASE_URL: !Ref NikVerifyBaseUrl
+          NIK_VERIFY_TIMEOUT_MS: "5000"
+          REDIS_ADDR: !Ref RedisAddr
+          COOKIE_DOMAIN: !Ref CookieDomain
+          SECURE_COOKIES: "true"
+          # The session starts at login, before the queue, so its TTL is derived
+          # from the sale window and not from the journey: the loader defaults
+          # ACCESS_TOKEN_TTL_SECONDS to SALE_WINDOW_SECONDS + 1140 and refuses
+          # anything below SALE_WINDOW_SECONDS + 990 at boot. Left unset here on
+          # purpose — one number to change, in one place (ADR-005 §7).
+          SALE_WINDOW_SECONDS: "21600"
+          # Keep small: every warm container holds its own pool, and a few
+          # hundred of them will exhaust Postgres. RDS Proxy fronts this.
+          DATABASE_MAX_CONNS: "4"
+      Policies:
+        - AWSLambdaVPCAccessExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DatabaseSecretArn
+                - !Ref JwtSecretArn
+      Events:
+        RequestMagicLink:
+          Type: HttpApi
+          Properties:
+            Path: /auth/magic-link
+            Method: POST
+        ResendMagicLink:
+          Type: HttpApi
+          Properties:
+            Path: /auth/magic-link/resend
+            Method: POST
+        VerifyMagicLink:
+          Type: HttpApi
+          Properties:
+            Path: /auth/verify
+            Method: GET
+        VerifyEmail:
+          Type: HttpApi
+          Properties:
+            Path: /auth/verify-email
+            Method: GET
+        Register:
+          Type: HttpApi
+          Properties:
+            Path: /auth/register
+            Method: POST
+        ListSavedNiks:
+          Type: HttpApi
+          Properties:
+            Path: /accounts/me/saved-niks
+            Method: GET
+        AddSavedNik:
+          Type: HttpApi
+          Properties:
+            Path: /accounts/me/saved-niks
+            Method: POST
+        DeleteSavedNik:
+          Type: HttpApi
+          Properties:
+            Path: /accounts/me/saved-niks/{id}
+            Method: DELETE
+        GetMyTickets:
+          Type: HttpApi
+          Properties:
+            Path: /users/me/tickets
+            Method: GET
+        GetETicket:
+          Type: HttpApi
+          Properties:
+            Path: /tickets/{ticket_id}/eticket
+            Method: GET
+        HealthCheck:
+          Type: HttpApi
+          Properties:
+            Path: /sys/ping
+            Method: GET
+
+Outputs:
+  ApiUrl:
+    Description: Base URL of the user HTTP API
+    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com"
