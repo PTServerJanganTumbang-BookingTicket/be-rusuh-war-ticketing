@@ -145,3 +145,62 @@ func TestJoin_releaseKeepsAnotherJoinsClaim(t *testing.T) {
 		t.Fatalf("release of a missing key: %v", err)
 	}
 }
+
+// A logged-in caller presenting a guest's queue_token does not take it over:
+// it gets its own place, and acct is claimed (BR-07 cannot be bypassed).
+func TestJoin_loggedInCallerDoesNotTakeOverAGuestToken(t *testing.T) {
+	j, rdb, bearer := setup(t, "")
+	ctx := context.Background()
+	guest, err := j.Join(ctx, usecase.JoinInput{EventID: "E1", CaptchaToken: "c", DeviceID: "dev-aaaaaaaaaaaaaaaa", ClientIP: "1.2.3.4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := j.Join(ctx, usecase.JoinInput{EventID: "E1", CaptchaToken: "c", Bearer: bearer, QueueToken: guest.Engagement.QueueToken, ClientIP: "1.2.3.5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome == usecase.Rejoined || res.Engagement.QueueToken == guest.Engagement.QueueToken {
+		t.Fatalf("logged-in caller took over the guest place: %+v", res)
+	}
+	if v, _ := rdb.Get(ctx, "acct:{E1}:acc-1").Result(); v != res.Engagement.QueueToken {
+		t.Fatalf("acct = %q, want %q", v, res.Engagement.QueueToken)
+	}
+	// A second device of the same account now gets the same place back.
+	again, err := j.Join(ctx, usecase.JoinInput{EventID: "E1", CaptchaToken: "c", Bearer: bearer, ClientIP: "1.2.3.6"})
+	if err != nil || again.Outcome != usecase.Rejoined || again.Engagement.QueueToken != res.Engagement.QueueToken {
+		t.Fatalf("second device = %+v, %v", again, err)
+	}
+}
+
+// failingBookings errors on every query.
+type failingBookings struct{}
+
+func (failingBookings) ByQueueToken(context.Context, string, string) (domain.Booking, bool, error) {
+	return domain.Booking{}, false, errBoom
+}
+
+// After the turn has come, a failed booking lookup is a 503, never a QUEUED
+// answer that would re-add the served token to the line.
+func TestJoin_servedTicketWithBookingErrorIs503AndNotReadded(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
+	ctx := context.Background()
+	ev, _ := rediskeys.NewEvent("E1")
+	rdb.Set(ctx, ev.QueueState(), "OPEN", 0)
+	rdb.HSet(ctx, ev.QueueHash(), "now_serving", 100)
+	rdb.Set(ctx, ev.QueueIssued(), 120, 0)
+	store := queueredis.NewStore(rdb)
+	_ = store.SaveEngagement(ctx, domain.Engagement{QueueToken: "qt_SERVED", EventID: "E1", TicketNo: 90, JoinedAt: time.Now()}, time.Hour)
+	j := usecase.NewJoin(usecase.DefaultConfig(), usecase.Deps{
+		Store: store, Bookings: failingBookings{}, Captcha: turnstile.Mock{}, Limiter: ratelimit.New(rdb),
+		Metrics: nopMetrics{}, NewToken: func() string { return "qt_NEW" },
+	})
+	_, err := j.Join(ctx, usecase.JoinInput{EventID: "E1", CaptchaToken: "c", DeviceID: "dev-aaaaaaaaaaaaaaaa", QueueToken: "qt_SERVED", ClientIP: "1.2.3.4"})
+	var ae *apperror.AppError
+	if !errors.As(err, &ae) || ae.HTTPStatus != http.StatusServiceUnavailable {
+		t.Fatalf("Join() error = %v, want 503", err)
+	}
+	if n, _ := rdb.ZCard(ctx, ev.ByTicket()).Result(); n != 0 {
+		t.Fatal("served token was put back into by_ticket")
+	}
+}

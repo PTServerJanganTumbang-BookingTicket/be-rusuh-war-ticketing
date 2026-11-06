@@ -10,7 +10,8 @@ Every change follows [`docs/DEVELOPMENT-FLOW.md`](docs/DEVELOPMENT-FLOW.md):
 
 - Never implement a feature file that still carries `@draft`.
 - Feature files live next to the code (`<module>/features/*.feature`) and run with godog, strict mode.
-- Every scenario has one level tag (`@unit` or `@integration`) and a trace tag (`@rule-N`, `@FR-xx`, …).
+- Every scenario has exactly one level tag (`@unit` or `@integration`; `make spec` enforces it). Add a trace
+  tag (`@rule-N`, `@FR-xx`, …) on the feature or scenario wherever a requirement or ADR rule applies (not enforced).
 - Encode unresolved `OPEN:` items as `@open-question` scenarios holding the proposed behaviour.
 - Never claim "done" or "passing" without the command output that shows it.
 

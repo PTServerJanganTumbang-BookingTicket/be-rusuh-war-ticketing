@@ -177,7 +177,8 @@ func bearerToken(h string) (string, bool) {
 	if len(h) <= len(prefix) || !strings.EqualFold(h[:len(prefix)], prefix) {
 		return "", false
 	}
-	return strings.TrimSpace(h[len(prefix):]), true
+	tok := strings.TrimSpace(h[len(prefix):])
+	return tok, tok != ""
 }
 
 func presentedQueueToken(r *http.Request) string {

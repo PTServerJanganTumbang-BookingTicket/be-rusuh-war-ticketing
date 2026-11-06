@@ -7,7 +7,7 @@
 | **Contract** | Apidog `POST /events/{event_id}/queue/join` · api-contracts §3.1 |
 | **Requirements** | FR-04, FR-05, FR-10a, FR-10d..f, BR-07, BR-16, NFR-05, NFR-13 |
 | **Detail** | impl-plan §7.2 · ADR-005 §5, §6 · **ADR-006 §4** (S2) |
-| **Status** | planning |
+| **Status** | implemented (build step 4, branch `feature/step-4-join-queue`); FR-05 e2e waits for admission-ctl (step 3) |
 
 ## 1. Purpose
 
@@ -91,15 +91,20 @@ sequenceDiagram
 Order matters: **rate limit before CAPTCHA**, so we don't pay for an external call on rejected
 attempts (ADR-005 §6). The full pseudo-code is in impl-plan §7.2, steps 1–12.
 
-1. Resolve `ip`, optional `accountID` from Bearer, and `deviceID`
-2. Rate limit (IP, then account)
-3. CAPTCHA verify, fail-open
-4. Sale state gate
-5. Capacity gate (fail fast, no buffering)
-6. BR-07 recover-not-reject, logged in only
-7. `INCR issued`, `HSET token`, `ZADD by_ticket`
-8. FR-05: if the queue is empty, wait ≤ 1 s for the grant row (read only)
-9. Set cookie (`Max-Age` = `SALE_WINDOW_SECONDS`) and respond with `queue_token` in the body too.
+Approved order (2026-11-06; specs in `services/queue/features/join_gates.feature`):
+
+1. Request shape (JSON, ≤ 8 KB, event id usable as a `{ev}` tag), then identity: optional
+   `accountID` from Bearer (bad token → 401, never a silent guest), `deviceID` (guests only, 16–128 `[A-Za-z0-9_-]`)
+2. Rate limit (IP, then account). Limiter outage fails open (`RateLimitFailOpen`)
+3. CAPTCHA required, then verify, fail-open on provider trouble
+4. Sale state gate: `SCHEDULED` → 409, `CLOSED` → 410 `SALE_CLOSED`, missing/unknown → 503 `QUEUE_NOT_READY`
+5. Rejoin **before** capacity: BR-09 (cookie / `X-Queue-Token`), then BR-07 (`acct:{ev}:{id}`).
+   A QUEUED place missing from `by_ticket` is repaired (`ZADD NX`, `JoinRepaired`)
+6. Sold out: new joiners get 409 `SOLD_OUT`; rejoiners keep their place
+7. Capacity gate (fail fast, no buffering)
+8. `SET acct NX` (logged in), `INCR issued`, `HSET token`, `ZADD by_ticket`
+9. FR-05: if the queue is empty, wait ≤ 1 s for the grant row (read only)
+10. Set cookie (`Max-Age` = `SALE_WINDOW_SECONDS`) and respond with `queue_token` in the body too.
    **Mobile** has no cookie store: it keeps `queue_token` in secure storage and sends `X-Queue-Token`.
    **Web** ignores the body field and relies on the HttpOnly cookie (never put it in `localStorage`)
 
@@ -122,9 +127,11 @@ attempts (ADR-005 §6). The full pseudo-code is in impl-plan §7.2, steps 1–12
 | 400 | `DEVICE_ID_REQUIRED`, `CAPTCHA_REQUIRED` | |
 | 403 | `CAPTCHA_FAILED` | |
 | 409 | `SALE_NOT_OPEN` | state SCHEDULED |
-| 410 | `CLOSED` | state CLOSED |
+| 409 | `SOLD_OUT` | state SOLD_OUT, new joiners only (new code, 2026-11-06) |
+| 410 | `SALE_CLOSED` | state CLOSED |
+| 401 | `TOKEN_EXPIRED`, `TOKEN_INVALID` | bad Bearer |
 | 429 | `TOO_MANY_REQUESTS` | rate limit |
-| 503 | `QUEUE_FULL` · event not seeded | |
+| 503 | `QUEUE_FULL` · `QUEUE_NOT_READY` (not seeded, new code) · `INTERNAL_ERROR` (Redis down) | |
 
 ## 6. Edge cases and decisions
 
@@ -153,22 +160,22 @@ attempts (ADR-005 §6). The full pseudo-code is in impl-plan §7.2, steps 1–12
 
 ## 7. Tests
 
-- [ ] unit: gate order (rate limit → CAPTCHA → state → capacity → BR-07), each branch returns the right code
-- [ ] unit: guest without device id → 400. Logged-in without device id → OK
-- [ ] integration: 2 joins with the same account → one token, second returns `rejoined: true`
-- [ ] integration: capacity reached → `QUEUE_FULL`, `issued` not incremented
-- [ ] integration: empty queue + ctl running → `granted: true` within 1 s, row written by the ctl (join wrote nothing to Aurora)
-- [ ] integration: empty queue + ctl stopped → normal queued response after ≤ 1 s, no row
-- [ ] integration: non-empty queue → no wait, no Aurora call
-- [ ] concurrency: 10k parallel joins → `ticket_no` unique and contiguous, `by_ticket` size = 10k
+- [x] unit: gate order (rate limit → CAPTCHA → state → capacity → BR-07), each branch returns the right code
+- [x] unit: guest without device id → 400. Logged-in without device id → OK
+- [x] integration: 2 joins with the same account → one token, second returns `rejoined: true`
+- [x] integration: capacity reached → `QUEUE_FULL`, `issued` not incremented
+- [ ] integration: empty queue + ctl running (stand-in controller passes; real ctl e2e after step 3) → `granted: true` within 1 s, row written by the ctl (join wrote nothing to Aurora)
+- [x] integration: empty queue + ctl stopped → normal queued response after ≤ 1 s, no row
+- [x] integration: non-empty queue → no wait, no Aurora call
+- [x] concurrency: 10k parallel joins → `ticket_no` unique and contiguous, `by_ticket` size = 10k
 
 ## 8. Tasks
 
-- [ ] `services/queue` scaffold (copy booking hexagonal layout, `cmd/lambda` + `cmd/server`)
-- [ ] outbound ports: `QueueStore`, `GrantStore`, `BookingReader`, `Captcha`
-- [ ] redis adapter: engagement, queue_state, acct
-- [ ] Turnstile adapter (`siteverify`, timeout, fail-open on error) + mock adapter
-- [ ] config: `TURNSTILE_SECRET_KEY` from Secrets Manager / SSM, never in the repo
-- [ ] usecase `Join` + HTTP handler + cookie
-- [ ] FR-05 bounded wait for the grant row (after 05 admission-ctl lands)
-- [ ] `template.yaml` route + provisioned concurrency
+- [x] `services/queue` scaffold (copy booking hexagonal layout, `cmd/lambda` + `cmd/server`)
+- [x] outbound ports: `QueueStore`, `GrantStore`, `BookingReader`, `Captcha`
+- [x] redis adapter: engagement, queue_state, acct
+- [x] Turnstile adapter (`siteverify`, timeout, fail-open on error) + mock adapter
+- [x] config: `TURNSTILE_SECRET_KEY` from Secrets Manager / SSM, never in the repo
+- [x] usecase `Join` + HTTP handler + cookie
+- [x] FR-05 bounded wait for the grant row (tested with a stand-in controller; e2e after 05 admission-ctl lands)
+- [x] `template.yaml` route + provisioned concurrency

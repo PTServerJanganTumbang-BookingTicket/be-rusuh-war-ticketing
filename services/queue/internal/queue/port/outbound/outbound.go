@@ -33,8 +33,10 @@ type QueueStore interface {
 	SaveEngagement(ctx context.Context, e domain.Engagement, ttl time.Duration) error
 	// AddToLine is ZADD queue:{ev}:by_ticket <ticketNo> <qt>.
 	AddToLine(ctx context.Context, ev rediskeys.Event, queueToken string, ticketNo int64) error
-	// InLine reports whether qt is a by_ticket member.
-	InLine(ctx context.Context, ev rediskeys.Event, queueToken string) (bool, error)
+	// RepairLine puts qt back into by_ticket (ZADD NX) only while ticketNo is
+	// still ahead of now_serving, atomically with admission-ctl's advance.
+	// added is false if it was already there or its turn has passed.
+	RepairLine(ctx context.Context, ev rediskeys.Event, queueToken string, ticketNo int64) (added bool, err error)
 }
 
 // BookingReader reads bookings (Aurora writer pool, SELECT only).

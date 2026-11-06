@@ -37,7 +37,8 @@ type Store struct{ rdb goredis.UniversalClient }
 func NewStore(rdb goredis.UniversalClient) *Store { return &Store{rdb: rdb} }
 
 // Snapshot reads the event's state in one pipelined round trip. All keys share
-// the {ev} slot.
+// the {ev} slot. A missing key reads as empty; any other per-command error
+// fails the snapshot (fail closed: a hidden error could open the capacity gate).
 func (s *Store) Snapshot(ctx context.Context, ev rediskeys.Event) (domain.EventSnapshot, error) {
 	var state, issued, soldOut *goredis.StringCmd
 	var meta *goredis.SliceCmd
@@ -51,11 +52,20 @@ func (s *Store) Snapshot(ctx context.Context, ev rediskeys.Event) (domain.EventS
 	if err != nil && !errors.Is(err, goredis.Nil) {
 		return domain.EventSnapshot{}, err
 	}
-	snap := domain.EventSnapshot{
-		State:     domain.SaleState(optional(state)),
-		SoldOutAt: optional(soldOut),
+	var snap domain.EventSnapshot
+	var stateStr, issuedStr string
+	for _, c := range []struct {
+		cmd *goredis.StringCmd
+		dst *string
+	}{{state, &stateStr}, {issued, &issuedStr}, {soldOut, &snap.SoldOutAt}} {
+		v, err := c.cmd.Result()
+		if err != nil && !errors.Is(err, goredis.Nil) {
+			return domain.EventSnapshot{}, err
+		}
+		*c.dst = v
 	}
-	if snap.Issued, err = optionalInt(optional(issued)); err != nil {
+	snap.State = domain.SaleState(stateStr)
+	if snap.Issued, err = optionalInt(issuedStr); err != nil {
 		return domain.EventSnapshot{}, fmt.Errorf("%s: %w", ev.QueueIssued(), err)
 	}
 	vals, err := meta.Result()
@@ -73,14 +83,6 @@ func (s *Store) Snapshot(ctx context.Context, ev rediskeys.Event) (domain.EventS
 	}
 	snap.Name, snap.SaleStartsAt = str(1), str(2)
 	return snap, nil
-}
-
-func optional(c *goredis.StringCmd) string {
-	v, err := c.Result()
-	if err != nil {
-		return ""
-	}
-	return v
 }
 
 func optionalInt(v string) (int64, error) {
@@ -137,13 +139,20 @@ func (s *Store) ClaimAccount(ctx context.Context, ev rediskeys.Event, accountID,
 		if err != nil || ok {
 			return ok, queueToken, err
 		}
-		cur, err := s.rdb.Get(ctx, key).Result()
-		if errors.Is(err, goredis.Nil) {
-			// Released between SETNX and GET: try once more.
-			ok, err = s.rdb.SetNX(ctx, key, queueToken, ttl).Result()
-			return ok, queueToken, err
+		for range casRetries {
+			cur, err := s.rdb.Get(ctx, key).Result()
+			if err == nil {
+				return false, cur, nil
+			}
+			if !errors.Is(err, goredis.Nil) {
+				return false, "", err
+			}
+			// Released between SETNX and GET: try again, and report the winner.
+			if ok, err = s.rdb.SetNX(ctx, key, queueToken, ttl).Result(); err != nil || ok {
+				return ok, queueToken, err
+			}
 		}
-		return false, cur, err
+		return false, "", fmt.Errorf("%s: claim kept changing hands", key)
 	}
 	var claimed bool
 	current := ""
@@ -226,11 +235,33 @@ func (s *Store) AddToLine(ctx context.Context, ev rediskeys.Event, queueToken st
 	return s.rdb.ZAddNX(ctx, ev.ByTicket(), goredis.Z{Score: float64(ticketNo), Member: queueToken}).Err()
 }
 
-// InLine reports whether queueToken is in queue:{ev}:by_ticket.
-func (s *Store) InLine(ctx context.Context, ev rediskeys.Event, queueToken string) (bool, error) {
-	err := s.rdb.ZScore(ctx, ev.ByTicket(), queueToken).Err()
-	if errors.Is(err, goredis.Nil) {
-		return false, nil
+// RepairLine is ZADD NX by_ticket, done only while ticketNo > now_serving.
+// WATCH on queue:{ev} makes it atomic with admission-ctl's advance (same slot).
+func (s *Store) RepairLine(ctx context.Context, ev rediskeys.Event, queueToken string, ticketNo int64) (bool, error) {
+	for range casRetries {
+		added := false
+		err := s.rdb.Watch(ctx, func(tx *goredis.Tx) error {
+			ns, err := tx.HGet(ctx, ev.QueueHash(), FieldNowServing).Int64()
+			if err != nil && !errors.Is(err, goredis.Nil) {
+				return err
+			}
+			if ticketNo <= ns {
+				return nil
+			}
+			var zadd *goredis.IntCmd
+			if _, err := tx.TxPipelined(ctx, func(p goredis.Pipeliner) error {
+				zadd = p.ZAddNX(ctx, ev.ByTicket(), goredis.Z{Score: float64(ticketNo), Member: queueToken})
+				return nil
+			}); err != nil {
+				return err
+			}
+			added = zadd.Val() == 1
+			return nil
+		}, ev.QueueHash())
+		if errors.Is(err, goredis.TxFailedErr) {
+			continue
+		}
+		return added, err
 	}
-	return err == nil, err
+	return false, fmt.Errorf("%s: repair kept racing the advance", ev.ByTicket())
 }

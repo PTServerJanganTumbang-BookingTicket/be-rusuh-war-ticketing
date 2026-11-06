@@ -102,8 +102,8 @@ tested with a stand-in controller, and the real-ctl scenarios are tagged `@after
 | Step | Features | State |
 |---|---|---|
 | 0 harness | — (tooling) | **built**: `make spec/step/verify-fast/verify`, compose, hooks |
-| 4 join (next) | `services/queue/features/join_*`, `captcha_turnstile`, `pkg/apinizer/envelope`, `pkg/ratelimit/ratelimit` (+ `rediskeys` from step 1) | **@draft — waiting for review** |
-| 1 keys + Lua | `rediskeys`, `advance_now_serving` | **@draft** |
+| 4 join | `services/queue/features/join_*`, `captcha_turnstile`, `pkg/apinizer/envelope`, `pkg/ratelimit/ratelimit` | **built** (2026-11-06): `make step STEP=4` and `make verify` green; 2 `@e2e` scenarios wait for step 3 |
+| 1 keys + Lua | `rediskeys` **built** (approved with join) · `advance_now_serving` **@draft** | `make step STEP=1` stays gated until the Lua spec is approved |
 | 2 compose + migration | `bookings_store` | **@draft** |
 | 3 admission-ctl tick | `admission_tick`, `pending_grants`, `broadcast_and_status`, `invariants`, `admission_flow_e2e` | **@draft** |
 | 7 wait time | `rate_per_min` | **@draft** |
@@ -119,3 +119,10 @@ tested with a stand-in controller, and the real-ctl scenarios are tagged `@after
   they work offline.
 - A Claude Code session started before `.claude/settings.json` existed must open `/hooks` once (or
   restart) to load the hooks.
+
+- **Unit vs integration in one suite.** `@unit` scenarios run on in-process miniredis (and fakes for
+  Postgres); `@integration` ones on the compose Redis cluster and a throwaway Postgres database with
+  every migration applied. Same step definitions, chosen per scenario by tag.
+- **Coverage counts module-root suites.** `make verify` / `make coverage` use `-coverpkg=./...`, so a
+  `features_test.go` at a module root credits the `internal/` packages it exercises. The gate excludes
+  `cmd/` and mocks, like `sonar.coverage.exclusions`.

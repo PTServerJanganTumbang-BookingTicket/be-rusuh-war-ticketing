@@ -154,14 +154,18 @@ func check(path string) (featureInfo, []string) {
 	var errs []string
 	for _, pk := range gherkin.Pickles(*doc, path, newID) {
 		info.scenarios++
-		levels := 0
+		// Feature and scenario tags are merged into the pickle; count distinct.
+		levels := map[string]bool{}
 		for _, t := range pk.Tags {
 			if t.Name == "@unit" || t.Name == "@integration" {
-				levels++
+				levels[t.Name] = true
 			}
 		}
-		if levels == 0 {
+		switch len(levels) {
+		case 0:
 			errs = append(errs, fmt.Sprintf("%s: %q has no level tag (@unit or @integration)", path, pk.Name))
+		case 2:
+			errs = append(errs, fmt.Sprintf("%s: %q has both @unit and @integration: pick one", path, pk.Name))
 		}
 	}
 	return info, errs

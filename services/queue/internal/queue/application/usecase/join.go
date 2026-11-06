@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math"
 	"net/http"
@@ -27,7 +28,8 @@ type Config struct {
 	SaleWindow   time.Duration   // SALE_WINDOW_SECONDS: TTL of token and acct keys, cookie Max-Age
 	GrantWait    time.Duration   // JOIN_GRANT_WAIT_MS: empty-queue wait for admission-ctl (FR-05)
 	GrantPoll    time.Duration   // poll interval during that wait
-	ClaimWait    time.Duration   // how long to wait for a racing join's token to appear
+	ClaimWait    time.Duration   // rejoin: how long an acct pointer without a token may be in flight before it is stale
+	RaceWait     time.Duration   // lost acct claim: how long to wait for the winning join's token
 	RateLimits   bool            // off only in load tests
 	IPLimit      ratelimit.Limit // rl:join:<ip>
 	AccountLimit ratelimit.Limit // rl:joinacct:<id>
@@ -42,6 +44,7 @@ func DefaultConfig() Config {
 		GrantWait:    time.Second,
 		GrantPoll:    100 * time.Millisecond,
 		ClaimWait:    300 * time.Millisecond,
+		RaceWait:     2 * time.Second,
 		RateLimits:   true,
 		IPLimit:      ratelimit.Limit{Capacity: 20, Refill: 20, Per: 5 * time.Minute},
 		AccountLimit: ratelimit.Limit{Capacity: 3, Refill: 3, Per: time.Minute},
@@ -258,7 +261,9 @@ func (j *Join) rejoin(ctx context.Context, ev rediskeys.Event, snap domain.Event
 		if err != nil {
 			return JoinResult{}, false, "", err
 		}
-		if found && e.EventID == ev.ID() && (e.AccountID == "" || e.AccountID == accountID) {
+		// A logged-in caller only gets back its own account's place: taking over a
+		// guest place would skip the acct claim and let BR-07 be bypassed.
+		if found && e.EventID == ev.ID() && e.AccountID == accountID {
 			res, err := j.restore(ctx, ev, snap, e, false)
 			return res, err == nil, "", err
 		}
@@ -270,7 +275,7 @@ func (j *Join) rejoin(ctx context.Context, ev rediskeys.Event, snap domain.Event
 	if err != nil || !found {
 		return JoinResult{}, false, "", err
 	}
-	e, found, err := j.waitEngagement(ctx, qt)
+	e, found, err := j.waitEngagement(ctx, qt, j.cfg.ClaimWait)
 	if err != nil {
 		return JoinResult{}, false, "", err
 	}
@@ -281,10 +286,10 @@ func (j *Join) rejoin(ctx context.Context, ev rediskeys.Event, snap domain.Event
 	return res, err == nil, "", err
 }
 
-// waitEngagement reads token:<qt>, waiting up to ClaimWait for a concurrent
+// waitEngagement reads token:<qt>, waiting up to `wait` for a concurrent
 // join that has claimed acct but not yet written its token.
-func (j *Join) waitEngagement(ctx context.Context, qt string) (domain.Engagement, bool, error) {
-	deadline := time.Now().Add(j.cfg.ClaimWait)
+func (j *Join) waitEngagement(ctx context.Context, qt string, wait time.Duration) (domain.Engagement, bool, error) {
+	deadline := time.Now().Add(wait)
 	for {
 		e, found, err := j.d.Store.Engagement(ctx, qt)
 		if err != nil || found || !time.Now().Before(deadline) {
@@ -298,29 +303,34 @@ func (j *Join) waitEngagement(ctx context.Context, qt string) (domain.Engagement
 	}
 }
 
-// restore builds the "rejoined" answer. Once the turn has come, the state is
-// the booking's; a QUEUED place missing from by_ticket (a join that died
-// between HSET and ZADD) is put back with its own ticket number.
+// restore builds the "rejoined" answer.
+//
+// Still waiting (ticket_no > now_serving): a place missing from by_ticket (a
+// join that died between HSET and ZADD) is put back with its own number, but
+// only while it is still ahead of now_serving, atomically with admission-ctl's
+// advance. A served ticket is never re-added: admission-ctl would grant it again.
+//
+// Turn has come: the booking row says where the customer is. No row yet means
+// a pending grant that admission-ctl finishes from by_ticket (QUEUED). A failed
+// lookup is an error, not a guess.
 func (j *Join) restore(ctx context.Context, ev rediskeys.Event, snap domain.EventSnapshot, e domain.Engagement, viaAccount bool) (JoinResult, error) {
 	state := domain.EngagementQueued
-	if e.TicketNo <= snap.NowServing && j.d.Bookings != nil {
-		b, found, err := j.d.Bookings.ByQueueToken(ctx, ev.ID(), e.QueueToken)
-		if err != nil {
-			// /me reports the true state; do not fail the rejoin over it.
-			slog.WarnContext(ctx, "join: booking lookup failed on rejoin", slog.String("event_id", ev.ID()), slog.Any("err", err))
-		} else if found {
-			state = b.Status
+	if e.TicketNo <= snap.NowServing {
+		if j.d.Bookings != nil {
+			b, found, err := j.d.Bookings.ByQueueToken(ctx, ev.ID(), e.QueueToken)
+			if err != nil {
+				return JoinResult{}, fmt.Errorf("booking lookup on rejoin: %w", err)
+			}
+			if found {
+				state = b.Status
+			}
 		}
-	}
-	if state == domain.EngagementQueued {
-		inLine, err := j.d.Store.InLine(ctx, ev, e.QueueToken)
+	} else {
+		added, err := j.d.Store.RepairLine(ctx, ev, e.QueueToken, e.TicketNo)
 		if err != nil {
 			return JoinResult{}, err
 		}
-		if !inLine {
-			if err := j.d.Store.AddToLine(ctx, ev, e.QueueToken, e.TicketNo); err != nil {
-				return JoinResult{}, err
-			}
+		if added {
 			j.d.Metrics.Incr(domain.MetricJoinRepaired)
 		}
 	}
@@ -340,11 +350,16 @@ func (j *Join) issue(ctx context.Context, ev rediskeys.Event, snap domain.EventS
 		}
 		if !claimed {
 			// A concurrent join of the same account won: return its place.
-			e, found, err := j.waitEngagement(ctx, current)
+			e, found, err := j.waitEngagement(ctx, current, j.cfg.RaceWait)
 			if err != nil || !found {
 				return JoinResult{}, errUnavailable()
 			}
-			return j.restore(ctx, ev, snap, e, true)
+			res, err := j.restore(ctx, ev, snap, e, true)
+			if err != nil {
+				slog.ErrorContext(ctx, "join: restoring the winning place failed", slog.String("event_id", ev.ID()), slog.Any("err", err))
+				return JoinResult{}, errUnavailable()
+			}
+			return res, nil
 		}
 	}
 	release := func() {
