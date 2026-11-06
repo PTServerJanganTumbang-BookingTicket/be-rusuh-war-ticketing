@@ -107,7 +107,7 @@ deps-down:
 coverage:
 	@mkdir -p coverage
 	@for m in $(MODULES); do n=$$(echo $$m | tr / -); echo "==> coverage ($$m)"; \
-	  (cd $$m && go test -count=1 -coverprofile=$(CURDIR)/coverage/$$n.out ./...) || exit 1; done
+	  (cd $$m && go test -count=1 -coverpkg=./... -coverprofile=$(CURDIR)/coverage/$$n.out ./...) || exit 1; done
 
 # End of each build step and CI: everything, on real Redis cluster + Postgres.
 # The coverage gate excludes cmd/ and mocks, like sonar.coverage.exclusions.
@@ -116,7 +116,7 @@ verify: export DATABASE_URL := $(DATABASE_URL)
 verify: verify-fast deps-up isolation-check $(GOVULNCHECK)
 	@mkdir -p coverage
 	@for m in $(MODULES); do n=$$(echo $$m | tr / -); echo "==> go test -race ($$m)"; \
-	  (cd $$m && go test -race -count=1 -coverprofile=$(CURDIR)/coverage/$$n.out ./...) || exit 1; \
+	  (cd $$m && go test -race -count=1 -coverpkg=./... -coverprofile=$(CURDIR)/coverage/$$n.out ./...) || exit 1; \
 	  grep -vE '/(cmd|_mock|mocks?)/' $(CURDIR)/coverage/$$n.out > $(CURDIR)/coverage/$$n.gate.out; \
 	  pct=$$(go tool cover -func=$(CURDIR)/coverage/$$n.gate.out | awk '/^total:/{sub("%","",$$3); print $$3}'); \
 	  echo "    coverage $$m: $$pct%"; \

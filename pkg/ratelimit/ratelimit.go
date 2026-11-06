@@ -99,3 +99,7 @@ func (l *Limiter) Allow(ctx context.Context, key string, lim Limit) (Result, err
 	}
 	return Result{RetryAfter: time.Duration(res[1]) * time.Microsecond}, nil
 }
+
+// ScriptSHA is the SHA1 of the limiter's Lua script, so callers' tests can
+// tell its EVALSHA apart from any other script.
+func ScriptSHA() string { return allowScript.Hash() }

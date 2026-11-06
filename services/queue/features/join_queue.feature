@@ -77,7 +77,7 @@ Feature: Join the queue (POST /events/{event_id}/queue/join), happy path
     When a guest with device id "dev-aaaaaaaaaaaaaaaa" joins "E1" with captcha "cap-ok"
     Then no SQL statement was sent to Postgres
     And no PUBLISH was sent to Redis
-    And no Lua script was run
+    And no Lua script other than the rate limiter was run
     And queue:{E1} now_serving is still 31500
 
   @unit

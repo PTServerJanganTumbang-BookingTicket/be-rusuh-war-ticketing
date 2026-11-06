@@ -29,3 +29,9 @@ func TestAllow_returnsRedisError(t *testing.T) {
 		t.Error("Allow on error reported Allowed")
 	}
 }
+
+func TestScriptSHA_isStable(t *testing.T) {
+	if len(ScriptSHA()) != 40 || ScriptSHA() != allowScript.Hash() {
+		t.Fatalf("ScriptSHA() = %q", ScriptSHA())
+	}
+}
