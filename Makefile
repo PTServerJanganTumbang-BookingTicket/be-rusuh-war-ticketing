@@ -14,6 +14,11 @@ export REDIS_PORT POSTGRES_PORT
 
 COVERAGE_MIN ?= 80
 
+# Integration tests and @integration features run only when these are set
+# (pkg/specsuite). The targets below that need them export them.
+REDIS_ADDR   ?= 127.0.0.1:$(REDIS_PORT)
+DATABASE_URL ?= postgres://rusuh:rusuh-local-only@127.0.0.1:$(POSTGRES_PORT)/rusuh?sslmode=disable
+
 .PHONY: build test tidy isolation-check lint booking-run booking-build-lambda \
         fmt-check vet spec step test-short verify-fast verify deps-up deps-down coverage
 
@@ -67,12 +72,14 @@ spec: $(SPECCHECK)
 
 # Red → green loop for one build step: gate on @draft / missing suites, then run that
 # step's approved features (strict godog suites under go test).
+step: export REDIS_ADDR := $(REDIS_ADDR)
+step: export DATABASE_URL := $(DATABASE_URL)
 step: $(SPECCHECK)
 	@test -n "$(STEP)" || { echo "usage: make step STEP=N"; exit 2; }
 	@$(SPECCHECK) -step $(STEP) . || exit 2
 	@for d in $$($(SPECCHECK) -step $(STEP) -dirs .); do \
 	  echo "==> go test ($$d) @step-$(STEP)"; \
-	  (cd $$d && go test -run TestFeatures -count=1 ./... -godog.tags='@step-$(STEP) && ~@draft') || exit 1; \
+	  (cd $$d && GODOG_TAGS='@step-$(STEP) && ~@draft' go test -run '^TestFeatures$$' -count=1 .) || exit 1; \
 	done
 
 # Unit level only: integration tests and @integration features skip under -short.
@@ -95,6 +102,8 @@ coverage:
 	  (cd $$m && go test -count=1 -coverprofile=$(CURDIR)/coverage/$$n.out ./...) || exit 1; done
 
 # End of each build step and CI: everything, on real Redis cluster + Postgres.
+verify: export REDIS_ADDR := $(REDIS_ADDR)
+verify: export DATABASE_URL := $(DATABASE_URL)
 verify: verify-fast deps-up isolation-check
 	@mkdir -p coverage
 	@for m in $(MODULES); do n=$$(echo $$m | tr / -); echo "==> go test -race ($$m)"; \
