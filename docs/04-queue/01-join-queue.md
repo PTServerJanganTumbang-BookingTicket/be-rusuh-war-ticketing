@@ -215,5 +215,5 @@ All in `services/queue/features/` (godog, strict) plus Go unit tests under `inte
 - [x] usecase `Join` + HTTP handler + cookie
 - [x] FR-05 bounded wait for the grant row
 - [x] `template.yaml` route + provisioned concurrency parameter
-- [ ] contract updates in `documentations` (codes, cookie, `sse_url`, missing Apidog responses)
+- [x] contract updates in `documentations` (api-contracts v2.8.0 + Apidog: codes, cookie, `sse_url`, all join responses). Edited on branch `docs/queue-adr-006`, **not committed yet**
 - [ ] CI: Redis + Postgres services so `@integration` runs in CI (today CI runs unit level only)
