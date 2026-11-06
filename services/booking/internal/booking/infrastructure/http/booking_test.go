@@ -42,6 +42,10 @@ func TestCreateBooking_success(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "RB-001") {
 		t.Errorf("body missing booking id: %s", rec.Body.String())
 	}
+	// Contract envelope (pkg/apinizer): server_time on every response (BR-10).
+	if !strings.Contains(rec.Body.String(), `"server_time":`) {
+		t.Errorf("body missing meta.server_time: %s", rec.Body.String())
+	}
 }
 
 func TestCreateBooking_invalidJSON(t *testing.T) {
