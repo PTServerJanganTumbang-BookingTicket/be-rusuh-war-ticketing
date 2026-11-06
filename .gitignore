@@ -32,3 +32,6 @@ sonar-*.json
 # it is a build artifact, it duplicates pkg/, and a stale copy would shadow
 # the real source.
 services/*/vendor/
+# Pinned tools built by the Makefile
+.bin/
+tools/speccheck/speccheck
