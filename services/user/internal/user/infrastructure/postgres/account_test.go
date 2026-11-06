@@ -35,9 +35,9 @@ func TestFindAccountByEmail_Found(t *testing.T) {
 				*dest[2].(**time.Time) = &now // EmailVerifiedAt *time.Time
 				*dest[3].(*string) = ""
 				*dest[4].(*string) = ""
-				*dest[5].(**time.Time) = nil  // NIKVerifiedAt *time.Time
+				*dest[5].(**time.Time) = nil // NIKVerifiedAt *time.Time
 				*dest[6].(*string) = ""
-				*dest[7].(*time.Time) = now  // CreatedAt time.Time
+				*dest[7].(*time.Time) = now // CreatedAt time.Time
 				return nil
 			}}
 		},
@@ -153,7 +153,9 @@ func TestRegisterAccount_InsertAccountFails_EmailConflict(t *testing.T) {
 func TestRegisterAccount_CommitFails(t *testing.T) {
 	db := &mockDB{beginFn: func(_ context.Context) (pgx.Tx, error) {
 		tx := &mockTx{
-			execFn:   func(_ context.Context, _ string, _ ...any) (pgconn.CommandTag, error) { return pgconn.CommandTag{}, nil },
+			execFn: func(_ context.Context, _ string, _ ...any) (pgconn.CommandTag, error) {
+				return pgconn.CommandTag{}, nil
+			},
 			commitFn: func(_ context.Context) error { return errors.New("commit failed") },
 		}
 		return tx, nil

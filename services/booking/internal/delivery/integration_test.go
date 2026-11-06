@@ -30,9 +30,9 @@ type envelope struct {
 		Message string `json:"message"`
 	} `json:"meta"`
 	Data struct {
-		BookingID  string `json:"booking_id"`
-		Status     string `json:"status"`
-		Tickets    []struct {
+		BookingID string `json:"booking_id"`
+		Status    string `json:"status"`
+		Tickets   []struct {
 			Category  string `json:"category"`
 			Price     int64  `json:"price"`
 			NIKMasked string `json:"nik_masked"`
