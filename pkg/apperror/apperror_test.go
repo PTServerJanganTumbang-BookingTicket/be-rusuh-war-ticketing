@@ -71,3 +71,10 @@ func TestWithRetryAfter(t *testing.T) {
 func TestRetryAfter_ZeroByDefault(t *testing.T) {
 	assert.Zero(t, ErrBadRequest("x").RetryAfter)
 }
+
+func TestWithData(t *testing.T) {
+	data := map[string]any{"queue_state": "NOT_OPEN"}
+	err := ErrConflict("Penjualan belum dibuka").WithCode("SALE_NOT_OPEN").WithData(data)
+	assert.Equal(t, data, err.Data)
+	assert.Nil(t, ErrConflict("x").Data, "Data is nil (written as {}) by default")
+}

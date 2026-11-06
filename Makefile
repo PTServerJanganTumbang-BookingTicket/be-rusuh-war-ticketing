@@ -6,6 +6,8 @@ MODULES := $(patsubst %/go.mod,%,$(wildcard pkg/go.mod services/*/go.mod))
 GOLANGCI_VERSION := v2.15.0
 GOLANGCI         := .bin/golangci-lint-$(GOLANGCI_VERSION)
 SPECCHECK        := tools/speccheck/speccheck
+GOVULN_VERSION   := v1.9.0
+GOVULNCHECK      := .bin/govulncheck-$(GOVULN_VERSION)
 
 # docker compose host ports (see docker-compose.yml).
 REDIS_PORT    ?= 16379
@@ -47,6 +49,12 @@ $(GOLANGCI):
 	@echo "==> building golangci-lint $(GOLANGCI_VERSION) into .bin/"
 	GOWORK=off GOBIN=$(CURDIR)/.bin go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_VERSION)
 	@mv .bin/golangci-lint $(GOLANGCI)
+
+$(GOVULNCHECK):
+	@mkdir -p .bin
+	@echo "==> building govulncheck $(GOVULN_VERSION) into .bin/"
+	GOWORK=off GOBIN=$(CURDIR)/.bin go install golang.org/x/vuln/cmd/govulncheck@$(GOVULN_VERSION)
+	@mv .bin/govulncheck $(GOVULNCHECK)
 
 # tools/speccheck is outside go.work, so it builds with GOWORK=off.
 $(SPECCHECK): tools/speccheck/main.go tools/speccheck/go.mod
@@ -102,18 +110,19 @@ coverage:
 	  (cd $$m && go test -count=1 -coverprofile=$(CURDIR)/coverage/$$n.out ./...) || exit 1; done
 
 # End of each build step and CI: everything, on real Redis cluster + Postgres.
+# The coverage gate excludes cmd/ and mocks, like sonar.coverage.exclusions.
 verify: export REDIS_ADDR := $(REDIS_ADDR)
 verify: export DATABASE_URL := $(DATABASE_URL)
-verify: verify-fast deps-up isolation-check
+verify: verify-fast deps-up isolation-check $(GOVULNCHECK)
 	@mkdir -p coverage
 	@for m in $(MODULES); do n=$$(echo $$m | tr / -); echo "==> go test -race ($$m)"; \
 	  (cd $$m && go test -race -count=1 -coverprofile=$(CURDIR)/coverage/$$n.out ./...) || exit 1; \
-	  pct=$$(go tool cover -func=$(CURDIR)/coverage/$$n.out | awk '/^total:/{sub("%","",$$3); print $$3}'); \
+	  grep -vE '/(cmd|_mock|mocks?)/' $(CURDIR)/coverage/$$n.out > $(CURDIR)/coverage/$$n.gate.out; \
+	  pct=$$(go tool cover -func=$(CURDIR)/coverage/$$n.gate.out | awk '/^total:/{sub("%","",$$3); print $$3}'); \
 	  echo "    coverage $$m: $$pct%"; \
 	  awk -v p="$$pct" -v min=$(COVERAGE_MIN) 'BEGIN{exit (p+0 < min)}' || { echo "coverage below $(COVERAGE_MIN)% in $$m"; exit 1; }; \
 	done
-	@command -v govulncheck >/dev/null || { echo "govulncheck not installed: go install golang.org/x/vuln/cmd/govulncheck@latest"; exit 1; }
-	@for m in $(MODULES); do echo "==> govulncheck ($$m)"; (cd $$m && govulncheck ./...) || exit 1; done
+	@for m in $(MODULES); do echo "==> govulncheck ($$m)"; (cd $$m && $(CURDIR)/$(GOVULNCHECK) ./...) || exit 1; done
 	@echo "verify: OK"
 
 # Convenience passthroughs to the booking service's own Makefile.
