@@ -32,6 +32,9 @@ source below, the source wins and the plan gets fixed.
 
 Folders are created when their planning starts. Copy [`_template.md`](_template.md) for each endpoint.
 
+Cross-cutting references: [`redis-keys.md`](redis-keys.md) (every Redis key and channel) ·
+[`DEVELOPMENT-FLOW.md`](DEVELOPMENT-FLOW.md) (how we build: spec → review → red → green → verify).
+
 ## Conventions
 
 - **One file per Apidog endpoint**, numbered in Apidog order: `01-join-queue.md`, and so on.

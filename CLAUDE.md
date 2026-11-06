@@ -30,6 +30,7 @@ Every change follows [`docs/DEVELOPMENT-FLOW.md`](docs/DEVELOPMENT-FLOW.md):
 - Behaviour comes from the `documentations` repo (requirements → ADR-005 as amended by ADR-006 →
   Apidog JSON / api-contracts). `docs/` here plans the build; when they disagree, the source wins.
 - All Redis keys come from `pkg/rediskeys`. Never hand-write a key string. Never copy ADR-005's Lua.
+  A new key or channel also gets a row in `docs/redis-keys.md` (a test enforces it for `pkg/rediskeys`).
 - Integration tests use real Redis/Postgres, never mocks of them.
 - Commits: one branch per build step, local commits allowed, **never push or open a PR without asking**.
 - Backend docs and specs are in English.

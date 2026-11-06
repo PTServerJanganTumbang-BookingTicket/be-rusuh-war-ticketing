@@ -124,7 +124,8 @@ stateDiagram-v2
     SOLD_OUT --> CLOSED: sold_out_at + 930 s
     CLOSED --> [*]
 
-    note right of SCHEDULED: join returns 409
+    note right of SCHEDULED: join returns 409 SALE_NOT_OPEN
+    note right of SOLD_OUT: join returns 409 SOLD_OUT to new joiners, rejoiners keep their place
     note right of CLOSED: stream returns 410 Gone
 ```
 
@@ -172,19 +173,14 @@ If `05-booking/` ever adds one (e.g. HELD → SELECTING to change seats), revisi
 ## 4. Redis keyspace (queue domain)
 
 All names come from `pkg/rediskeys` (impl-plan §3.1). Never hand-write a key string.
+**The full list (type, TTL, writer, readers, meaning) is in [`../redis-keys.md`](../redis-keys.md)**,
+kept in step with the code by a test in `pkg/rediskeys`. In short:
 
-| Key | Type | Writer | Readers |
-|---|---|---|---|
-| `queue:{ev}:state` | string | sale-ops, advance Lua | all |
-| `queue:{ev}:issued` | counter | join | join, events |
-| `queue:{ev}` → `now_serving`, `rate_per_min` | hash | advance Lua, ctl | all |
-| `queue:{ev}:by_ticket` | zset (score = ticket_no). Score ≤ `now_serving` = **pending grant** | join (ZADD), ctl (ZREM after INSERT) | advance Lua, ctl RECOVER, me |
-| `stock:{ev}:{cat}` | counter | booking (`hold_booking.lua`), ctl sweeps | **advance Lua reads it directly** |
-| `token:{uuid}` | hash, EX sale window | join | me, stream, ctl |
-| `acct:{ev}:{account_id}` | string NX | join | join, me |
-| `grant:{token}` | hash, TTL from row deadline | ctl | me, booking (`pkg/grantauth`) |
-| `rl:join:{ip}`, `rl:sse:{ip}` | token bucket | join, stream | — |
-| pub/sub `sse-broadcast` · `sse-status` (state changes, incl. CLOSED) | channel | ctl | sse-server |
+| Group | Keys |
+|---|---|
+| Event (slot `{ev}`) | `queue:{ev}` (`now_serving`, `rate_per_min`, `name`, `sale_starts_at`), `queue:{ev}:state`, `queue:{ev}:issued`, `queue:{ev}:by_ticket` (score ≤ `now_serving` = **pending grant**), `queue:{ev}:sold_out_at`, `expiries:{ev}`, `stock:{ev}:{cat}`, `acct:{ev}:{account_id}` |
+| Customer (no tag) | `token:{queue_token}`, `grant:{grant_token}`, `rl:join:{ip}`, `rl:joinacct:{account_id}`, `rl:sse:{ip}` |
+| Channels | `sse-broadcast`, `sse-status` (state changes, incl. CLOSED) |
 
 **Removed** compared with ADR-005: `regrant:{ev}` (decision #1), `slots:open:{ev}` (S1), the
 `sse-grant` channel (S3), `pause:{ev}` + `pause:{ev}:grace_applied` (ADR-006 §4.3), `sse-sold-out`
@@ -298,7 +294,7 @@ Rounding up makes the estimate lean pessimistic, and the big steps stop it flick
 ```
 SSE default event:   {"nowServing":31604,"state":"OPEN","ratePerMin":318,"serverTime":"…"}
 /serving data:       {"now_serving":31600,"rate_per_min":318,"state":"OPEN","server_time":"…", "poll_after_ms":…, "poll_tiers":[…]}
-join data:           {"ticket_no":32748,"now_serving":31500,"position":1248,"queue_token":"qt_xyz789","sse_url":"/queue/stream"}
+join data:           {"ticket_no":32748,"now_serving":31500,"position":1248,"queue_token":"qt_xyz789","sse_url":"https://events.rusuhtiket.com/events/evt_konser_a/queue/stream","event":{…}}
 ```
 
 `ticket_no` comes from join (or `/me`); `ratePerMin` arrives with the first SSE snapshot, so the
