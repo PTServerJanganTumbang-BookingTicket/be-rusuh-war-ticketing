@@ -35,3 +35,9 @@ services/*/vendor/
 # Pinned tools built by the Makefile
 .bin/
 tools/speccheck/speccheck
+
+# AI steering and Claude Code harness: local only, not part of the team repo
+CLAUDE.md
+.claude/
+docs/DEVELOPMENT-FLOW.md
+scripts/claude-hooks/
