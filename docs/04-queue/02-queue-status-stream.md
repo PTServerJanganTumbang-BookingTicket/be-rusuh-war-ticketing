@@ -138,21 +138,24 @@ Full JSON schemas per event: the Apidog stream response `itemSchema` (`QueueStre
 
 ## 7. Tests
 
-- [ ] unit: state gate codes. Token missing → 401
-- [ ] unit: connection maps register and unregister (no leak after close)
-- [ ] integration: publish broadcast → all N test clients receive it in < 1 s
-- [ ] integration: every connection of an event receives **identical bytes** for a broadcast
-- [ ] client contract test: payload with `nowServing ≥ ticket_no` → client calls `/me` exactly once per crossing
-- [ ] integration: `sse-status` FULL_BOOKED → every connection gets `event: status`, stream stays open; CLOSED → `status` then `sold-out`, then the response ends
-- [ ] integration: stop publishing 30 s → `event: stale`
-- [ ] load: X connections per 2 vCPU / 4 GB task, fan-out p95
+Specs: `services/sse-server/features/stream_{connect,updates,reliability}.feature` (62 scenarios; 4 run on the real Redis cluster).
+
+- [x] unit: state gate codes (404 / 409 / 410), token missing or other event → 401, query string and Bearer ignored
+- [x] unit: connection registry (no leak after 1000 connect-and-leave cycles)
+- [x] integration: publish broadcast → customers on two servers receive it in < 1 s, identical bytes
+- [x] unit: every connection of an event receives **identical bytes**, built once
+- [ ] client contract test: payload with `nowServing ≥ ticket_no` → client calls `/me` exactly once per crossing (frontend)
+- [x] unit + integration: `sse-status` FULL_BOOKED → `event: status`, stream stays open; CLOSED → `status` then `sold-out`, then the response ends (on every server)
+- [x] unit: 30 s without a broadcast → `event: stale` once; `stale false` with the next broadcast
+- [x] integration: fan-out p95 < 1 s with 5,000 connections on one server (a smoke bound; the real figure is the ECS load test)
+- [ ] load: X connections per 2 vCPU / 4 GB task (ECS load test, ADR-005 §17 #4)
 
 ## 8. Tasks
 
-- [ ] `services/sse-server` scaffold (ECS, plain `net/http`, no Lambda entrypoint)
-- [ ] connection manager: one list per event, no token index (impl-plan §8.2, simplified by S3)
-- [ ] stream handler + snapshot
-- [ ] Redis subscriber + chunked fan-out
-- [ ] stale detector + `CtlHeartbeatAge`
-- [ ] SIGTERM drain
+- [x] `services/sse-server` scaffold (plain `net/http`, no Lambda entrypoint; `cmd/server`, `internal/{config,metrics,stream}`)
+- [x] connection manager: one room per event, no token index (impl-plan §8.2, simplified by S3)
+- [x] stream handler + snapshot
+- [x] Redis subscriber (classic pub/sub behind `stream.Source`) + non-blocking fan-out
+- [x] stale detector + `CtlHeartbeatAge`
+- [x] SIGTERM drain (`Drain`, hard close at 20 s)
 - [ ] Dockerfile + ECS task def + ALB target group (health `/health`, slow start 30 s)

@@ -56,8 +56,8 @@ Removed by ADR-006 (a test in `pkg/rediskeys` fails if they come back): `regrant
 
 | Channel | Constant | Published by | Subscribed by | Payload | Status |
 |---|---|---|---|---|---|
-| `sse-broadcast` | `ChannelBroadcast` | admission-ctl, once per tick | sse-server (fan-out to every client) | `now_serving`, `rate_per_min`, … (api-contracts §3.2) | subscriber built |
-| `sse-status` | `ChannelStatus` | admission-ctl, on each state change | sse-server (`status` event) | `{state, fullBookedAt, serverTime}` | subscriber built |
+| `sse-broadcast` | `ChannelBroadcast` | admission-ctl, once per tick | sse-server (fan-out to every client) | `now_serving`, `rate_per_min`, … (api-contracts §3.2) | built (subscriber); publisher planned |
+| `sse-status` | `ChannelStatus` | admission-ctl, on each state change | sse-server (`status` event) | `{eventId, state, fullBookedAt, serverTime}` | built (subscriber); publisher planned |
 
 ## Other services (keys still hand-written in each service)
 

@@ -7,5 +7,6 @@ use (
 	./services/notification
 	./services/outbox-publisher
 	./services/queue
+	./services/sse-server
 	./services/user
 )

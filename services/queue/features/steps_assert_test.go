@@ -170,6 +170,18 @@ func registerAssertSteps(sc *godog.ScenarioContext, W func() *world) {
 		}
 		return expectStatus(w.resps[3], s)
 	})
+	sc.Step(`^the message is "([^"]*)"$`, func(want string) error {
+		return lastDo(func(r *response) error {
+			m, err := r.meta()
+			if err != nil {
+				return err
+			}
+			if m["message"] != want {
+				return fmt.Errorf("meta.message = %v, want %q", m["message"], want)
+			}
+			return nil
+		})
+	})
 	sc.Step(`^the body is a valid error envelope$`, func() error { return lastDo(validErrorEnvelope) })
 	sc.Step(`^the response body matches:$`, func(doc *godog.DocString) error {
 		return lastDo(func(r *response) error { return W().bodyMatches(r, doc.Content) })

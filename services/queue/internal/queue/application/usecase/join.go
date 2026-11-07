@@ -257,7 +257,7 @@ func saleGate(s domain.EventSnapshot) error {
 		return apperror.ErrConflict("Penjualan belum dibuka").WithCode(domain.CodeSaleNotOpen).
 			WithData(map[string]any{"queue_state": "NOT_OPEN", "sale_starts_at": s.SaleStartsAt})
 	case s.State == domain.StateClosed:
-		return apperror.New(http.StatusGone, "41000", "Penjualan sudah ditutup").WithCode(domain.CodeSaleClosed).
+		return apperror.New(http.StatusGone, "41000", "Tiket sudah habis").WithCode(domain.CodeSaleClosed).
 			WithData(map[string]any{"queue_state": string(domain.StateClosed)})
 	}
 	return nil

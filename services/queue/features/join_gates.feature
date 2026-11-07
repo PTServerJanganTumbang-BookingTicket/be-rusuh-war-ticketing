@@ -184,6 +184,7 @@ Feature: Join says no early and in a fixed order, and a refusal never costs me a
     Given event "E1" is "CLOSED"
     When a guest with device id "dev-aaaaaaaaaaaaaaaa" joins "E1" with captcha "cap-ok"
     Then the response status is 410 with error_code "SALE_CLOSED"
+    And the message is "Tiket sudah habis"
     And data is {"queue_state": "CLOSED"}
 
   @integration @redis-cluster @FR-18
