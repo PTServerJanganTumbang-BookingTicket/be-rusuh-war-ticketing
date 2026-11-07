@@ -40,13 +40,13 @@ func NewStore(rdb goredis.UniversalClient) *Store { return &Store{rdb: rdb} }
 // the {ev} slot. A missing key reads as empty; any other per-command error
 // fails the snapshot (fail closed: a hidden error could open the capacity gate).
 func (s *Store) Snapshot(ctx context.Context, ev rediskeys.Event) (domain.EventSnapshot, error) {
-	var state, issued, soldOut *goredis.StringCmd
+	var state, issued, fullBooked *goredis.StringCmd
 	var meta *goredis.SliceCmd
 	_, err := s.rdb.Pipelined(ctx, func(p goredis.Pipeliner) error {
 		state = p.Get(ctx, ev.QueueState())
 		meta = p.HMGet(ctx, ev.QueueHash(), FieldNowServing, FieldName, FieldSaleStartsAt)
 		issued = p.Get(ctx, ev.QueueIssued())
-		soldOut = p.Get(ctx, ev.SoldOutAt())
+		fullBooked = p.Get(ctx, ev.FullBookedAt())
 		return nil
 	})
 	if err != nil && !errors.Is(err, goredis.Nil) {
@@ -57,7 +57,7 @@ func (s *Store) Snapshot(ctx context.Context, ev rediskeys.Event) (domain.EventS
 	for _, c := range []struct {
 		cmd *goredis.StringCmd
 		dst *string
-	}{{state, &stateStr}, {issued, &issuedStr}, {soldOut, &snap.SoldOutAt}} {
+	}{{state, &stateStr}, {issued, &issuedStr}, {fullBooked, &snap.FullBookedAt}} {
 		v, err := c.cmd.Result()
 		if err != nil && !errors.Is(err, goredis.Nil) {
 			return domain.EventSnapshot{}, err

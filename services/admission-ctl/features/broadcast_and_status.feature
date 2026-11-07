@@ -2,7 +2,7 @@
 Feature: One broadcast for everyone, and one status event per sale-state change
   After FINISH, the controller publishes the same payload to every waiting client
   on sse-broadcast. Clients compute their own position. There is no grant event.
-  Sale-state changes go once to sse-status. SOLD_OUT turns into CLOSED after 930 s.
+  Sale-state changes go once to sse-status. FULL_BOOKED turns into CLOSED after 930 s.
 
   Sources: 05 §2, §3.4 · 02-queue-status-stream.md · ADR-006 §4.2
 
@@ -50,43 +50,43 @@ Feature: One broadcast for everyone, and one status event per sale-state change
 
     Examples:
       | from     | to       |
-      | OPEN     | SOLD_OUT |
-      | SOLD_OUT | OPEN     |
-      | SOLD_OUT | CLOSED   |
+      | OPEN     | FULL_BOOKED |
+      | FULL_BOOKED | OPEN     |
+      | FULL_BOOKED | CLOSED   |
 
   @unit
-  Scenario: The SOLD_OUT status message carries soldOutAt
-    When "E1" goes SOLD_OUT at epoch 1800000000
+  Scenario: The FULL_BOOKED status message carries fullBookedAt
+    When "E1" goes FULL_BOOKED at epoch 1800000000
     Then the sse-status message is:
       """json
-      {"eventId":"E1","state":"SOLD_OUT","soldOutAt":1800000000,"serverTime":1800000000}
+      {"eventId":"E1","state":"FULL_BOOKED","fullBookedAt":1800000000,"serverTime":1800000000}
       """
 
   @unit
   Scenario: A restarted controller publishes the current state once
-    Given the controller just started and "E1" is "SOLD_OUT"
+    Given the controller just started and "E1" is "FULL_BOOKED"
     When the first tick runs
-    Then one sse-status message is published with state "SOLD_OUT"
+    Then one sse-status message is published with state "FULL_BOOKED"
 
   @unit @FR-18
-  Scenario Outline: SOLD_OUT closes after 930 seconds
-    Given "E1" is "SOLD_OUT" since epoch 1800000000
+  Scenario Outline: FULL_BOOKED closes after 930 seconds
+    Given "E1" is "FULL_BOOKED" since epoch 1800000000
     When the clock reads epoch <now> and the tick runs
     Then the state is "<state>"
 
     Examples:
       | now        | state    |
-      | 1800000929 | SOLD_OUT |
+      | 1800000929 | FULL_BOOKED |
       | 1800000930 | CLOSED   |
       | 1800005000 | CLOSED   |
     # OPEN: 05 §2 says "older than 930 s". Proposal: close at >= 930 s, as above.
 
   @integration @redis-cluster
   Scenario: Stock coming back resets the CLOSED timer
-    Given "E1" is "SOLD_OUT" since epoch 1800000000
+    Given "E1" is "FULL_BOOKED" since epoch 1800000000
     When an expired hold returns 3 tickets at epoch 1800000500 and the tick runs
     And "E1" sells out again at epoch 1800000600
-    Then "E1" is still "SOLD_OUT" at epoch 1800001500
+    Then "E1" is still "FULL_BOOKED" at epoch 1800001500
     And "E1" is "CLOSED" at epoch 1800001530
 
   @integration @redis-cluster

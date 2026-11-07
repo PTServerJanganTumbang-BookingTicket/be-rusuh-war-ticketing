@@ -48,7 +48,7 @@ func (e Event) tag() string { return "{" + e.id + "}" }
 // QueueHash is queue:{ev}: now_serving, sale metadata.
 func (e Event) QueueHash() string { return "queue:" + e.tag() }
 
-// QueueState is queue:{ev}:state (SCHEDULED | OPEN | SOLD_OUT | CLOSED).
+// QueueState is queue:{ev}:state (SCHEDULED | OPEN | FULL_BOOKED | CLOSED).
 func (e Event) QueueState() string { return "queue:" + e.tag() + ":state" }
 
 // QueueIssued is queue:{ev}:issued, the INCR counter that hands out ticket_no.
@@ -57,8 +57,8 @@ func (e Event) QueueIssued() string { return "queue:" + e.tag() + ":issued" }
 // ByTicket is queue:{ev}:by_ticket, a ZSET of queue_token scored by ticket_no.
 func (e Event) ByTicket() string { return "queue:" + e.tag() + ":by_ticket" }
 
-// SoldOutAt is queue:{ev}:sold_out_at.
-func (e Event) SoldOutAt() string { return "queue:" + e.tag() + ":sold_out_at" }
+// FullBookedAt is queue:{ev}:full_booked_at (when stock first hit zero).
+func (e Event) FullBookedAt() string { return "queue:" + e.tag() + ":full_booked_at" }
 
 // Expiries is expiries:{ev}, the ZSET of booking expiry times.
 func (e Event) Expiries() string { return "expiries:" + e.tag() }
@@ -80,3 +80,6 @@ func JoinRateLimit(ip string) string { return "rl:join:" + ip }
 
 // JoinAcctLimit is rl:joinacct:<account_id> (3 joins / min).
 func JoinAcctLimit(accountID string) string { return "rl:joinacct:" + accountID }
+
+// SSERateLimit is rl:sse:<ip> (5 stream connections / s).
+func SSERateLimit(ip string) string { return "rl:sse:" + ip }

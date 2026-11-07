@@ -28,11 +28,11 @@ Feature: rate_per_min tells waiting clients how fast now_serving moves
     Then rate_per_min is 600
 
   @unit
-  Scenario: SOLD_OUT time is not sampled and the rate is kept
+  Scenario: FULL_BOOKED time is not sampled and the rate is kept
     Given rate_per_min is 600 after 2 minutes OPEN
-    When "E1" is SOLD_OUT for 3 minutes
-    Then rate_per_min stays 600 for the whole SOLD_OUT time
-    And no sample was added while SOLD_OUT
+    When "E1" is FULL_BOOKED for 3 minutes
+    Then rate_per_min stays 600 for the whole FULL_BOOKED time
+    And no sample was added while FULL_BOOKED
     When "E1" reopens and now_serving moves by 5 per tick
     Then rate_per_min is computed from OPEN samples only
 

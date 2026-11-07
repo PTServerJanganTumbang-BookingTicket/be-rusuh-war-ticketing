@@ -1073,13 +1073,13 @@ func (w *world) grantedFromRow(r *response) error {
 }
 
 func (w *world) noGateAfter(g string) error {
-	order := []string{"request shape", "identity", "rate limit", "CAPTCHA required", "CAPTCHA", "sale state", "sold out", "capacity"}
+	order := []string{"request shape", "identity", "rate limit", "CAPTCHA required", "CAPTCHA", "sale state", "fully booked", "capacity"}
 	probe := map[string]func() int64{
-		"rate limit": w.limiter.calls.Load,
-		"CAPTCHA":    w.fcaptcha.calls.Load,
-		"sale state": w.store.snapshots.Load,
-		"sold out":   w.store.issues.Load,
-		"capacity":   w.store.issues.Load,
+		"rate limit":   w.limiter.calls.Load,
+		"CAPTCHA":      w.fcaptcha.calls.Load,
+		"sale state":   w.store.snapshots.Load,
+		"fully booked": w.store.issues.Load,
+		"capacity":     w.store.issues.Load,
 	}
 	after := false
 	for _, name := range order {

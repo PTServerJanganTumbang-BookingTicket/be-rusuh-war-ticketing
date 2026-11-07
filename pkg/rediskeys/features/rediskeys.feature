@@ -17,7 +17,7 @@ Feature: Central Redis key names (pkg/rediskeys)
       | QueueState |        | queue:{E1}:state        |
       | QueueIssued|        | queue:{E1}:issued       |
       | ByTicket   |        | queue:{E1}:by_ticket    |
-      | SoldOutAt  |        | queue:{E1}:sold_out_at  |
+      | FullBookedAt  |        | queue:{E1}:full_booked_at  |
       | Expiries   |        | expiries:{E1}           |
       | Stock      | VIP    | stock:{E1}:VIP          |
       | Acct       | acc-42 | acct:{E1}:acc-42        |
@@ -33,6 +33,7 @@ Feature: Central Redis key names (pkg/rediskeys)
       | Grant          | gt_abc123                     | grant:gt_abc123                     |
       | JoinRateLimit  | 203.0.113.7                   | rl:join:203.0.113.7                 |
       | JoinAcctLimit  | acc-1                         | rl:joinacct:acc-1                   |
+      | SSERateLimit   | 203.0.113.7                   | rl:sse:203.0.113.7                  |
 
   @unit
   Scenario: Pub/sub channel names are constants

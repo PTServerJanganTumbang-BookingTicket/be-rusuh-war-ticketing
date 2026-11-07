@@ -21,12 +21,12 @@ Feature: The real controller process admits a crowd end to end
     Then within 1 s 4 more are GRANTED, holding tickets 11 to 14
 
   Scenario: The sale sells out, then closes
-    Given admission-ctl runs with SOLD_OUT_CLOSE_SECONDS 3 for this test
+    Given admission-ctl runs with FULL_BOOKED_CLOSE_SECONDS 3 for this test
     When 100 customers join and every granted customer buys 3 tickets
-    Then the state becomes "SOLD_OUT" once 60 tickets are confirmed
-    And sse-status announced "SOLD_OUT" exactly once
+    Then the state becomes "FULL_BOOKED" once 60 tickets are confirmed
+    And sse-status announced "FULL_BOOKED" exactly once
     And within 4 s the state is "CLOSED" and sse-status announced "CLOSED" once
-    # OPEN: 930 s needs to be configurable for tests; proposal: config SOLD_OUT_CLOSE_SECONDS.
+    # OPEN: 930 s needs to be configurable for tests; proposal: config FULL_BOOKED_CLOSE_SECONDS.
 
   Scenario: Killing the controller mid-sale loses nobody
     When 100 customers join

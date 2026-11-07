@@ -119,13 +119,13 @@ sequenceDiagram
 stateDiagram-v2
     [*] --> SCHEDULED: sale-ops seed
     SCHEDULED --> OPEN: EventBridge at sale_starts_at
-    OPEN --> SOLD_OUT: total stock = 0
-    SOLD_OUT --> OPEN: stock returns from an expired booking
-    SOLD_OUT --> CLOSED: sold_out_at + 930 s
+    OPEN --> FULL_BOOKED: total stock = 0
+    FULL_BOOKED --> OPEN: stock returns from an expired booking
+    FULL_BOOKED --> CLOSED: full_booked_at + 930 s
     CLOSED --> [*]
 
     note right of SCHEDULED: join returns 409 SALE_NOT_OPEN
-    note right of SOLD_OUT: join returns 409 SOLD_OUT to new joiners, rejoiners keep their place
+    note right of FULL_BOOKED: join returns 409 FULL_BOOKED to new joiners, rejoiners keep their place
     note right of CLOSED: stream returns 410 Gone
 ```
 
@@ -178,7 +178,7 @@ kept in step with the code by a test in `pkg/rediskeys`. In short:
 
 | Group | Keys |
 |---|---|
-| Event (slot `{ev}`) | `queue:{ev}` (`now_serving`, `rate_per_min`, `name`, `sale_starts_at`), `queue:{ev}:state`, `queue:{ev}:issued`, `queue:{ev}:by_ticket` (score ≤ `now_serving` = **pending grant**), `queue:{ev}:sold_out_at`, `expiries:{ev}`, `stock:{ev}:{cat}`, `acct:{ev}:{account_id}` |
+| Event (slot `{ev}`) | `queue:{ev}` (`now_serving`, `rate_per_min`, `name`, `sale_starts_at`), `queue:{ev}:state`, `queue:{ev}:issued`, `queue:{ev}:by_ticket` (score ≤ `now_serving` = **pending grant**), `queue:{ev}:full_booked_at`, `expiries:{ev}`, `stock:{ev}:{cat}`, `acct:{ev}:{account_id}` |
 | Customer (no tag) | `token:{queue_token}`, `grant:{grant_token}`, `rl:join:{ip}`, `rl:joinacct:{account_id}`, `rl:sse:{ip}` |
 | Channels | `sse-broadcast`, `sse-status` (state changes, incl. CLOSED) |
 
@@ -202,7 +202,7 @@ Each step is demoable alone.
 5. **04 serving**, then **03 me**
 6. **02 sse-server:** snapshot + broadcast fan-out (no per-token routing)
 7. **Wait-time estimate (§8):** `rate_per_min` window in ctl; frontend rule from api-contracts §3.5
-8. Harden: sweep LAPSED, Turnstile, SOLD_OUT → CLOSED + `status` events
+8. Harden: sweep LAPSED, Turnstile, FULL_BOOKED → CLOSED + `status` events
 9. Load test: 300k synthetic joins + SSE fan-out (k6)
 
 ## 6. Decisions
@@ -265,7 +265,7 @@ Contract: api-contracts §3.5 · decision: ADR-006 §6.2.
 
 ```mermaid
 flowchart TD
-    A[ticket_no, nowServing, ratePerMin, state] --> B{state SOLD_OUT?}
+    A[ticket_no, nowServing, ratePerMin, state] --> B{state FULL_BOOKED?}
     B -->|yes| B1[Tiket sedang habis, no estimate]
     B -->|no| D{position = ticket_no − nowServing ≤ 0?}
     D -->|yes| D1[Giliran Anda sebentar lagi<br/>call GET /me]
@@ -352,7 +352,7 @@ giliran Anda". Behind flag `SHOW_SELLOUT_HINT`, off.
 
 ### 8.7 Tests and tasks
 
-- [ ] ctl unit: `rate_per_min` window, seed, SOLD_OUT exclusion ([05 §3.5](05-admission-controller.md#35-rate_per_min))
+- [ ] ctl unit: `rate_per_min` window, seed, FULL_BOOKED exclusion ([05 §3.5](05-admission-controller.md#35-rate_per_min))
 - [ ] contract: SSE examples validate against `QueueStreamUpdate`; `/serving` against `NowServingData`
 - [ ] client unit (web + mobile, shared fixtures): every branch of §8.2; rounding boundaries 10/11, 30/31, 60/61; never rounds down
 - [ ] metrics per sale: `RatePerMin`, `AvgSlotMinutes`, `AvgBasket`, `Conversion`, `GapRatio`, `TimeToSellOut`

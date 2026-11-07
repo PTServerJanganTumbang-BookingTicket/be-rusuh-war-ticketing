@@ -94,10 +94,10 @@ Feature: If I come back, I get my place back, not a second one
     Then the response status is 410 with error_code "SALE_CLOSED"
 
   @integration @redis-cluster @FR-18
-  Scenario: While sold out, I keep my place if I come back
-    # Sold out refuses only NEW places; seats may come back to those already in line.
+  Scenario: While fully booked, I keep my place if I come back
+    # Fully booked refuses only NEW places; seats may come back to those already in line.
     Given account "acc-1" joined "E1" earlier and got ticket 40000
-    And event "E1" is now "SOLD_OUT"
+    And event "E1" is now "FULL_BOOKED"
     When account "acc-1" joins "E1" again with captcha "cap-ok"
     Then the response status is 200 with message "Rejoined existing queue position"
     And data has rejoined true, state "QUEUED" and ticket_no 40000

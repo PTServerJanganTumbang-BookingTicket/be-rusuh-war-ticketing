@@ -118,7 +118,7 @@ Feature: One admission tick (RECOVER → SNAPSHOT → COUNT → ADVANCE → FINI
       | result              |
       | NOOP                |
       | EMPTY               |
-      | SOLD_OUT            |
+      | FULL_BOOKED            |
       | SCHEDULED           |
       | CLOSED              |
 

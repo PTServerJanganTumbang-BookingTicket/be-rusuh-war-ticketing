@@ -1,8 +1,8 @@
 @step-4 @queue-service @join
 Feature: Join says no early and in a fixed order, and a refusal never costs me a ticket number
-  Order: request shape → identity → rate limit → CAPTCHA → sale state → rejoin → sold out → capacity → issue ticket.
+  Order: request shape → identity → rate limit → CAPTCHA → sale state → rejoin → fully booked → capacity → issue ticket.
   Rate limit before CAPTCHA: refused attempts never cost an external call.
-  Sold out after rejoin: people already in line keep their place; only new places are refused.
+  Fully booked after rejoin: people already in line keep their place; only new places are refused.
   Errors use the standard envelope (meta.code, message, error_code, server_time; data {}).
 
   Sources: api-contracts §3.1, Appendix A · 01-join-queue.md §2, §3, §5 · impl-plan §7.2
@@ -31,7 +31,7 @@ Feature: Join says no early and in a fixed order, and a refusal never costs me a
       | CAPTCHA required  | 400    | CAPTCHA_REQUIRED   |
       | CAPTCHA           | 403    | CAPTCHA_FAILED     |
       | sale state        | 409    | SALE_NOT_OPEN      |
-      | sold out          | 409    | SOLD_OUT           |
+      | fully booked          | 409    | FULL_BOOKED           |
       | capacity          | 503    | QUEUE_FULL         |
 
   @unit
@@ -187,17 +187,17 @@ Feature: Join says no early and in a fixed order, and a refusal never costs me a
     And data is {"queue_state": "CLOSED"}
 
   @integration @redis-cluster @FR-18
-  Scenario: While sold out, a new customer is refused and no number is spent
-    # Decided 2026-11-06 (Erma). New code SOLD_OUT, to be added to Appendix A + Apidog.
-    Given event "E1" is "SOLD_OUT" with sold_out_at "2026-11-10T02:40:12Z"
+  Scenario: While fully booked, a new customer is refused and no number is spent
+    # Decided 2026-11-06 (Erma). New code FULL_BOOKED, to be added to Appendix A + Apidog.
+    Given event "E1" is "FULL_BOOKED" with full_booked_at "2026-11-10T02:40:12Z"
     When a guest with device id "dev-aaaaaaaaaaaaaaaa" joins "E1" with captcha "cap-ok"
-    Then the response status is 409 with error_code "SOLD_OUT"
-    And data is {"queue_state": "SOLD_OUT", "sold_out_at": "2026-11-10T02:40:12Z"}
+    Then the response status is 409 with error_code "FULL_BOOKED"
+    And data is {"queue_state": "FULL_BOOKED", "full_booked_at": "2026-11-10T02:40:12Z"}
     And queue:{E1}:issued is still 149
 
   @integration @redis-cluster @FR-18
   Scenario: Joining works again once seats come back
-    Given event "E1" was "SOLD_OUT" and is now "OPEN"
+    Given event "E1" was "FULL_BOOKED" and is now "OPEN"
     When a guest with device id "dev-aaaaaaaaaaaaaaaa" joins "E1" with captcha "cap-ok"
     Then the response status is 200
     And data.ticket_no is 150

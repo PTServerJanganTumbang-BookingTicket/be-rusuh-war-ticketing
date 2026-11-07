@@ -172,9 +172,9 @@ func (j *Join) Join(ctx context.Context, in JoinInput) (JoinResult, error) {
 		return res, nil
 	}
 
-	if snap.State == domain.StateSoldOut {
-		return JoinResult{}, apperror.ErrConflict("Tiket sedang habis").WithCode(domain.CodeSoldOut).
-			WithData(map[string]any{"queue_state": string(domain.StateSoldOut), "sold_out_at": snap.SoldOutAt})
+	if snap.State == domain.StateFullBooked {
+		return JoinResult{}, apperror.ErrConflict("Tiket sedang habis").WithCode(domain.CodeFullBooked).
+			WithData(map[string]any{"queue_state": string(domain.StateFullBooked), "full_booked_at": snap.FullBookedAt})
 	}
 	if snap.Depth() >= j.cfg.Capacity {
 		return JoinResult{}, apperror.New(http.StatusServiceUnavailable, "50300",

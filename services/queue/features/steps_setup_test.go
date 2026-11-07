@@ -41,12 +41,12 @@ func registerSetupSteps(sc *godog.ScenarioContext, W func() *world) {
 		}
 		return w.rdb.HSet(context.Background(), ev(id).QueueHash(), queueredis.FieldSaleStartsAt, at).Err()
 	})
-	sc.Step(`^event "([^"]*)" is "([^"]*)" with sold_out_at "([^"]*)"$`, func(id, state, at string) error {
+	sc.Step(`^event "([^"]*)" is "([^"]*)" with full_booked_at "([^"]*)"$`, func(id, state, at string) error {
 		w := W()
 		if err := w.setState(id, state); err != nil {
 			return err
 		}
-		return w.rdb.Set(context.Background(), ev(id).SoldOutAt(), at, 0).Err()
+		return w.rdb.Set(context.Background(), ev(id).FullBookedAt(), at, 0).Err()
 	})
 	sc.Step(`^event "([^"]*)" has no state key$`, func(id string) error {
 		return W().rdb.Del(context.Background(), ev(id).QueueState()).Err()
@@ -315,7 +315,7 @@ func (w *world) insertBooking(eventID, qt, status string) error {
 
 // failGatesFrom makes gate g and every gate after it fail.
 func (w *world) failGatesFrom(g string) error {
-	order := []string{"request shape", "identity", "rate limit", "CAPTCHA required", "CAPTCHA", "sale state", "sold out", "capacity"}
+	order := []string{"request shape", "identity", "rate limit", "CAPTCHA required", "CAPTCHA", "sale state", "fully booked", "capacity"}
 	idx := -1
 	for i, name := range order {
 		if name == g {
@@ -344,9 +344,9 @@ func (w *world) failGatesFrom(g string) error {
 			if err := w.setState("E1", "SCHEDULED"); err != nil {
 				return err
 			}
-		case "sold out":
-			if g == "sold out" {
-				if err := w.setState("E1", "SOLD_OUT"); err != nil {
+		case "fully booked":
+			if g == "fully booked" {
+				if err := w.setState("E1", "FULL_BOOKED"); err != nil {
 					return err
 				}
 			}

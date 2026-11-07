@@ -365,7 +365,7 @@ func (w *world) cleanRedis() error {
 		for _, m := range members {
 			_ = w.rdb.Del(ctx, rediskeys.Token(m)).Err()
 		}
-		for _, k := range []string{e.QueueHash(), e.QueueState(), e.QueueIssued(), e.ByTicket(), e.SoldOutAt(), e.Expiries()} {
+		for _, k := range []string{e.QueueHash(), e.QueueState(), e.QueueIssued(), e.ByTicket(), e.FullBookedAt(), e.Expiries()} {
 			if err := w.rdb.Del(ctx, k).Err(); err != nil {
 				return err
 			}

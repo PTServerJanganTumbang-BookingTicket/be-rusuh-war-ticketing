@@ -52,7 +52,7 @@ sequenceDiagram
         Note over Q: fail open + CaptchaFailOpenSeconds
     end
 
-    Q->>R: 5 snapshot: state, now_serving, issued, name, sale_starts_at, sold_out_at (1 pipeline)
+    Q->>R: 5 snapshot: state, now_serving, issued, name, sale_starts_at, full_booked_at (1 pipeline)
     alt SCHEDULED
         Q-->>C: 409 SALE_NOT_OPEN {queue_state NOT_OPEN, sale_starts_at}
     else CLOSED
@@ -68,8 +68,8 @@ sequenceDiagram
         Q-->>C: 200 rejoined true, state, same queue_token + cookie
     end
 
-    alt 7 SOLD_OUT
-        Q-->>C: 409 SOLD_OUT {queue_state SOLD_OUT, sold_out_at}
+    alt 7 FULL_BOOKED
+        Q-->>C: 409 FULL_BOOKED {queue_state FULL_BOOKED, full_booked_at}
     else 8 issued − now_serving ≥ QUEUE_CAPACITY
         Q-->>C: 503 QUEUE_FULL {queue_state FULL, queue_capacity}
     end
@@ -107,7 +107,7 @@ order wins.
    fails open (`CaptchaFailOpenSeconds`)
 5. **Sale state**: `SCHEDULED` → 409 `SALE_NOT_OPEN`, `CLOSED` → 410 `SALE_CLOSED`, missing or unknown → 503
    `QUEUE_NOT_READY`
-6. **Rejoin, before sold-out and capacity**, so a customer who already has a place is never refused:
+6. **Rejoin, before fully-booked and capacity**, so a customer who already has a place is never refused:
    - BR-09: the presented `queue_token` (`X-Queue-Token`, else cookie) of this event, **owned by the caller**:
      a guest token needs a guest on the same device (`device_hash`), a logged-in token the same account. Not the
      caller's → 401 `DEVICE_MISMATCH` / `UNAUTHORIZED` and the cookie is cleared. A logged-in caller never takes
@@ -119,7 +119,7 @@ order wins.
      `now_serving` (`JoinRepaired`). A served ticket is never re-added
    - Turn has come: `state` is the booking row's status; no row yet = pending grant (`QUEUED`). A failed
      lookup is 503, never a guess
-7. **Sold out**: new joiners get 409 `SOLD_OUT`; rejoiners kept their place in step 6
+7. **Fully booked**: new joiners get 409 `FULL_BOOKED`; rejoiners kept their place in step 6
 8. **Capacity**: `issued − now_serving ≥ QUEUE_CAPACITY` → 503 `QUEUE_FULL` (fail fast, no buffering)
 9. **Issue**: `SET acct NX` (logged in; a lost race waits up to 2 s for the winner's token and returns that
    place) → `INCR issued` → `HSET token` (+ TTL) → `ZADD by_ticket`. Token before `by_ticket`, so
@@ -137,7 +137,7 @@ Full catalog: [`../redis-keys.md`](../redis-keys.md).
 | Store | Key / table | Op | Notes |
 |---|---|---|---|
 | Redis | `rl:join:{ip}`, `rl:joinacct:{id}` | token bucket (`pkg/ratelimit` Lua) | 20 / 5 min, 3 / min |
-| Redis | `queue:{ev}:state`, `queue:{ev}` (`now_serving`, `name`, `sale_starts_at`), `queue:{ev}:issued`, `queue:{ev}:sold_out_at` | one pipelined read | `name` and `sale_starts_at` are seeded by sale-ops |
+| Redis | `queue:{ev}:state`, `queue:{ev}` (`now_serving`, `name`, `sale_starts_at`), `queue:{ev}:issued`, `queue:{ev}:full_booked_at` | one pipelined read | `name` and `sale_starts_at` are seeded by sale-ops |
 | Redis | `token:{queue_token}` | HGETALL (rejoin), HSET + EXPIRE | `qt_` + ULID. Fields `ticket_no`, `event_id`, `joined_at`, `account_id` (logged in), `device_hash` (`HMAC(DEVICE_PEPPER, device id)`, whenever a device id is sent). TTL `SALE_WINDOW_SECONDS` |
 | Redis | `acct:{ev}:{account_id}` | GET, SET NX EX, WATCH/MULTI replace | logged-in only |
 | Redis | `queue:{ev}:by_ticket` | ZADD on issue; ZADD NX under WATCH on repair | score = `ticket_no` |
@@ -158,7 +158,7 @@ Join never runs the admission Lua, never publishes and never writes to Aurora.
 | 403 | `CAPTCHA_FAILED` | explicit CAPTCHA rejection |
 | 404 | `NOT_FOUND` | event id that cannot be a Redis hash tag |
 | 409 | `SALE_NOT_OPEN` | state `SCHEDULED`; data `{queue_state: NOT_OPEN, sale_starts_at}` |
-| 409 | `SOLD_OUT` | state `SOLD_OUT`, new joiners only; data `{queue_state: SOLD_OUT, sold_out_at}` (new code, 2026-11-06) |
+| 409 | `FULL_BOOKED` | state `FULL_BOOKED`, new joiners only; data `{queue_state: FULL_BOOKED, full_booked_at}` (new code, 2026-11-06) |
 | 410 | `SALE_CLOSED` | state `CLOSED`; data `{queue_state: CLOSED}` |
 | 429 | `TOO_MANY_REQUESTS` | rate limit; data `{retry_after}` (seconds) and a `Retry-After` header |
 | 503 | `QUEUE_FULL` | data `{queue_state: FULL, queue_capacity}` |
@@ -182,7 +182,7 @@ Join never runs the admission Lua, never publishes and never writes to Aurora.
   `account_id`, from any device. Otherwise 401 and the cookie is cleared, so the next join is fresh. A logged-in caller
   with a guest token gets its own place. Unknown or other-event tokens are ignored (`join_token_binding.feature`).
 - **DECIDED (2026-11-06): token in body and cookie**, cookie `Domain=my-rusuh.my.id` (`COOKIE_DOMAIN`).
-- **DECIDED (2026-11-06): `SOLD_OUT` refuses new joiners** (409), like a waiting room's "reject" mode; people
+- **DECIDED (2026-11-06): `FULL_BOOKED` refuses new joiners** (409), like a waiting room's "reject" mode; people
   already in line keep their place and wait for returned seats. Joining works again when the state goes back
   to `OPEN`.
 - **Capacity overshoot accepted:** the gate reads then INCRs (not atomic), so up to (parallel joins − 1) extra
@@ -208,7 +208,7 @@ All in `services/queue/features/` (godog, strict) plus Go unit tests under `inte
 - [x] integration: rejoin by account (another device) and by token (cookie / header) → same place, `rejoined: true`
 - [x] integration: token ownership: guest token from another device → 401 `DEVICE_MISMATCH`; logged-in token of another account or a guest → 401 `UNAUTHORIZED`; cookie cleared (`join_token_binding.feature`)
 - [x] integration: capacity reached → `QUEUE_FULL`, `issued` not incremented; a rejoiner is not refused
-- [x] integration: `SOLD_OUT` → 409 for new joiners, rejoiners keep their place
+- [x] integration: `FULL_BOOKED` → 409 for new joiners, rejoiners keep their place
 - [ ] integration: empty queue + ctl running → `granted: true` within 1 s (stand-in controller passes; real ctl `@e2e` after step 3)
 - [x] integration: empty queue + ctl stopped → queued answer after ≤ 1 s, ≤ 11 reads, SELECT only
 - [x] integration: non-empty queue → no wait, no SQL, no PUBLISH, no Lua but the rate limiter

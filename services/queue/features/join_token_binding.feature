@@ -82,7 +82,7 @@ Feature: Only the owner can use my queue_token
     Then the response status is 410 with error_code "SALE_CLOSED"
 
   @integration @redis-cluster @FR-18
-  Scenario: While sold out, a mismatch is still 401, not 409
-    Given event "E1" is now "SOLD_OUT"
+  Scenario: While fully booked, a mismatch is still 401, not 409
+    Given event "E1" is now "FULL_BOOKED"
     When a guest with device id "dev-laptop-000000002" joins "E1" sending queue_token "qt_G" with captcha "cap-ok"
     Then the response status is 401 with error_code "DEVICE_MISMATCH"

@@ -21,8 +21,8 @@ nowServing ≥ ticket_no → GET /queue/me         (FR-08, "my turn")
 minutes  = ceil(position / ratePerMin), rounded up   (FR-09, README §8, api-contracts §3.5)
 ```
 
-It also sends a named **`status`** event whenever the sale state changes (`OPEN → SOLD_OUT`,
-`SOLD_OUT → OPEN`, `→ CLOSED`), so the client doesn't have to diff payloads to notice a sell-out.
+It also sends a named **`status`** event whenever the sale state changes (`OPEN → FULL_BOOKED`,
+`FULL_BOOKED → OPEN`, `→ CLOSED`), so the client doesn't have to diff payloads to notice a sell-out.
 
 The server holds no per-client position and needs no token → connection map, just a list of
 connections per event.
@@ -63,9 +63,9 @@ sequenceDiagram
         R-->>S: nowServing, state, ratePerMin, serverTime
         S-->>C: data (same bytes, chunked fan-out to all connections of ev)
     and state change
-        CTL->>R: PUBLISH sse-status state, soldOutAt
+        CTL->>R: PUBLISH sse-status state, fullBookedAt
         R-->>S: state
-        S-->>C: event status (OPEN ↔ SOLD_OUT: stay connected)
+        S-->>C: event status (OPEN ↔ FULL_BOOKED: stay connected)
     end
 
     Note over C: on every payload: nowServing ≥ ticket_no → GET /queue/me<br/>(also on the first snapshot after a reconnect)
@@ -86,7 +86,7 @@ sequenceDiagram
 ## 3. Steps
 
 1. Rate limit per IP (`5 conn/s`)
-2. State gate: `CLOSED` → 410, `SCHEDULED` → 409, `SOLD_OUT` → open as normal (stock can return)
+2. State gate: `CLOSED` → 410, `SCHEDULED` → 409, `FULL_BOOKED` → open as normal (stock can return)
 3. Resolve token → `ticket_no`, `event_id`
 4. Headers: `text/event-stream`, `Cache-Control: no-cache`, `X-Accel-Buffering: no`
 5. Initial snapshot with SSE `id` (FR-10: position is right immediately after refresh)
@@ -108,7 +108,7 @@ sequenceDiagram
 | SSE event | Payload | Client action |
 |---|---|---|
 | (default `data`) | `nowServing, state, ratePerMin, serverTime` + `id` | compute position and minutes (README §8.4), sync clock. **If `nowServing ≥ ticket_no` → `GET /queue/me`** |
-| `status` | `state, soldOutAt, serverTime` | `SOLD_OUT`: sold-out message, hide the estimate, stay connected · `OPEN`: resume · `CLOSED`: `sold-out` follows |
+| `status` | `state, fullBookedAt, serverTime` | `FULL_BOOKED`: fully-booked message, hide the estimate, stay connected · `OPEN`: resume · `CLOSED`: `sold-out` follows |
 | `stale` | `stale, reason` | dim the numbers, show "Memperbarui…". Never reconnect on it (was named `status` until v2.6) |
 | `sold-out` | `{message}` | right after `status CLOSED`: terminal screen, `es.close()` |
 | `reconnect` | retry hint | let EventSource reconnect |
@@ -143,7 +143,7 @@ Full JSON schemas per event: the Apidog stream response `itemSchema` (`QueueStre
 - [ ] integration: publish broadcast → all N test clients receive it in < 1 s
 - [ ] integration: every connection of an event receives **identical bytes** for a broadcast
 - [ ] client contract test: payload with `nowServing ≥ ticket_no` → client calls `/me` exactly once per crossing
-- [ ] integration: `sse-status` SOLD_OUT → every connection gets `event: status`, stream stays open; CLOSED → `status` then `sold-out`, then the response ends
+- [ ] integration: `sse-status` FULL_BOOKED → every connection gets `event: status`, stream stays open; CLOSED → `status` then `sold-out`, then the response ends
 - [ ] integration: stop publishing 30 s → `event: stale`
 - [ ] load: X connections per 2 vCPU / 4 GB task, fan-out p95
 

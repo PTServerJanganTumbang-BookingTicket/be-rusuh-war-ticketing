@@ -15,7 +15,7 @@ import (
 // single {ev} slot; join never runs the admission Lua and never publishes.
 type QueueStore interface {
 	// Snapshot reads state, now_serving, issued, name, sale_starts_at and
-	// sold_out_at in one round trip.
+	// full_booked_at in one round trip.
 	Snapshot(ctx context.Context, ev rediskeys.Event) (domain.EventSnapshot, error)
 	// Engagement reads token:<queueToken>. found is false if it does not exist.
 	Engagement(ctx context.Context, queueToken string) (e domain.Engagement, found bool, err error)

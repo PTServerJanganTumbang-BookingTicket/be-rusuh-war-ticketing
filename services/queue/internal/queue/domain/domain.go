@@ -8,16 +8,16 @@ type SaleState string
 
 // Sale states (api-contracts §3.2). Anything else is "not seeded".
 const (
-	StateScheduled SaleState = "SCHEDULED"
-	StateOpen      SaleState = "OPEN"
-	StateSoldOut   SaleState = "SOLD_OUT"
-	StateClosed    SaleState = "CLOSED"
+	StateScheduled  SaleState = "SCHEDULED"
+	StateOpen       SaleState = "OPEN"
+	StateFullBooked SaleState = "FULL_BOOKED"
+	StateClosed     SaleState = "CLOSED"
 )
 
 // Known reports whether s is one of the four sale states.
 func (s SaleState) Known() bool {
 	switch s {
-	case StateScheduled, StateOpen, StateSoldOut, StateClosed:
+	case StateScheduled, StateOpen, StateFullBooked, StateClosed:
 		return true
 	}
 	return false
@@ -30,7 +30,7 @@ type EventSnapshot struct {
 	Issued       int64
 	Name         string // queue:{ev} field "name", seeded by sale-ops
 	SaleStartsAt string // queue:{ev} field "sale_starts_at" (RFC 3339)
-	SoldOutAt    string // queue:{ev}:sold_out_at
+	FullBookedAt string // queue:{ev}:full_booked_at
 }
 
 // Depth is how many issued numbers are still waiting.
@@ -79,7 +79,7 @@ func (r CaptchaResult) String() string {
 	}
 }
 
-// Error codes (api-contracts Appendix A). QUEUE_NOT_READY, SOLD_OUT and
+// Error codes (api-contracts Appendix A). QUEUE_NOT_READY, FULL_BOOKED and
 // INTERNAL_ERROR are new (approved 2026-11-06, to be added to Appendix A).
 const (
 	CodeValidation       = "VALIDATION_ERROR"
@@ -92,7 +92,7 @@ const (
 	CodeCaptchaFailed    = "CAPTCHA_FAILED"
 	CodeSaleNotOpen      = "SALE_NOT_OPEN"
 	CodeSaleClosed       = "SALE_CLOSED"
-	CodeSoldOut          = "SOLD_OUT"
+	CodeFullBooked       = "FULL_BOOKED"
 	CodeQueueFull        = "QUEUE_FULL"
 	CodeQueueNotReady    = "QUEUE_NOT_READY"
 	CodeUnauthorized     = "UNAUTHORIZED"

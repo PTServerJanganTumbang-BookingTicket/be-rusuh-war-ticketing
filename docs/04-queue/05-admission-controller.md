@@ -16,7 +16,7 @@ freezes and nothing is lost (pending grants, §3.1). In the POC, ECS restarts th
 the leader lease + standby is **deferred to production** (§6).
 
 **Queue-domain scope of this file:** RECOVER, ADVANCE, LAPSED sweep, broadcast,
-`rate_per_min`, SOLD_OUT → CLOSED. The booking and payment sweeps, stock/NIK
+`rate_per_min`, FULL_BOOKED → CLOSED. The booking and payment sweeps, stock/NIK
 reconciliation and the charge reconciler run in the same loop but are planned in `05-booking/` and
 `07-payment/`.
 
@@ -27,9 +27,9 @@ flowchart TD
     T([every 500 ms, single task]) --> S[1. SWEEP expiries ZSET<br/>verify in Aurora, CAS update<br/>GRANTED → LAPSED here]
     S --> ADV[2. RECOVER pending grants<br/>SNAPSHOT now_serving + pending<br/>COUNT open, browsing in Aurora<br/>ADVANCE Lua<br/>INSERT · grant hash · ZREM]
     ADV --> B[3. BROADCAST after the INSERTs<br/>update rate_per_min<br/>PUBLISH sse-broadcast if changed or 10 s heartbeat]
-    B --> SO[4. SOLD_OUT older than 930 s → CLOSED]
+    B --> SO[4. FULL_BOOKED older than 930 s → CLOSED]
     SO --> ST{state differs from<br/>last published?}
-    ST -->|yes| PS[PUBLISH sse-status state, soldOutAt]
+    ST -->|yes| PS[PUBLISH sse-status state, fullBookedAt]
     ST -->|no| M
     PS --> M([emit tick metrics])
 ```
@@ -38,7 +38,7 @@ flowchart TD
 gateway is down. Their breakers only make those calls fail fast; the next tick grants as usual.
 
 **State changes are published once.** The ctl keeps the last state it published per event. When
-the state it reads after ADVANCE / step 4 differs (`OPEN → SOLD_OUT`, `SOLD_OUT → OPEN`,
+the state it reads after ADVANCE / step 4 differs (`OPEN → FULL_BOOKED`, `FULL_BOOKED → OPEN`,
 `→ CLOSED`), it publishes `sse-status`. After a restart it publishes the current state once, which
 is harmless (clients treat a repeated state as a no-op).
 
@@ -163,7 +163,7 @@ sequenceDiagram
 
     Note over CTL,R: 2d. ADVANCE
     CTL->>R: EVALSHA advance_now_serving.lua (MAX, open+pending, browsing+pending, ns0, now)
-    Note over R: atomic: now_serving ≠ ns0 → STALE<br/>state gate (SOLD_OUT / resume)<br/>stock = SUM stock:{ev}:{cat}<br/>deficit = min(room, demand)<br/>to = min(ns0 + deficit, issued)<br/>tokens = ZRANGEBYSCORE ns0+1 .. to (no ZREM)<br/>HSET now_serving to
+    Note over R: atomic: now_serving ≠ ns0 → STALE<br/>state gate (FULL_BOOKED / resume)<br/>stock = SUM stock:{ev}:{cat}<br/>deficit = min(room, demand)<br/>to = min(ns0 + deficit, issued)<br/>tokens = ZRANGEBYSCORE ns0+1 .. to (no ZREM)<br/>HSET now_serving to
     R-->>CTL: from, to, state, tokens
 
     Note over CTL,DB: 2e. FINISH each token (batched)
@@ -205,17 +205,17 @@ every tick (step 3, BROADCAST):
       rate = MAX_CONCURRENT_SLOTS / ETA_SEED_SLOT_MINUTES (5)
   else:
       rate = (newest.now_serving − oldest.now_serving) / (newest.t − oldest.t) × 60
-  while SOLD_OUT: keep the last value (don't decay to 0)
+  while FULL_BOOKED: keep the last value (don't decay to 0)
   HSET queue:{ev} rate_per_min round(rate) ; include ratePerMin in sse-broadcast
 ```
 
 - **The T0 burst is excluded.** The first tick grants up to `MAX` at once; those samples fall in
   the first 60 s, which use the seed, so early estimates aren't too optimistic.
-- **SOLD_OUT time is excluded,** so the rate doesn't drop to 0 when stock comes back.
+- **FULL_BOOKED time is excluded,** so the rate doesn't drop to 0 when stock comes back.
 - **A restarted task starts with the seed** (the ring buffer is in memory). Good enough for an estimate.
 
-Tests: rate = seed while the window covers < 60 s, Δ/Δt afterwards · SOLD_OUT samples not pushed,
-rate unchanged across a 3-min SOLD_OUT · value kept (not 0) while SOLD_OUT.
+Tests: rate = seed while the window covers < 60 s, Δ/Δt afterwards · FULL_BOOKED samples not pushed,
+rate unchanged across a 3-min FULL_BOOKED · value kept (not 0) while FULL_BOOKED.
 
 ## 4. LAPSED (queue-owned part of SWEEP)
 
@@ -246,7 +246,7 @@ the next tick's COUNT automatically, with no counter to decrement.
 | Store | Key / table | Op |
 |---|---|---|
 | Redis | `breaker:dukcapil:state`, `breaker:payment-gateway:state` | GET |
-| Redis | `queue:{ev}`, `queue:{ev}:state`, `queue:{ev}:by_ticket`, `queue:{ev}:issued`, `stock:{ev}:{cat}`, `queue:{ev}:sold_out_at`, `queue:{ev}:resume` | advance Lua (stock read only) |
+| Redis | `queue:{ev}`, `queue:{ev}:state`, `queue:{ev}:by_ticket`, `queue:{ev}:issued`, `stock:{ev}:{cat}`, `queue:{ev}:full_booked_at`, `queue:{ev}:resume` | advance Lua (stock read only) |
 | Redis | `queue:{ev}:by_ticket` | ZRANGEBYSCORE / ZCOUNT `-inf now_serving` · ZREM (last step of grant) |
 | Redis | `grant:{token}`, `expiries:{ev}` | HSET / ZADD / DEL |
 | Redis pub/sub | `sse-broadcast`, `sse-status` | PUBLISH |
@@ -285,7 +285,7 @@ the next tick's COUNT automatically, with no counter to decrement.
 ## 7. Tests
 
 **Lua (real Redis, testcontainers)**
-- [ ] ÷ 3 boundary with MAX = 100, open = browsing = pending = 0: stock 1000 → 100 · 300 → 100 · 298 → 100 · 297 → 99 · 1 → 1 · 0 → SOLD_OUT
+- [ ] ÷ 3 boundary with MAX = 100, open = browsing = pending = 0: stock 1000 → 100 · 300 → 100 · 298 → 100 · 297 → 99 · 1 → 1 · 0 → FULL_BOOKED
 - [ ] scenario A (early) stock 9820, open 95, browsing 40 → 5 (room limits)
 - [ ] scenario B (tail) stock 240, open 80, browsing 10 → **20** (ADR-005 formula gave 0)
 - [ ] scenario C1 stock 9, open 50, browsing 3 → 0 · C2 stock 9, open 49, browsing 2 → 1
@@ -294,7 +294,7 @@ the next tick's COUNT automatically, with no counter to decrement.
 - [ ] returned tokens are **still in `by_ticket`** (no ZREM), and a second call doesn't return them again
 - [ ] gaps in `by_ticket` (LAPSED / removed tokens) → fewer tokens than deficit, `now_serving` still moves to `to`
 - [ ] **`now_serving` never passes `issued`:** deficit 1000, 10 waiting → `now_serving` += 10, the next joiner gets `ticket_no = now_serving + 1`
-- [ ] SOLD_OUT ↔ OPEN transitions, CLOSED no-op
+- [ ] FULL_BOOKED ↔ OPEN transitions, CLOSED no-op
 
 **Tick**
 - [ ] Dukcapil / payment breaker OPEN → tick still COUNTs and ADVANCEs (no pause)
@@ -321,7 +321,7 @@ the next tick's COUNT automatically, with no counter to decrement.
 - [ ] RECOVER → SNAPSHOT → COUNT → ADVANCE → FINISH, + `PendingGrants` gauge and alert
 - [ ] SWEEP: GRANTED → LAPSED
 - [ ] BROADCAST + heartbeat + `rate_per_min` ([§3.5](#35-rate_per_min), config `ETA_SEED_SLOT_MINUTES`)
-- [ ] SOLD_OUT → CLOSED + `sse-status` on each state change
+- [ ] FULL_BOOKED → CLOSED + `sse-status` on each state change
 - [ ] ECS service: 1 task, deployment min 0 % / max 100 %, `CtlHeartbeatAge` alarm
 
 **Deferred (production path, ADR-006 §9):** leader lease + epoch + standby, qpersist drain → `queue_entries` + rebuild.
