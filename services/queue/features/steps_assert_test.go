@@ -1,4 +1,4 @@
-package queue_test
+package features
 
 import (
 	"context"
@@ -321,19 +321,19 @@ func registerAssertSteps(sc *godog.ScenarioContext, W func() *world) {
 	sc.Step(`^the response sets cookie "([^"]*)" to "([^"]*)"$`, func(name, v string) error {
 		return cookieIs(func(*response) string { return v })(name)
 	})
-	sc.Step(`^the cookie is HttpOnly, Secure, SameSite=Strict, Path=/ and Max-Age=(\d+)$`, func(age int) error {
+	sc.Step(`^the cookie is HttpOnly, Secure, SameSite=Strict, Path=(\S+) and Max-Age=(\d+)$`, func(path string, age int) error {
 		return lastDo(func(r *response) error {
 			c, err := r.cookie(queuehttp.CookieName)
 			if err != nil {
 				return err
 			}
-			if !c.HttpOnly || !c.Secure || c.SameSite != http.SameSiteStrictMode || c.Path != "/" || c.MaxAge != age {
+			if !c.HttpOnly || !c.Secure || c.SameSite != http.SameSiteStrictMode || c.Path != path || c.MaxAge != age {
 				return fmt.Errorf("cookie attributes: %s", c.String())
 			}
 			return nil
 		})
 	})
-	sc.Step(`^the cookie Domain is "([^"]*)"$`, func(d string) error {
+	sc.Step(`^the cookie Domain is "([^"]*)"(?: \(configurable via env COOKIE_DOMAIN\))?$`, func(d string) error {
 		return lastDo(func(r *response) error {
 			c, err := r.cookie(queuehttp.CookieName)
 			if err != nil {
@@ -706,7 +706,7 @@ func registerAssertSteps(sc *godog.ScenarioContext, W func() *world) {
 		return nil
 	})
 	sc.Step(`^the configured function timeout is at least (\d+) times JOIN_GRANT_WAIT_MS$`, func(k int) error {
-		b, err := os.ReadFile("template.yaml")
+		b, err := os.ReadFile(filepath.Join("..", "template.yaml"))
 		if err != nil {
 			return err
 		}
@@ -1160,7 +1160,7 @@ func (w *world) produceDocumented() error {
 	}
 	out := map[string]*response{}
 	out["200"] = w.do(joinReq{eventID: "E1", deviceID: "dev-contract-0000001"})
-	out["200 rejoined"] = w.do(joinReq{eventID: "E1", queueToken: out["200"].queueToken()})
+	out["200 rejoined"] = w.do(joinReq{eventID: "E1", deviceID: "dev-contract-0000001", queueToken: out["200"].queueToken()})
 	if err := w.setCounters("E1", 21, 21); err != nil {
 		return err
 	}
@@ -1199,7 +1199,7 @@ func (w *world) produceDocumented() error {
 
 func (w *world) validateApidog() error {
 	out, _ := w.captured["documented"].(map[string]*response)
-	path := filepath.Join("..", "..", "..", "documentations", "api", "rusuh-booking-apidog.json")
+	path := filepath.Join("..", "..", "..", "..", "documentations", "api", "rusuh-booking-apidog.json")
 	f, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("Apidog file (documentations repo next to this one): %w", err)

@@ -2,6 +2,9 @@ package usecase_test
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"net/http"
 	"testing"
@@ -172,6 +175,57 @@ func TestJoin_loggedInCallerDoesNotTakeOverAGuestToken(t *testing.T) {
 	}
 }
 
+// hashDevice is hex(HMAC-SHA256(pepper, id)), computed independently of the code under test.
+func hashDevice(pepper []byte, id string) string {
+	m := hmac.New(sha256.New, pepper)
+	m.Write([]byte(id))
+	return hex.EncodeToString(m.Sum(nil))
+}
+
+// A presented token that is not the caller's is a 401 that also matches
+// ErrForeignToken (the HTTP layer clears the cookie on it), and issues nothing.
+func TestJoin_foreignTokenIs401AndMatchesErrForeignToken(t *testing.T) {
+	j, rdb, bearer := setup(t, "")
+	ctx := context.Background()
+	guest, err := j.Join(ctx, usecase.JoinInput{EventID: "E1", CaptchaToken: "c", DeviceID: "dev-aaaaaaaaaaaaaaaa", ClientIP: "1.2.3.4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owned, err := j.Join(ctx, usecase.JoinInput{EventID: "E1", CaptchaToken: "c", Bearer: bearer, ClientIP: "1.2.3.5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	issuer, _ := token.NewIssuer("secret", "rusuh-user", time.Hour)
+	other, _, _ := issuer.Issue("acc-2", "b@example.com", true)
+	issued, _ := rdb.Get(ctx, "queue:{E1}:issued").Int()
+	cases := map[string]struct {
+		in   usecase.JoinInput
+		code string
+	}{
+		"guest token, other device":    {usecase.JoinInput{DeviceID: "dev-bbbbbbbbbbbbbbbb", QueueToken: guest.Engagement.QueueToken}, domain.CodeDeviceMismatch},
+		"account token, guest":         {usecase.JoinInput{DeviceID: "dev-aaaaaaaaaaaaaaaa", QueueToken: owned.Engagement.QueueToken}, domain.CodeUnauthorized},
+		"account token, other account": {usecase.JoinInput{Bearer: other, QueueToken: owned.Engagement.QueueToken}, domain.CodeUnauthorized},
+	}
+	for name, c := range cases {
+		in := c.in
+		in.EventID, in.CaptchaToken, in.ClientIP = "E1", "c", "1.2.3.9"
+		_, err := j.Join(ctx, in)
+		var ae *apperror.AppError
+		if !errors.Is(err, usecase.ErrForeignToken) || !errors.As(err, &ae) || ae.HTTPStatus != http.StatusUnauthorized || ae.ErrorCode != c.code {
+			t.Fatalf("%s: err = %v, want 401 %s", name, err, c.code)
+		}
+	}
+	// CAPTCHA runs before the ownership check: no captcha + foreign token is 400, not 401.
+	_, err = j.Join(ctx, usecase.JoinInput{EventID: "E1", DeviceID: "dev-bbbbbbbbbbbbbbbb", QueueToken: guest.Engagement.QueueToken, ClientIP: "1.2.3.10"})
+	var ae *apperror.AppError
+	if !errors.As(err, &ae) || ae.ErrorCode != domain.CodeCaptchaRequired {
+		t.Fatalf("no captcha + foreign token = %v, want 400 CAPTCHA_REQUIRED", err)
+	}
+	if n, _ := rdb.Get(ctx, "queue:{E1}:issued").Int(); n != issued {
+		t.Fatalf("issued moved from %d to %d", issued, n)
+	}
+}
+
 // failingBookings errors on every query.
 type failingBookings struct{}
 
@@ -190,7 +244,9 @@ func TestJoin_servedTicketWithBookingErrorIs503AndNotReadded(t *testing.T) {
 	rdb.HSet(ctx, ev.QueueHash(), "now_serving", 100)
 	rdb.Set(ctx, ev.QueueIssued(), 120, 0)
 	store := queueredis.NewStore(rdb)
-	_ = store.SaveEngagement(ctx, domain.Engagement{QueueToken: "qt_SERVED", EventID: "E1", TicketNo: 90, JoinedAt: time.Now()}, time.Hour)
+	// Bound to the caller's device, so the test reaches the booking lookup.
+	_ = store.SaveEngagement(ctx, domain.Engagement{QueueToken: "qt_SERVED", EventID: "E1", TicketNo: 90,
+		DeviceHash: hashDevice(nil, "dev-aaaaaaaaaaaaaaaa"), JoinedAt: time.Now()}, time.Hour)
 	j := usecase.NewJoin(usecase.DefaultConfig(), usecase.Deps{
 		Store: store, Bookings: failingBookings{}, Captcha: turnstile.Mock{}, Limiter: ratelimit.New(rdb),
 		Metrics: nopMetrics{}, NewToken: func() string { return "qt_NEW" },

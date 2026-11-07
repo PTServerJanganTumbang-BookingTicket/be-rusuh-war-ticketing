@@ -1,11 +1,7 @@
 @step-4 @queue-service @join @FR-04 @NFR-05
-Feature: Join the queue (POST /events/{event_id}/queue/join), happy path
-  A customer gets a first-come-first-served ticket number and a queue_token.
-  Join only writes to Redis. It never grants, never runs the advance Lua,
-  never publishes, and never writes to Aurora (ADR-006 §4, rule 1).
-
-  queue_token format (proposal, matches the contract's "qt_…" example):
-  "qt_" + ULID from pkg/idgen. Redis key token:<queue_token>; by_ticket member = queue_token.
+Feature: I join the queue and get a ticket number
+  I get the next number and a queue_token (in the body for mobile, in a cookie for web). queue_token = "qt_" + ULID.
+  Join writes only to Redis: no grant, no Lua, no publish, no Aurora (ADR-006 §4).
 
   Sources: api-contracts §3.1 · Apidog "Join Queue" · 01-join-queue.md · impl-plan §7.2
 
@@ -17,7 +13,7 @@ Feature: Join the queue (POST /events/{event_id}/queue/join), happy path
     And the clock is frozen at "2026-11-10T02:00:05Z"
 
   @unit
-  Scenario: A guest joins and gets the next ticket number
+  Scenario: As a guest I get the next ticket number
     When a guest with device id "dev-aaaaaaaaaaaaaaaa" joins "E1" with captcha "cap-ok"
     Then the response status is 200
     And the response body matches:
@@ -38,19 +34,16 @@ Feature: Join the queue (POST /events/{event_id}/queue/join), happy path
     And meta has no "error_code"
 
   @unit
-  Scenario: The queue_token is returned both in the body and in a cookie for the sale window
-    # Decided 2026-11-06 (Erma): body for mobile (X-Queue-Token), HttpOnly cookie for web
-    # (EventSource cannot send headers). Join is on api.rusuhtiket.com, the stream on
-    # events.rusuhtiket.com, so the cookie is set for the parent domain (config COOKIE_DOMAIN).
-    Given COOKIE_DOMAIN is "rusuhtiket.com"
+  Scenario: My queue_token comes back in the body and in a cookie
+    Given COOKIE_DOMAIN is "my-rusuh.my.id"
     When a guest with device id "dev-aaaaaaaaaaaaaaaa" joins "E1" with captcha "cap-ok"
     Then data.queue_token is a "qt_" token
     And the response sets cookie "queue_token" to the same value as data.queue_token
-    And the cookie is HttpOnly, Secure, SameSite=Strict, Path=/ and Max-Age=21600
-    And the cookie Domain is "rusuhtiket.com"
+    And the cookie is HttpOnly, Secure, SameSite=Strict, Path=/events/E1 and Max-Age=21600
+    And the cookie Domain is "my-rusuh.my.id" (configurable via env COOKIE_DOMAIN)
 
   @integration @redis-cluster
-  Scenario: A guest join writes exactly these Redis keys
+  Scenario: Joining writes exactly these Redis keys
     When a guest with device id "dev-aaaaaaaaaaaaaaaa" joins "E1" with captcha "cap-ok"
     Then queue:{E1}:issued is 32748
     And token:<queue_token> is a hash with exactly these fields:
@@ -65,7 +58,7 @@ Feature: Join the queue (POST /events/{event_id}/queue/join), happy path
     And the raw device id is stored nowhere in Redis
 
   @integration @redis-cluster @BR-07
-  Scenario: A logged-in customer's join is tied to the account, not the device
+  Scenario: As a logged-in customer my place belongs to my account, not my device
     Given account "acc-1" has a valid access token
     When account "acc-1" without a device id joins "E1" with captcha "cap-ok"
     Then the response status is 200
@@ -73,7 +66,7 @@ Feature: Join the queue (POST /events/{event_id}/queue/join), happy path
     And acct:{E1}:acc-1 holds <queue_token> and expires in 21600 seconds
 
   @integration @redis-cluster @postgres @rule-1
-  Scenario: Join touches nothing but Redis on a non-empty queue
+  Scenario: Joining a busy queue touches only Redis
     When a guest with device id "dev-aaaaaaaaaaaaaaaa" joins "E1" with captcha "cap-ok"
     Then no SQL statement was sent to Postgres
     And no PUBLISH was sent to Redis
@@ -81,13 +74,13 @@ Feature: Join the queue (POST /events/{event_id}/queue/join), happy path
     And queue:{E1} now_serving is still 31500
 
   @unit
-  Scenario: Position is ticket_no minus now_serving
+  Scenario: My position is my ticket number minus now serving
     Given now_serving is 100 and issued is 149
     When a guest with device id "dev-aaaaaaaaaaaaaaaa" joins "E1" with captcha "cap-ok"
     Then data.ticket_no is 150 and data.position is 50
 
   @integration @redis-cluster
-  Scenario: Two guests on the same device get two separate places
+  Scenario: Two guests on one device get two separate places
     # Guests are not covered by BR-07: no stable identity (contract §3.1).
     When a guest with device id "dev-aaaaaaaaaaaaaaaa" joins "E1" with captcha "cap-ok"
     And a guest with device id "dev-aaaaaaaaaaaaaaaa" joins "E1" with captcha "cap-ok"
@@ -96,19 +89,19 @@ Feature: Join the queue (POST /events/{event_id}/queue/join), happy path
     And the two queue_tokens differ
 
   @unit
-  Scenario: The same handler serves Lambda and the local HTTP server
+  Scenario: Lambda and the local server answer identically
     When the join request goes through the API Gateway Lambda proxy adapter
     And the same request goes through the local HTTP server
     Then both return the same status, body shape and Set-Cookie header
 
   @integration @contract
-  Scenario: Every documented response matches the Apidog schema
+  Scenario: Every response I can get matches the Apidog contract
     When each documented join response is produced (200, 200 rejoined, 200 granted, 400, 403, 409, 429, 503)
     Then each body validates against its schema in documentations/api/rusuh-booking-apidog.json
     # OPEN: Apidog has no responses for 400 DEVICE_ID_REQUIRED, 400 VALIDATION_ERROR, 401,
     # 410 SALE_CLOSED and 503 not-seeded. Proposal: add them to Apidog (shared repo, ask first).
 
   @unit @security
-  Scenario: Secrets never reach the logs
+  Scenario: My secrets never reach the logs
     When a guest with device id "dev-aaaaaaaaaaaaaaaa" joins "E1" with captcha "cap-ok"
     Then no log line contains "cap-ok", the queue_token, "dev-aaaaaaaaaaaaaaaa" or the access token

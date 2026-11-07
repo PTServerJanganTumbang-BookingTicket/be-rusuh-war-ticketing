@@ -1,4 +1,4 @@
-package queue_test
+package features
 
 import (
 	"context"
@@ -199,7 +199,7 @@ func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { retu
 var turnstileSecret = regexp.MustCompile("0x4" + "AAAAAAA" + `[A-Za-z0-9_-]{16,}`)
 
 func noTurnstileSecretInRepo() error {
-	root, err := filepath.Abs(filepath.Join("..", ".."))
+	root, err := filepath.Abs(filepath.Join("..", "..", ".."))
 	if err != nil {
 		return err
 	}

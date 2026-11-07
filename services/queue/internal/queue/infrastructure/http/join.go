@@ -4,6 +4,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/url"
@@ -34,9 +35,9 @@ type Joiner interface {
 
 // Options configures the handler.
 type Options struct {
-	CookieDomain string        // COOKIE_DOMAIN, e.g. rusuhtiket.com (join on api.*, stream on events.*)
+	CookieDomain string        // COOKIE_DOMAIN, e.g. my-rusuh.my.id (join on api.*, stream on events.*)
 	CookieMaxAge time.Duration // SALE_WINDOW_SECONDS
-	SSEBaseURL   string        // e.g. https://events.rusuhtiket.com; "" = relative path
+	SSEBaseURL   string        // e.g. https://events.my-rusuh.my.id; "" = relative path
 }
 
 // Handler serves POST /events/{event_id}/queue/join.
@@ -82,10 +83,15 @@ func (h *Handler) Join(w http.ResponseWriter, r *http.Request) {
 
 	res, err := h.join.Join(r.Context(), in)
 	if err != nil {
+		// Clear the cookie only if it carried the rejected token: a foreign token in
+		// X-Queue-Token must not wipe the caller's own cookie.
+		if errors.Is(err, usecase.ErrForeignToken) && r.Header.Get(HeaderQueueToken) == "" {
+			http.SetCookie(w, h.clearCookie(in.EventID))
+		}
 		apinizer.WriteError(w, err)
 		return
 	}
-	http.SetCookie(w, h.cookie(res.Engagement.QueueToken))
+	http.SetCookie(w, h.cookie(in.EventID, res.Engagement.QueueToken))
 	switch res.Outcome {
 	case usecase.Granted:
 		apinizer.WriteEnvelope(w, http.StatusOK, "No queue — access granted", grantedData{
@@ -154,17 +160,27 @@ func (h *Handler) SSEURL(eventID string) string {
 	return strings.TrimRight(h.opt.SSEBaseURL, "/") + "/events/" + url.PathEscape(eventID) + "/queue/stream"
 }
 
-func (h *Handler) cookie(queueToken string) *http.Cookie {
+// cookie is the queue_token cookie, scoped to one event (Path=/events/{event_id}),
+// so joining another event never overwrites it. The path covers join, /queue/me
+// and the stream on both hosts, and not another event (/events/E10 ≠ /events/E1).
+func (h *Handler) cookie(eventID, queueToken string) *http.Cookie {
 	return &http.Cookie{
 		Name:     CookieName,
 		Value:    queueToken,
-		Path:     "/",
+		Path:     "/events/" + url.PathEscape(eventID),
 		Domain:   h.opt.CookieDomain,
 		MaxAge:   int(h.opt.CookieMaxAge.Seconds()),
 		HttpOnly: true,
 		Secure:   true,
 		SameSite: http.SameSiteStrictMode,
 	}
+}
+
+// clearCookie expires the queue_token cookie (same Domain and Path as cookie).
+func (h *Handler) clearCookie(eventID string) *http.Cookie {
+	c := h.cookie(eventID, "")
+	c.MaxAge = -1
+	return c
 }
 
 // bearerToken returns the token of "Bearer <token>". No header is fine (guest);

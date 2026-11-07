@@ -95,6 +95,8 @@ const (
 	CodeSoldOut          = "SOLD_OUT"
 	CodeQueueFull        = "QUEUE_FULL"
 	CodeQueueNotReady    = "QUEUE_NOT_READY"
+	CodeUnauthorized     = "UNAUTHORIZED"
+	CodeDeviceMismatch   = "DEVICE_MISMATCH"
 )
 
 // Metric names.
@@ -104,4 +106,6 @@ const (
 	MetricCaptchaMisconfigured = "CaptchaMisconfigured"
 	MetricBR07Recovered        = "Br07JoinRecovered"
 	MetricJoinRepaired         = "JoinRepaired"
+	MetricDeviceMismatch       = "DeviceMismatch"       // a guest token presented from another device
+	MetricTokenAccountMismatch = "TokenAccountMismatch" // an account's token presented by another account or a guest
 )

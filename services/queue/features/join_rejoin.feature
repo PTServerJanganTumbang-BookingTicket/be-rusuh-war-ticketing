@@ -1,9 +1,8 @@
 @step-4 @queue-service @join @BR-07 @BR-09
-Feature: Rejoining returns the existing place instead of a second one
-  Two paths lead to "rejoined" (contract §3.1):
-    BR-09: the caller brings back a queue_token (cookie on web, X-Queue-Token on mobile)
-    BR-07: the caller is logged in and the account already has a place for this event
-  Neither creates a second place or a new ticket number. Guests are not covered by BR-07.
+Feature: If I come back, I get my place back, not a second one
+  Two ways back (contract §3.1): BR-09 I bring my queue_token (cookie on web, X-Queue-Token on mobile);
+  BR-07 I am logged in and my account already has a place. Neither creates a second place or number.
+  Guests are not covered by BR-07. The token must be mine: join_token_binding.feature.
 
   Sources: api-contracts §3.1, §3.3 · impl-plan §7.2 step 6 · 01-join-queue.md §6
 
@@ -12,7 +11,7 @@ Feature: Rejoining returns the existing place instead of a second one
     And the CAPTCHA provider accepts token "cap-ok"
 
   @integration @redis-cluster @BR-07
-  Scenario: The same account joining from another device gets its place back
+  Scenario: I log in on another device and get my place back
     Given account "acc-1" joined "E1" earlier with ticket number 32748 and queue_token "qt_A"
     When account "acc-1" joins "E1" again from another device with captcha "cap-ok"
     Then the response status is 200 with message "Rejoined existing queue position"
@@ -22,9 +21,9 @@ Feature: Rejoining returns the existing place instead of a second one
     And the metric "Br07JoinRecovered" is incremented
 
   @integration @redis-cluster @BR-09
-  Scenario Outline: Bringing the queue_token back returns the same place
-    Given a guest joined "E1" earlier with ticket number 32748 and queue_token "qt_G"
-    When the guest joins "E1" again sending queue_token "qt_G" as <carrier> with captcha "cap-ok"
+  Scenario Outline: Outline: I bring my queue_token back from the same device and get the same place
+    Given a guest with device id "dev-gggggggggggggggg" joined "E1" earlier with ticket number 32748 and queue_token "qt_G"
+    When the guest joins "E1" again from the same device sending queue_token "qt_G" as <carrier> with captcha "cap-ok"
     Then data has ticket_no 32748, queue_token "qt_G", rejoined true, state "QUEUED"
     And queue:{E1}:issued is still 40000
 
@@ -45,7 +44,7 @@ Feature: Rejoining returns the existing place instead of a second one
     Then the response is a normal new join for "E1"
 
   @integration @redis-cluster @postgres
-  Scenario Outline: Rejoining after the turn came reports the booking state
+  Scenario Outline: Outline: If I return after my turn came, I am told my booking state
     Given account "acc-1" holds ticket number 31000 with booking status "<status>"
     When account "acc-1" joins "E1" again with captcha "cap-ok"
     Then data has rejoined true and state "<status>"
@@ -58,37 +57,29 @@ Feature: Rejoining returns the existing place instead of a second one
       | AWAITING_PAYMENT |
 
   @integration @redis-cluster
-  Scenario: The account key outlived its token, so this is a fresh join
+  Scenario: If my account points to a token that is gone, I join fresh
     Given acct:{E1}:acc-1 points to "qt_GONE" but token:qt_GONE does not exist
     When account "acc-1" joins "E1" with captcha "cap-ok"
     Then acct:{E1}:acc-1 now points to the new queue_token
     And data.ticket_no is 40001
     And data has no rejoined field
 
-  @integration @redis-cluster @open-question
-  Scenario: A customer already in the queue is not refused when the queue fills up
-    # OPEN: impl-plan §7.2 checks capacity (step 5) BEFORE BR-07 (step 6), so a logged-in
-    # customer switching devices would get QUEUE_FULL although they already have a place.
-    # Proposal: run both rejoin checks before the capacity gate (order in join_gates.feature).
+  @integration @redis-cluster
+  Scenario: If the queue fills up, I am not refused when I come back
     Given account "acc-1" joined "E1" earlier with ticket number 32748 and queue_token "qt_A"
     And the queue is now full
     When account "acc-1" joins "E1" again with captcha "cap-ok"
     Then the response status is 200 with rejoined true
 
-  @integration @redis-cluster @fault @open-question
-  Scenario: A join that crashed between HSET token and ZADD is repaired on rejoin
-    # OPEN: join writes INCR → HSET token → ZADD by_ticket, not atomically (token:<qt> has no
-    # {ev} tag, so MULTI across them is not allowed in cluster mode). A crash after HSET leaves
-    # a token admission-ctl can never see; BR-07 would keep returning it as QUEUED forever.
-    # Proposal: on rejoin, if state is QUEUED and the token is missing from by_ticket,
-    # ZADD NX it back with its own ticket_no and count metric "JoinRepaired".
+  @integration @redis-cluster @fault
+  Scenario: A place left half-written by a crashed join is repaired when I return
     Given account "acc-1" has token "qt_A" with ticket number 32748 but it is not in by_ticket
     When account "acc-1" joins "E1" again with captcha "cap-ok"
     Then queue:{E1}:by_ticket scores "qt_A" at 32748
     And the metric "JoinRepaired" is incremented
 
   @integration @redis-cluster
-  Scenario: Concurrent joins of one account create one place
+  Scenario: Ten joins at once from one account create one place
     Given account "acc-1" has a valid access token
     When account "acc-1" sends 10 joins for "E1" at the same time
     Then exactly one new ticket number is issued
@@ -96,14 +87,14 @@ Feature: Rejoining returns the existing place instead of a second one
     And acct:{E1}:acc-1 points to that queue_token
 
   @integration @redis-cluster
-  Scenario: The CLOSED gate still applies to rejoiners
+  Scenario: If the sale closed, coming back does not reopen it
     Given account "acc-1" joined "E1" earlier
     And event "E1" is now "CLOSED"
     When account "acc-1" joins "E1" again with captcha "cap-ok"
     Then the response status is 410 with error_code "SALE_CLOSED"
 
   @integration @redis-cluster @FR-18
-  Scenario: A rejoiner keeps their place while SOLD_OUT
+  Scenario: While sold out, I keep my place if I come back
     # Sold out refuses only NEW places; seats may come back to those already in line.
     Given account "acc-1" joined "E1" earlier and got ticket 40000
     And event "E1" is now "SOLD_OUT"
@@ -111,9 +102,9 @@ Feature: Rejoining returns the existing place instead of a second one
     Then the response status is 200 with message "Rejoined existing queue position"
     And data has rejoined true, state "QUEUED" and ticket_no 40000
 
-  @integration @redis-cluster @open-question
-  Scenario: A lapsed customer gets the LAPSED state, not a new place
-    # Same OPEN as lapsed_sweep.feature: LAPSED is final (no second chance).
+  @integration @redis-cluster
+  Scenario: If my booking lapsed, I am told so, not given a new place
+    # LAPSED is final (no second chance).
     Given account "acc-1" had booking status "LAPSED" for "E1"
     When account "acc-1" joins "E1" again with captcha "cap-ok"
     Then data has rejoined true and state "LAPSED"

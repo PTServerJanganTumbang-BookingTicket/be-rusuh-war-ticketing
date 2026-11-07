@@ -26,11 +26,11 @@ Parameters:
     Description: ElastiCache (cluster mode) configuration endpoint, host:port
   CookieDomain:
     Type: String
-    Default: rusuhtiket.com
+    Default: my-rusuh.my.id
     Description: queue_token cookie domain; join is on api.*, the stream on events.*
   SseBaseUrl:
     Type: String
-    Default: https://events.rusuhtiket.com
+    Default: https://events.my-rusuh.my.id
   ProvisionedConcurrency:
     Type: Number
     Default: 0

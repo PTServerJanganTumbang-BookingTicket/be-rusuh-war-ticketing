@@ -5,13 +5,13 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
 	"math"
 	"net/http"
-	"regexp"
 	"time"
 
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/apperror"
@@ -111,7 +111,15 @@ func NewJoin(cfg Config, d Deps) *Join {
 	return &Join{cfg: cfg, d: d}
 }
 
-var deviceIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{16,128}$`)
+// ErrForeignToken marks a rejection because the presented queue_token belongs
+// to another device or account. The HTTP layer clears the cookie on it, so the
+// next join is a fresh one instead of the same 401 forever.
+var ErrForeignToken = errors.New("queue token belongs to another device or account")
+
+// errForeignToken is a 401 that matches both *apperror.AppError and ErrForeignToken.
+func errForeignToken(code, message string) error {
+	return fmt.Errorf("%w: %w", ErrForeignToken, apperror.New(http.StatusUnauthorized, "40100", message).WithCode(code))
+}
 
 func errUnavailable() *apperror.AppError {
 	return apperror.New(http.StatusServiceUnavailable, "50300", "Antrian sedang tidak tersedia, silakan coba lagi")
@@ -150,7 +158,12 @@ func (j *Join) Join(ctx context.Context, in JoinInput) (JoinResult, error) {
 		return JoinResult{}, err
 	}
 
-	res, ok, stale, err := j.rejoin(ctx, ev, snap, in.QueueToken, accountID)
+	deviceHash := j.deviceHash(in.DeviceID)
+	res, ok, stale, err := j.rejoin(ctx, ev, snap, in.QueueToken, accountID, deviceHash)
+	var appErr *apperror.AppError
+	if errors.As(err, &appErr) {
+		return JoinResult{}, err // a deliberate rejection (e.g. foreign token), not an outage
+	}
 	if err != nil {
 		slog.ErrorContext(ctx, "join: rejoin lookup failed", slog.String("event_id", ev.ID()), slog.Any("err", err))
 		return JoinResult{}, errUnavailable()
@@ -169,7 +182,7 @@ func (j *Join) Join(ctx context.Context, in JoinInput) (JoinResult, error) {
 			WithData(map[string]any{"queue_state": "FULL", "queue_capacity": j.cfg.Capacity})
 	}
 
-	return j.issue(ctx, ev, snap, accountID, j.deviceHash(in.DeviceID), stale)
+	return j.issue(ctx, ev, snap, accountID, deviceHash, stale)
 }
 
 func (j *Join) identity(in JoinInput) (accountID string, err error) {
@@ -183,10 +196,7 @@ func (j *Join) identity(in JoinInput) (accountID string, err error) {
 		}
 		accountID = claims.Subject
 	}
-	switch {
-	case in.DeviceID != "" && !deviceIDPattern.MatchString(in.DeviceID):
-		return "", apperror.ErrBadRequest("X-Device-Id tidak valid").WithCode(domain.CodeValidation)
-	case in.DeviceID == "" && accountID == "":
+	if in.DeviceID == "" && accountID == "" {
 		return "", apperror.ErrBadRequest("X-Device-Id wajib untuk pembeli tamu").WithCode(domain.CodeDeviceIDRequired)
 	}
 	return accountID, nil
@@ -255,17 +265,23 @@ func saleGate(s domain.EventSnapshot) error {
 
 // rejoin returns the existing place (BR-09 token, then BR-07 account). stale
 // is an acct pointer whose token no longer exists, to be replaced on issue.
-func (j *Join) rejoin(ctx context.Context, ev rediskeys.Event, snap domain.EventSnapshot, presented, accountID string) (res JoinResult, ok bool, stale string, err error) {
+//
+// A presented token of this event rejoins only for its owner (see owns).
+// Unknown tokens and tokens of another event are ignored.
+func (j *Join) rejoin(ctx context.Context, ev rediskeys.Event, snap domain.EventSnapshot, presented, accountID, deviceHash string) (res JoinResult, ok bool, stale string, err error) {
 	if presented != "" {
 		e, found, err := j.d.Store.Engagement(ctx, presented)
 		if err != nil {
 			return JoinResult{}, false, "", err
 		}
-		// A logged-in caller only gets back its own account's place: taking over a
-		// guest place would skip the acct claim and let BR-07 be bypassed.
-		if found && e.EventID == ev.ID() && e.AccountID == accountID {
-			res, err := j.restore(ctx, ev, snap, e, false)
-			return res, err == nil, "", err
+		if found && e.EventID == ev.ID() {
+			if err := j.owns(e, accountID, deviceHash); err != nil {
+				return JoinResult{}, false, "", err
+			}
+			if e.AccountID != "" || accountID == "" {
+				res, err := j.restore(ctx, ev, snap, e, false)
+				return res, err == nil, "", err
+			}
 		}
 	}
 	if accountID == "" {
@@ -284,6 +300,30 @@ func (j *Join) rejoin(ctx context.Context, ev rediskeys.Event, snap domain.Event
 	}
 	res, err = j.restore(ctx, ev, snap, e, true)
 	return res, err == nil, "", err
+}
+
+// owns rejects a presented token of this event that is not the caller's: a
+// logged-in token needs the same account; a guest token, presented by a guest,
+// needs the same device. A guest token with a logged-in caller is not an error.
+func (j *Join) owns(e domain.Engagement, accountID, deviceHash string) error {
+	if e.AccountID != "" {
+		if e.AccountID != accountID {
+			j.d.Metrics.Incr(domain.MetricTokenAccountMismatch)
+			return errForeignToken(domain.CodeUnauthorized, "Token antrian milik akun lain")
+		}
+		return nil
+	}
+	if accountID == "" && !sameDevice(e.DeviceHash, deviceHash) {
+		j.d.Metrics.Incr(domain.MetricDeviceMismatch)
+		return errForeignToken(domain.CodeDeviceMismatch, "Token antrian terdaftar di perangkat lain")
+	}
+	return nil
+}
+
+// sameDevice compares device hashes in constant time. A token without a
+// device_hash matches no device (fail closed).
+func sameDevice(stored, presented string) bool {
+	return stored != "" && subtle.ConstantTimeCompare([]byte(stored), []byte(presented)) == 1
 }
 
 // waitEngagement reads token:<qt>, waiting up to `wait` for a concurrent

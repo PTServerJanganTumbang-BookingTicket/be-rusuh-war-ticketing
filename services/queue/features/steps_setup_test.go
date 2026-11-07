@@ -1,4 +1,4 @@
-package queue_test
+package features
 
 import (
 	"context"
@@ -167,9 +167,6 @@ func registerSetupSteps(sc *godog.ScenarioContext, W func() *world) {
 	sc.Step(`^account "([^"]*)" joined "([^"]*)" earlier and got ticket (\d+)$`, func(a, id string, n int64) error {
 		return W().seedEngagement(id, "qt_A", n, a, true, true)
 	})
-	sc.Step(`^a guest joined "([^"]*)" earlier with ticket number (\d+) and queue_token "([^"]*)"$`, func(id string, n int64, qt string) error {
-		return W().seedEngagement(id, qt, n, "", true, false)
-	})
 	sc.Step(`^a guest holds queue_token "([^"]*)" for event "([^"]*)"$`, func(qt, id string) error {
 		w := W()
 		if err := w.seedEvent(id, "OPEN", ptr(int64(0)), ptr(int64(5)), ""); err != nil {
@@ -251,12 +248,18 @@ func (w *world) snapshot(id string) (domain.EventSnapshot, error) {
 
 // seedEngagement writes a place as an earlier join would have.
 func (w *world) seedEngagement(id, qt string, ticketNo int64, account string, inLine, acct bool) error {
+	dh := ""
+	if account == "" {
+		dh = w.hashDevice(defaultDevice) // rejoinable from the default test device
+	}
+	return w.seedEngagementOn(id, qt, ticketNo, account, dh, inLine, acct)
+}
+
+// seedEngagementOn is seedEngagement with an explicit device_hash ("" = none).
+func (w *world) seedEngagementOn(id, qt string, ticketNo int64, account, deviceHash string, inLine, acct bool) error {
 	ctx := context.Background()
 	e := ev(id)
-	eng := domain.Engagement{QueueToken: qt, EventID: id, TicketNo: ticketNo, AccountID: account, JoinedAt: time.Now().UTC()}
-	if account == "" {
-		eng.DeviceHash = "seeded-device-hash"
-	}
+	eng := domain.Engagement{QueueToken: qt, EventID: id, TicketNo: ticketNo, AccountID: account, DeviceHash: deviceHash, JoinedAt: time.Now().UTC()}
 	if err := queueredis.NewStore(w.rdb).SaveEngagement(ctx, eng, w.cfg.SaleWindow); err != nil {
 		return err
 	}

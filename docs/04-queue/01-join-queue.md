@@ -62,7 +62,9 @@ sequenceDiagram
     end
 
     Q->>R: 6 rejoin: HGETALL token:{presented qt} (BR-09), else GET acct:{ev}:{id} (BR-07)
-    alt existing place
+    alt token of this event, not the caller's
+        Q-->>C: 401 DEVICE_MISMATCH (guest, other device) / UNAUTHORIZED (other account), clear cookie
+    else existing place
         Q-->>C: 200 rejoined true, state, same queue_token + cookie
     end
 
@@ -98,17 +100,18 @@ order wins.
 1. **Request shape**: JSON body ≤ 8 KB with a string `captcha_token` (else 400 `VALIDATION_ERROR`); event id
    without `{`, `}` or whitespace (else 404 `NOT_FOUND`)
 2. **Identity**: a Bearer must verify (expired → 401 `TOKEN_EXPIRED`, anything else → 401 `TOKEN_INVALID`,
-   never a silent guest). Device id: required for guests, optional when logged in, and when sent must be
-   16–128 chars of `[A-Za-z0-9_-]` (else 400 `VALIDATION_ERROR`)
+   never a silent guest). Device id: required for guests, optional when logged in, any non-empty value
+   (no format check since contract v2.9)
 3. **Rate limit**: IP (20 / 5 min), then account (3 / min). Limiter outage fails open (`RateLimitFailOpen`)
 4. **CAPTCHA**: missing → 400 `CAPTCHA_REQUIRED`; explicit invalid → 403 `CAPTCHA_FAILED`; provider trouble
    fails open (`CaptchaFailOpenSeconds`)
 5. **Sale state**: `SCHEDULED` → 409 `SALE_NOT_OPEN`, `CLOSED` → 410 `SALE_CLOSED`, missing or unknown → 503
    `QUEUE_NOT_READY`
 6. **Rejoin, before sold-out and capacity**, so a customer who already has a place is never refused:
-   - BR-09: the presented `queue_token` (`X-Queue-Token`, else cookie) of this event, **owned by the caller**
-     (a guest token for a guest, the account's token for that account). A logged-in caller never takes over
-     a guest place: it gets its own (BR-07 cannot be bypassed)
+   - BR-09: the presented `queue_token` (`X-Queue-Token`, else cookie) of this event, **owned by the caller**:
+     a guest token needs a guest on the same device (`device_hash`), a logged-in token the same account. Not the
+     caller's → 401 `DEVICE_MISMATCH` / `UNAUTHORIZED` and the cookie is cleared. A logged-in caller never takes
+     over a guest place: it gets its own (BR-07 cannot be bypassed)
    - BR-07: `acct:{ev}:{account_id}` → token. A pointer whose token does not appear within 300 ms is stale and
      is replaced on issue (compare-and-set), not deleted
    - Still waiting (`ticket_no > now_serving`): a place missing from `by_ticket` (a join that died between
@@ -122,7 +125,7 @@ order wins.
    place) → `INCR issued` → `HSET token` (+ TTL) → `ZADD by_ticket`. Token before `by_ticket`, so
    admission-ctl never sees a member without its hash. A failure releases `acct` and answers 503
 10. **FR-05**: if `ticket_no == now_serving + 1`, poll the writer for the GRANTED row, ≤ 1 s, read only
-11. **Respond**: `queue_token` in the body and `Set-Cookie: queue_token=…; Domain=rusuhtiket.com; Path=/;
+11. **Respond**: `queue_token` in the body and `Set-Cookie: queue_token=…; Domain=my-rusuh.my.id; Path=/events/{event_id};
     Max-Age={SALE_WINDOW_SECONDS}; HttpOnly; Secure; SameSite=Strict`. **Mobile** keeps the body token in
     secure storage and sends `X-Queue-Token`. **Web** ignores it and relies on the cookie (the stream's
     `EventSource` cannot send headers; never put it in `localStorage`)
@@ -150,6 +153,8 @@ Join never runs the admission Lua, never publishes and never writes to Aurora.
 | 400 | `VALIDATION_ERROR` | bad body or device id format |
 | 400 | `DEVICE_ID_REQUIRED` · `CAPTCHA_REQUIRED` | guest without `X-Device-Id` · no `captcha_token` |
 | 401 | `TOKEN_EXPIRED` · `TOKEN_INVALID` | bad Bearer (also `Bearer ` with nothing after it) |
+| 401 | `DEVICE_MISMATCH` | guest `queue_token` presented from another device (or with no `device_hash`); clears the cookie |
+| 401 | `UNAUTHORIZED` | logged-in `queue_token` presented by another account or by a guest; clears the cookie |
 | 403 | `CAPTCHA_FAILED` | explicit CAPTCHA rejection |
 | 404 | `NOT_FOUND` | event id that cannot be a Redis hash tag |
 | 409 | `SALE_NOT_OPEN` | state `SCHEDULED`; data `{queue_state: NOT_OPEN, sale_starts_at}` |
@@ -161,7 +166,7 @@ Join never runs the admission Lua, never publishes and never writes to Aurora.
 | 503 | `INTERNAL_ERROR` | Redis down or a failed write; fail closed, retry later (new code: any 5xx without its own code) |
 
 `sse_url` is `SSE_BASE_URL` + `/events/{event_id}/queue/stream` (absolute in AWS: the stream is on
-`events.rusuhtiket.com`, join on `api.rusuhtiket.com`).
+`events.my-rusuh.my.id`, join on `api.my-rusuh.my.id`).
 
 ## 6. Edge cases and decisions
 
@@ -172,7 +177,11 @@ Join never runs the admission Lua, never publishes and never writes to Aurora.
   `now_serving`. Two simultaneous first joiners: only the first waits; the second learns its turn from the
   broadcast + `/me`.
 - **Wait budget:** ≤ 1 s, only on an empty queue. Typical 250–500 ms. Lambda timeout 10 s (≥ 3 × the wait).
-- **DECIDED (2026-11-06): token in body and cookie**, cookie `Domain=rusuhtiket.com` (`COOKIE_DOMAIN`).
+- **DECIDED (2026-11-07): a presented token rejoins only for its owner.** Guest token: `X-Device-Id` must hash to
+  `device_hash` (no rebind; a guest who clears site data starts again). Logged-in token: the Bearer account must be its
+  `account_id`, from any device. Otherwise 401 and the cookie is cleared, so the next join is fresh. A logged-in caller
+  with a guest token gets its own place. Unknown or other-event tokens are ignored (`join_token_binding.feature`).
+- **DECIDED (2026-11-06): token in body and cookie**, cookie `Domain=my-rusuh.my.id` (`COOKIE_DOMAIN`).
 - **DECIDED (2026-11-06): `SOLD_OUT` refuses new joiners** (409), like a waiting room's "reject" mode; people
   already in line keep their place and wait for returned seats. Joining works again when the state goes back
   to `OPEN`.
@@ -197,6 +206,7 @@ All in `services/queue/features/` (godog, strict) plus Go unit tests under `inte
 - [x] unit: gate order (shape → identity → rate limit → CAPTCHA → state → rejoin → sold out → capacity), each branch returns the right code and later gates are not called
 - [x] unit: guest without device id → 400. Logged-in without device id → OK
 - [x] integration: rejoin by account (another device) and by token (cookie / header) → same place, `rejoined: true`
+- [x] integration: token ownership: guest token from another device → 401 `DEVICE_MISMATCH`; logged-in token of another account or a guest → 401 `UNAUTHORIZED`; cookie cleared (`join_token_binding.feature`)
 - [x] integration: capacity reached → `QUEUE_FULL`, `issued` not incremented; a rejoiner is not refused
 - [x] integration: `SOLD_OUT` → 409 for new joiners, rejoiners keep their place
 - [ ] integration: empty queue + ctl running → `granted: true` within 1 s (stand-in controller passes; real ctl `@e2e` after step 3)

@@ -1,5 +1,5 @@
 @step-4 @queue-service @join @integration @redis-cluster @NFR-05
-Feature: Ticket numbers stay unique and gap-free under a crowd
+Feature: In a crowd, everyone gets a unique, ordered ticket number
   Sources: 01-join-queue.md §7 · NFR-05 (FCFS fairness)
 
   Background:
@@ -19,12 +19,7 @@ Feature: Ticket numbers stay unique and gap-free under a crowd
     When guests "g1", "g2", "g3" join "E1" one after another
     Then "g1" < "g2" < "g3" by ticket number
 
-  @open-question
   Scenario: The capacity gate may overshoot by at most the joins in flight
-    # OPEN: the gate reads issued − now_serving, then INCRs: not atomic. Under a race up to
-    # (parallel joins − 1) extra numbers can be issued past QUEUE_CAPACITY.
-    # Proposal: accept for POC (the cap is a safety net; the home page already shows FULL).
-    # Alternative: a 2-key Lua (check + INCR) on queue:{E1} and queue:{E1}:issued.
     Given QUEUE_CAPACITY is 100
     When 300 guests join "E1" in parallel from 50 workers
     Then at least 100 joins succeed

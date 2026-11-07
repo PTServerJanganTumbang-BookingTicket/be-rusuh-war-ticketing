@@ -1,4 +1,4 @@
-package queue_test
+package features
 
 import (
 	"context"
@@ -53,9 +53,10 @@ func registerJoinSteps(sc *godog.ScenarioContext, W func() *world) {
 		W().captured["presented"] = qt
 		return join(joinReq{eventID: id, queueToken: qt, captcha: ptr(c), deviceID: "dev-gggggggggggggggg"})
 	})
-	sc.Step(`^the guest joins "([^"]*)" again sending queue_token "([^"]*)" as (the queue_token cookie|the X-Queue-Token header) with captcha "([^"]*)"$`,
+	sc.Step(`^the guest joins "([^"]*)" again from the same device sending queue_token "([^"]*)" as (the queue_token cookie|the X-Queue-Token header) with captcha "([^"]*)"$`,
 		func(id, qt, carrier, c string) error {
-			r := joinReq{eventID: id, queueToken: qt, captcha: ptr(c), carrier: "cookie"}
+			dev, _ := W().captured["guestDevice"].(string)
+			r := joinReq{eventID: id, deviceID: dev, queueToken: qt, captcha: ptr(c), carrier: "cookie"}
 			if strings.Contains(carrier, "header") {
 				r.carrier = "header"
 			}

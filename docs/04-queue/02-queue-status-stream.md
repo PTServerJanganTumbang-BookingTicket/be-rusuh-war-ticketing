@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Service** | `services/sse-server` (ECS Fargate behind ALB `events.rusuhtiket.com`, **not** API Gateway) |
+| **Service** | `services/sse-server` (ECS Fargate behind ALB `events.my-rusuh.my.id`, **not** API Gateway) |
 | **Auth** | cookie `queue_token` (web) · `X-Queue-Token` (mobile). Never in the query string |
 | **Contract** | Apidog `GET /events/{event_id}/queue/stream` · api-contracts §3.2 |
 | **Requirements** | FR-06, FR-07, FR-08, FR-10, NFR-06 (p95 < 1 s), NFR-14, BR-10, BR-21 |

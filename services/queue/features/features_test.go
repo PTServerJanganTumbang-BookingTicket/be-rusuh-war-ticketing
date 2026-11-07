@@ -1,4 +1,4 @@
-package queue_test
+package features
 
 import (
 	"bytes"
@@ -92,7 +92,7 @@ func createTestDB() error {
 	if adminDB, err = pgxpool.New(ctx, u.String()); err != nil {
 		return err
 	}
-	files, err := filepath.Glob(filepath.Join("..", "..", "migrations", "*.up.sql"))
+	files, err := filepath.Glob(filepath.Join("..", "..", "..", "migrations", "*.up.sql"))
 	if err != nil || len(files) == 0 {
 		return fmt.Errorf("no migrations found: %v", err)
 	}
@@ -261,6 +261,7 @@ func initScenario(sc *godog.ScenarioContext) {
 	registerJoinSteps(sc, func() *world { return w })
 	registerAssertSteps(sc, func() *world { return w })
 	registerTurnstileSteps(sc, func() *world { return w })
+	registerBindingSteps(sc, func() *world { return w })
 }
 
 func hasTag(s *godog.Scenario, tag string) bool {
@@ -373,7 +374,7 @@ func (w *world) cleanRedis() error {
 			return err
 		}
 	}
-	for _, qt := range []string{"qt_A", "qt_G", "qt_X", "qt_B", "qt_GONE", "qt_UNKNOWN"} {
+	for _, qt := range []string{"qt_A", "qt_G", "qt_X", "qt_B", "qt_GONE", "qt_UNKNOWN", "qt_NOHASH"} {
 		_ = w.rdb.Del(ctx, rediskeys.Token(qt)).Err()
 	}
 	for ip := range w.usedIPs {

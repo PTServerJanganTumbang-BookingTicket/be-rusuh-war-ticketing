@@ -95,7 +95,7 @@ func main() {
 				fmt.Printf("GATE %s is still @draft: get it reviewed before implementing\n", in.path)
 				problems++
 			}
-			pkgDir := filepath.Dir(filepath.Dir(in.path))
+			pkgDir := suiteDir(in.path)
 			pkgDirs[pkgDir] = true
 			if !hasSuite(pkgDir) {
 				fmt.Printf("FAIL %s has no TestFeatures suite in %s (go test would run 0 scenarios)\n", in.path, pkgDir)
@@ -169,6 +169,16 @@ func check(path string) (featureInfo, []string) {
 		}
 	}
 	return info, errs
+}
+
+// suiteDir is where a feature's TestFeatures suite lives: the feature's own
+// folder (steps next to specs), else the folder above a "features" folder.
+func suiteDir(featurePath string) string {
+	own := filepath.Dir(featurePath)
+	if hasSuite(own) {
+		return own
+	}
+	return filepath.Dir(own)
 }
 
 // hasSuite reports whether dir has a _test.go file defining TestFeatures.

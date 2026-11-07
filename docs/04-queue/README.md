@@ -46,8 +46,8 @@ flowchart LR
     end
 
     subgraph Edge
-        APIGW[API Gateway<br/>api.rusuhtiket.com]
-        ALB[ALB<br/>events.rusuhtiket.com]
+        APIGW[API Gateway<br/>api.my-rusuh.my.id]
+        ALB[ALB<br/>events.my-rusuh.my.id]
     end
 
     subgraph Compute
@@ -294,7 +294,7 @@ Rounding up makes the estimate lean pessimistic, and the big steps stop it flick
 ```
 SSE default event:   {"nowServing":31604,"state":"OPEN","ratePerMin":318,"serverTime":"…"}
 /serving data:       {"now_serving":31600,"rate_per_min":318,"state":"OPEN","server_time":"…", "poll_after_ms":…, "poll_tiers":[…]}
-join data:           {"ticket_no":32748,"now_serving":31500,"position":1248,"queue_token":"qt_xyz789","sse_url":"https://events.rusuhtiket.com/events/evt_konser_a/queue/stream","event":{…}}
+join data:           {"ticket_no":32748,"now_serving":31500,"position":1248,"queue_token":"qt_xyz789","sse_url":"https://events.my-rusuh.my.id/events/evt_konser_a/queue/stream","event":{…}}
 ```
 
 `ticket_no` comes from join (or `/me`); `ratePerMin` arrives with the first SSE snapshot, so the

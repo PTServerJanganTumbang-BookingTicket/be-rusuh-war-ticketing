@@ -1,16 +1,11 @@
 @step-4 @queue-service @join
-Feature: Join rejects early, in a fixed order, and a rejected call never burns a ticket number
-  Gate order (approved 2026-11-06):
-    1 request shape → 2 identity (device / Bearer) → 3 rate limit → 4 CAPTCHA →
-    5 sale state (SCHEDULED / CLOSED / unseeded) → 6 rejoin (BR-09 token, BR-07 account) →
-    7 sold out → 8 capacity → 9 issue ticket
-  Rate limit comes before CAPTCHA so rejected attempts never cost an external call.
-  Sold out comes after rejoin: customers already in line keep their place while stock may
-  come back; only NEW places are refused (like a waiting room's "reject" mode).
+Feature: Join says no early and in a fixed order, and a refusal never costs me a ticket number
+  Order: request shape → identity → rate limit → CAPTCHA → sale state → rejoin → sold out → capacity → issue ticket.
+  Rate limit before CAPTCHA: refused attempts never cost an external call.
+  Sold out after rejoin: people already in line keep their place; only new places are refused.
+  Errors use the standard envelope (meta.code, message, error_code, server_time; data {}).
 
-  Every error uses the envelope: meta.code, meta.message, meta.error_code, meta.server_time, data {}.
-
-  Sources: api-contracts §3.1, Appendix A · 01-join-queue.md §2, §3, §5 · impl-plan §7.2 steps 1–5
+  Sources: api-contracts §3.1, Appendix A · 01-join-queue.md §2, §3, §5 · impl-plan §7.2
 
   Background:
     Given event "E1" is "OPEN" with now_serving 100 and issued 149
@@ -20,7 +15,7 @@ Feature: Join rejects early, in a fixed order, and a rejected call never burns a
   # ------------------------------------------------------------ order
 
   @unit
-  Scenario Outline: The first failing gate decides the answer, and later gates are not called
+  Scenario Outline: Outline: The first failing check decides the answer; later checks are not run
     Given the request fails gate "<gate>"
     And every later gate would also fail
     When a guest joins "E1"
@@ -40,7 +35,7 @@ Feature: Join rejects early, in a fixed order, and a rejected call never burns a
       | capacity          | 503    | QUEUE_FULL         |
 
   @unit
-  Scenario: A rate-limited caller never reaches the CAPTCHA provider
+  Scenario: If I am rate limited, the CAPTCHA provider is never called
     Given IP "203.0.113.7" has used its 20 joins in the last 5 minutes
     When a guest from IP "203.0.113.7" joins "E1" with captcha "cap-ok"
     Then the response status is 429
@@ -49,7 +44,7 @@ Feature: Join rejects early, in a fixed order, and a rejected call never burns a
   # ------------------------------------------------------------ request shape
 
   @unit
-  Scenario Outline: A malformed body is rejected
+  Scenario Outline: Outline: A malformed request is refused
     When a guest with device id "dev-aaaaaaaaaaaaaaaa" posts body <body> to join "E1"
     Then the response status is <status> with error_code "<code>"
 
@@ -61,12 +56,12 @@ Feature: Join rejects early, in a fixed order, and a rejected call never burns a
       | "{\"captcha_token\": \"\"}" | 400  | CAPTCHA_REQUIRED |
 
   @unit
-  Scenario: An oversized body is rejected without parsing
+  Scenario: An oversized request is refused without being read
     When a guest posts a 1 MB body to join "E1"
     Then the response status is 400 with error_code "VALIDATION_ERROR"
 
   @unit
-  Scenario Outline: An event id that cannot be a key is not found
+  Scenario Outline: Outline: An event id that cannot exist is "not found"
     When a guest with device id "dev-aaaaaaaaaaaaaaaa" joins event "<event_id>" with captcha "cap-ok"
     Then the response status is 404 with error_code "NOT_FOUND"
 
@@ -78,32 +73,28 @@ Feature: Join rejects early, in a fixed order, and a rejected call never burns a
   # ------------------------------------------------------------ identity
 
   @unit
-  Scenario: A guest without a device id is rejected
+  Scenario: As a guest I must send a device id
     When a guest without a device id joins "E1" with captcha "cap-ok"
     Then the response status is 400 with error_code "DEVICE_ID_REQUIRED"
 
   @unit
-  Scenario: A logged-in customer does not need a device id
+  Scenario: As a logged-in customer I do not need a device id
     Given account "acc-1" has a valid access token
     When account "acc-1" without a device id joins "E1" with captcha "cap-ok"
     Then the response status is 200
 
-  @unit @open-question
-  Scenario Outline: A bad device id is rejected
-    # OPEN: the contract says "random 128-bit value" but sets no format.
-    # Proposal: 16–128 chars of [A-Za-z0-9_-], else 400 VALIDATION_ERROR.
+  @unit
+  Scenario Outline: Any non-empty device id is accepted (no format check)
     When a guest with device id "<device_id>" joins "E1" with captcha "cap-ok"
-    Then the response status is 400 with error_code "VALIDATION_ERROR"
+    Then the response status is 200
 
     Examples:
       | device_id         |
       | short             |
       | has space inside! |
 
-  @unit @open-question
-  Scenario Outline: A bad access token is an error, not a silent guest join
-    # OPEN: not specified. Treating it as a guest would let a caller dodge BR-07 by
-    # sending garbage. Proposal: reject with the session codes from Appendix A.
+  @unit
+  Scenario Outline: Outline: A bad login token is an error, never a silent guest join
     When a caller with <token> and device id "dev-aaaaaaaaaaaaaaaa" joins "E1" with captcha "cap-ok"
     Then the response status is 401 with error_code "<code>"
 
@@ -115,7 +106,7 @@ Feature: Join rejects early, in a fixed order, and a rejected call never burns a
   # ------------------------------------------------------------ rate limits
 
   @integration @redis-cluster
-  Scenario: Per-IP limit is 20 joins per 5 minutes
+  Scenario: One IP may join 20 times per 5 minutes
     When a guest from IP "203.0.113.7" makes 20 join attempts within 1 minute
     Then all 20 are answered without 429
     When the same IP makes a 21st attempt
@@ -124,7 +115,7 @@ Feature: Join rejects early, in a fixed order, and a rejected call never burns a
     And the response has a Retry-After header with the same value
 
   @integration @redis-cluster
-  Scenario: Per-account limit is 3 joins per minute, on top of the IP limit
+  Scenario: One account may join 3 times per minute, on top of the IP limit
     Given account "acc-1" has a valid access token
     When account "acc-1" makes 3 join attempts within 1 minute from 3 different IPs
     And account "acc-1" makes a 4th attempt from a 4th IP
@@ -138,15 +129,13 @@ Feature: Join rejects early, in a fixed order, and a rejected call never burns a
     # 20 per 300 s = one token every 15 s.
 
   @unit
-  Scenario: The client IP comes from the gateway, not from a spoofable header
+  Scenario: My IP is what the gateway saw, not a header I can fake
     Given the gateway reports source IP "203.0.113.7"
     When a guest sends "X-Forwarded-For: 198.51.100.1" and joins "E1"
     Then the rate limit is charged to "203.0.113.7"
 
   @unit
-  Scenario: Rate limiter outage fails open
-    # OPEN: not specified. Fairness, not correctness, is at stake (same rule as CAPTCHA).
-    # Proposal: allow the join and emit metric "RateLimitFailOpen".
+  Scenario: If the rate limiter is down, I can still join
     Given the rate limiter errors
     When a guest with device id "dev-aaaaaaaaaaaaaaaa" joins "E1" with captcha "cap-ok"
     Then the response status is 200
@@ -155,13 +144,13 @@ Feature: Join rejects early, in a fixed order, and a rejected call never burns a
   # ------------------------------------------------------------ CAPTCHA
 
   @unit
-  Scenario: An invalid CAPTCHA token costs no ticket number
+  Scenario: A failed CAPTCHA costs me no ticket number
     When a guest with device id "dev-aaaaaaaaaaaaaaaa" joins "E1" with captcha "cap-bad"
     Then the response status is 403 with error_code "CAPTCHA_FAILED"
     And queue:{E1}:issued is still 149
 
   @unit @NFR-13
-  Scenario Outline: CAPTCHA provider trouble fails open
+  Scenario Outline: Outline: If the CAPTCHA provider has trouble, I can still join
     Given the CAPTCHA provider <trouble>
     When a guest with device id "dev-aaaaaaaaaaaaaaaa" joins "E1" with captcha "cap-ok"
     Then the response status is 200
@@ -175,7 +164,7 @@ Feature: Join rejects early, in a fixed order, and a rejected call never burns a
       | answers a body that is not JSON     |
 
   @unit
-  Scenario: Logged-in customers must pass CAPTCHA too
+  Scenario: Logged-in customers pass the CAPTCHA too
     Given account "acc-1" has a valid access token
     When account "acc-1" joins "E1" with captcha "cap-bad"
     Then the response status is 403 with error_code "CAPTCHA_FAILED"
@@ -183,23 +172,22 @@ Feature: Join rejects early, in a fixed order, and a rejected call never burns a
   # ------------------------------------------------------------ sale state
 
   @unit
-  Scenario: Sale not open yet
+  Scenario: The sale has not opened yet
     Given event "E1" is "SCHEDULED" with sale_starts_at "2026-11-10T02:00:00Z"
     When a guest with device id "dev-aaaaaaaaaaaaaaaa" joins "E1" with captcha "cap-ok"
     Then the response status is 409 with error_code "SALE_NOT_OPEN"
     And data is {"queue_state": "NOT_OPEN", "sale_starts_at": "2026-11-10T02:00:00Z"}
-    # OPEN: where join reads sale_starts_at (and the event name for the 200 body).
-    # Proposal: sale-ops seeds both as fields of queue:{E1}, next to now_serving.
+    # Decided: sale-ops seeds both as fields of queue:{E1}, next to now_serving.
 
   @unit
-  Scenario: Sale closed
+  Scenario: The sale is closed
     Given event "E1" is "CLOSED"
     When a guest with device id "dev-aaaaaaaaaaaaaaaa" joins "E1" with captcha "cap-ok"
     Then the response status is 410 with error_code "SALE_CLOSED"
     And data is {"queue_state": "CLOSED"}
 
   @integration @redis-cluster @FR-18
-  Scenario: A new customer is refused while SOLD_OUT, without burning a number
+  Scenario: While sold out, a new customer is refused and no number is spent
     # Decided 2026-11-06 (Erma). New code SOLD_OUT, to be added to Appendix A + Apidog.
     Given event "E1" is "SOLD_OUT" with sold_out_at "2026-11-10T02:40:12Z"
     When a guest with device id "dev-aaaaaaaaaaaaaaaa" joins "E1" with captcha "cap-ok"
@@ -208,16 +196,14 @@ Feature: Join rejects early, in a fixed order, and a rejected call never burns a
     And queue:{E1}:issued is still 149
 
   @integration @redis-cluster @FR-18
-  Scenario: Joining works again once stock comes back
+  Scenario: Joining works again once seats come back
     Given event "E1" was "SOLD_OUT" and is now "OPEN"
     When a guest with device id "dev-aaaaaaaaaaaaaaaa" joins "E1" with captcha "cap-ok"
     Then the response status is 200
     And data.ticket_no is 150
 
-  @unit @open-question
-  Scenario Outline: An event that was never seeded is not treated as "not open"
-    # OPEN: impl-plan says 503, but Appendix A has no code for it.
-    # Proposal: add QUEUE_NOT_READY (503) to Appendix A.
+  @unit
+  Scenario Outline: Outline: An event that was never set up is not shown as "not open"
     Given event "E1" has <state>
     When a guest with device id "dev-aaaaaaaaaaaaaaaa" joins "E1" with captcha "cap-ok"
     Then the response status is 503 with error_code "QUEUE_NOT_READY"
@@ -231,7 +217,7 @@ Feature: Join rejects early, in a fixed order, and a rejected call never burns a
   # ------------------------------------------------------------ capacity
 
   @integration @redis-cluster
-  Scenario: A full queue is refused without issuing a number
+  Scenario: A full queue refuses me without spending a number
     Given QUEUE_CAPACITY is 49
     When a guest with device id "dev-aaaaaaaaaaaaaaaa" joins "E1" with captcha "cap-ok"
     Then the response status is 503 with error_code "QUEUE_FULL"
@@ -239,13 +225,13 @@ Feature: Join rejects early, in a fixed order, and a rejected call never burns a
     And queue:{E1}:issued is still 149
 
   @integration @redis-cluster
-  Scenario: One place left is still given out
+  Scenario: The last place is still given out
     Given QUEUE_CAPACITY is 50
     When a guest with device id "dev-aaaaaaaaaaaaaaaa" joins "E1" with captcha "cap-ok"
     Then the response status is 200 and data.ticket_no is 150
 
   @integration @redis-cluster
-  Scenario: Redis down fails closed
+  Scenario: If Redis is down, I am told to retry
     Given Redis is unreachable
     When a guest with device id "dev-aaaaaaaaaaaaaaaa" joins "E1" with captcha "cap-ok"
     Then the response status is 503

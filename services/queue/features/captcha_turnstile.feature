@@ -1,8 +1,7 @@
 @step-4 @queue-service @captcha @NFR-13
-Feature: Turnstile adapter behind the Captcha port
-  Invisible Cloudflare Turnstile, server-side siteverify only. An explicit "invalid"
-  rejects. Any provider trouble fails open (fairness, not correctness, is at stake).
-  Tests run against a local fake siteverify server, never the real Cloudflare.
+Feature: The bot check never blocks a real customer by accident
+  Invisible Cloudflare Turnstile, server-side only. An explicit "invalid" refuses me; any provider trouble lets me in.
+  Tests use a local fake siteverify server, never Cloudflare.
 
   Sources: 01-join-queue.md §6 · api-contracts §3.1 · ADR-006 §8
 

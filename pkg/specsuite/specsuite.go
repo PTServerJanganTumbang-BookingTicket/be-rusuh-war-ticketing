@@ -58,7 +58,7 @@ func Run(t *testing.T, initScenario func(*godog.ScenarioContext)) {
 		ScenarioInitializer: initScenario,
 		Options: &godog.Options{
 			Format:   "pretty",
-			Paths:    []string{"features"},
+			Paths:    []string{featuresPath()},
 			Tags:     expr,
 			Strict:   true,
 			TestingT: t,
@@ -67,4 +67,13 @@ func Run(t *testing.T, initScenario func(*godog.ScenarioContext)) {
 	if code := suite.Run(); code != 0 {
 		t.Fatalf("godog suite failed (tags %q, exit %d)", expr, code)
 	}
+}
+
+// featuresPath is "features" when the suite sits above a features folder, and
+// "." when the suite sits in the folder with the .feature files.
+func featuresPath() string {
+	if fi, err := os.Stat("features"); err == nil && fi.IsDir() {
+		return "features"
+	}
+	return "."
 }
