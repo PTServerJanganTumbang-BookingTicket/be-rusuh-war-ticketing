@@ -1,4 +1,4 @@
-@draft @step-1 @pkg-redisscript @integration @redis-cluster
+@step-1 @pkg-redisscript @integration @redis-cluster
 Feature: advance_now_serving.lua moves the queue forward atomically
   The script decides how many ticket numbers to admit in one tick and raises
   now_serving. It never removes tokens from by_ticket: a member whose score is

@@ -329,7 +329,7 @@ the next tick's COUNT automatically, with no counter to decrement.
 
 ## 8. Tasks
 
-- [ ] `pkg/redisscript` + `advance_now_serving.lua` (ADR-006 §3.4) + Lua tests
+- [x] `pkg/redisscript` + `advance_now_serving.lua` (ADR-006 §3.4) + Lua tests
 - [ ] migration: `UNIQUE (event_id, queue_token)` + partial index on active statuses
 - [ ] `services/admission-ctl` scaffold (ECS, `cmd/worker`)
 - [ ] tick loop skeleton (500 ms ticker) with step functions and per-step metrics
