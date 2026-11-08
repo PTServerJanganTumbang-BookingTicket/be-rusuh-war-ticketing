@@ -191,6 +191,23 @@ Resources:
                   - cloudformation:TagResource
                 Resource:
                   - !Sub arn:${AWS::Partition}:cloudformation:*:${AWS::AccountId}:stack/rusuh-*/*
+                  # sam deploy --resolve-s3 keeps its artifact bucket in a
+                  # stack of its own, created on first use per region. Without
+                  # this the deploy fails before it touches any rusuh stack:
+                  #
+                  #   not authorized to perform cloudformation:CreateChangeSet
+                  #   on resource: .../stack/aws-sam-cli-managed-default/*
+                  #
+                  # Named exactly, not a wildcard: this is one known SAM
+                  # bootstrap stack, and the scoping above is the point of
+                  # this statement.
+                  #
+                  # To drop it, give the sam-deploy action an artifact-bucket
+                  # input instead - it then passes --s3-bucket and no managed
+                  # stack is created. Worth doing eventually: the managed
+                  # bucket has no lifecycle rule, so build artifacts
+                  # accumulate indefinitely.
+                  - !Sub arn:${AWS::Partition}:cloudformation:*:${AWS::AccountId}:stack/aws-sam-cli-managed-default/*
               # SAM needs this one unscoped; it is read-only metadata.
               - Sid: CloudFormationTransform
                 Effect: Allow
