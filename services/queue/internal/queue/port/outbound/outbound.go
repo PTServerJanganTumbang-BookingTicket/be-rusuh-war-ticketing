@@ -14,8 +14,8 @@ import (
 // QueueStore is the Redis side of the queue. Every write is a single key or a
 // single {ev} slot; join never runs the admission Lua and never publishes.
 type QueueStore interface {
-	// Snapshot reads state, now_serving, issued, name, sale_starts_at and
-	// full_booked_at in one round trip.
+	// Snapshot reads state, now_serving, free_slots, free_slots_at, issued,
+	// name, sale_starts_at and full_booked_at in one round trip.
 	Snapshot(ctx context.Context, ev rediskeys.Event) (domain.EventSnapshot, error)
 	// Engagement reads token:<queueToken>. found is false if it does not exist.
 	Engagement(ctx context.Context, queueToken string) (e domain.Engagement, found bool, err error)
@@ -31,6 +31,9 @@ type QueueStore interface {
 	IssueTicket(ctx context.Context, ev rediskeys.Event) (int64, error)
 	// SaveEngagement writes token:<qt> with a TTL.
 	SaveEngagement(ctx context.Context, e domain.Engagement, ttl time.Duration) error
+	// Grant reads grant_token and booking_expires_at from token:<queueToken>
+	// (HMGET). found is false until admission-ctl has granted the place.
+	Grant(ctx context.Context, queueToken string) (g domain.Grant, found bool, err error)
 	// AddToLine is ZADD queue:{ev}:by_ticket <ticketNo> <qt>.
 	AddToLine(ctx context.Context, ev rediskeys.Event, queueToken string, ticketNo int64) error
 	// RepairLine puts qt back into by_ticket (ZADD NX) only while ticketNo is

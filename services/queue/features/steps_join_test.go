@@ -166,6 +166,13 @@ func registerJoinSteps(sc *godog.ScenarioContext, W func() *world) {
 		}
 		return nil
 	})
+	sc.Step(`^(\d+) guests join "([^"]*)" one after another$`, func(n int, id string) error {
+		w := W()
+		for i := range n {
+			w.record(w.do(joinReq{eventID: id, deviceID: fmt.Sprintf("dev-batch-%010d", i)}))
+		}
+		return nil
+	})
 	sc.Step(`^two guests join "([^"]*)" at the same time$`, func(id string) error {
 		W().parallel(2, 2, func(i int) joinReq { return joinReq{eventID: id, deviceID: fmt.Sprintf("dev-two-%012d", i)} })
 		return nil
@@ -180,7 +187,7 @@ func registerJoinSteps(sc *godog.ScenarioContext, W func() *world) {
 		after := time.Duration(ms) * time.Millisecond
 		w.captured["cancelAt"] = time.Now().Add(after)
 		time.AfterFunc(after, cancel)
-		// An empty queue: ticket_no == now_serving + 1, so join waits.
+		// The Background wrote free_slots and the next ticket fits, so join waits.
 		snap, err := w.snapshot("E1")
 		if err != nil {
 			return err

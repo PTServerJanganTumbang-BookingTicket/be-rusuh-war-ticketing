@@ -144,15 +144,6 @@ func (b *fakeBookings) ByQueueToken(_ context.Context, _, qt string) (domain.Boo
 	return r, ok, nil
 }
 
-func (b *fakeBookings) lastRead() time.Time {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if len(b.reads) == 0 {
-		return time.Time{}
-	}
-	return b.reads[len(b.reads)-1]
-}
-
 // failingBookings errors on every query ("Postgres fails every query").
 type failingBookings struct{}
 

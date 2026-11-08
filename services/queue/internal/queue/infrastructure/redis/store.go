@@ -21,11 +21,17 @@ const (
 	FieldAccountID  = "account_id"
 	FieldDeviceHash = "device_hash"
 	FieldJoinedAt   = "joined_at"
+
+	// Written by admission-ctl when it grants the place (FR-05 wait).
+	FieldGrantToken       = "grant_token"
+	FieldBookingExpiresAt = "booking_expires_at"
 )
 
 // queue:{ev} hash fields.
 const (
 	FieldNowServing   = "now_serving"
+	FieldFreeSlots    = "free_slots"    // places admission-ctl could still fill after its last run
+	FieldFreeSlotsAt  = "free_slots_at" // epoch seconds of that run
 	FieldName         = "name"
 	FieldSaleStartsAt = "sale_starts_at"
 )
@@ -44,7 +50,7 @@ func (s *Store) Snapshot(ctx context.Context, ev rediskeys.Event) (domain.EventS
 	var meta *goredis.SliceCmd
 	_, err := s.rdb.Pipelined(ctx, func(p goredis.Pipeliner) error {
 		state = p.Get(ctx, ev.QueueState())
-		meta = p.HMGet(ctx, ev.QueueHash(), FieldNowServing, FieldName, FieldSaleStartsAt)
+		meta = p.HMGet(ctx, ev.QueueHash(), FieldNowServing, FieldName, FieldSaleStartsAt, FieldFreeSlots, FieldFreeSlotsAt)
 		issued = p.Get(ctx, ev.QueueIssued())
 		fullBooked = p.Get(ctx, ev.FullBookedAt())
 		return nil
@@ -82,7 +88,35 @@ func (s *Store) Snapshot(ctx context.Context, ev rediskeys.Event) (domain.EventS
 		return domain.EventSnapshot{}, fmt.Errorf("%s now_serving: %w", ev.QueueHash(), err)
 	}
 	snap.Name, snap.SaleStartsAt = str(1), str(2)
+	// free_slots only lets join wait for a grant. A value that is not a number
+	// reads as "not written": join then answers queued at once.
+	if free, err := optionalInt(str(3)); err == nil {
+		if at, err := optionalInt(str(4)); err == nil {
+			snap.FreeSlots, snap.FreeSlotsAt = free, at
+		}
+	}
 	return snap, nil
+}
+
+// Grant reads the grant admission-ctl copied into token:<queueToken>.
+func (s *Store) Grant(ctx context.Context, queueToken string) (domain.Grant, bool, error) {
+	vals, err := s.rdb.HMGet(ctx, rediskeys.Token(queueToken), FieldGrantToken, FieldBookingExpiresAt).Result()
+	if err != nil {
+		return domain.Grant{}, false, err
+	}
+	gt, _ := vals[0].(string)
+	if gt == "" {
+		return domain.Grant{}, false, nil
+	}
+	exp, _ := vals[1].(string)
+	if exp == "" {
+		return domain.Grant{}, false, nil // not fully written yet: keep polling
+	}
+	at, err := time.Parse(time.RFC3339, exp)
+	if err != nil {
+		return domain.Grant{}, false, fmt.Errorf("%s booking_expires_at %q: %w", rediskeys.Token(queueToken), exp, err)
+	}
+	return domain.Grant{GrantToken: gt, BookingExpiresAt: at}, true, nil
 }
 
 func optionalInt(v string) (int64, error) {
@@ -98,7 +132,9 @@ func (s *Store) Engagement(ctx context.Context, queueToken string) (domain.Engag
 	if err != nil {
 		return domain.Engagement{}, false, err
 	}
-	if len(m) == 0 {
+	// No ticket_no = not a place join wrote. admission-ctl only adds grant
+	// fields to an existing hash, but a stray one must not turn a rejoin into a 503.
+	if len(m) == 0 || m[FieldTicketNo] == "" {
 		return domain.Engagement{}, false, nil
 	}
 	ticketNo, err := strconv.ParseInt(m[FieldTicketNo], 10, 64)

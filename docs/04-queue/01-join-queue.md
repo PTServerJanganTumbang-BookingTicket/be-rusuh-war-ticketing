@@ -8,18 +8,20 @@
 | **Requirements** | FR-04, FR-05, FR-10a, FR-10d..f, BR-07, BR-09, BR-16, NFR-05, NFR-13 |
 | **Detail** | impl-plan §7.2 (stale order, see §3) · ADR-005 §5, §6 · **ADR-006 §4** (S2) |
 | **Specs** | `services/queue/features/join_*.feature`, `captcha_turnstile.feature` (90 scenarios) |
-| **Status** | **implemented** (build step 4, branch `feature/step-4-join-queue`). FR-05 e2e with the real admission-ctl waits for step 3 |
+| **Status** | **implemented** (build step 4, branch `feature/step-4-join-queue`). **FR-05 v2 built (2026-11-08, ADR-006 §8.11):** the wait covers "everyone who fits" and polls Redis; `make step STEP=4` and `make verify` green. FR-05 e2e with the real admission-ctl waits for step 3 |
 
 ## 1. Purpose
 
 Gives the caller a `ticket_no` (their FCFS place) and a `queue_token`, **in the body and in an HttpOnly
-cookie**. **Join never grants**: admission-ctl is the only writer (S2). If the queue is empty, join waits up
-to `JOIN_GRANT_WAIT_MS` (1000) for admission-ctl's next tick (every 500 ms) to grant it, so FR-05 still
-answers `granted: true` in the same response. The hot path is **Redis only**. Aurora is read only: during
-the empty-queue wait, and once on a rejoin after the customer's turn came.
+cookie**. **Join never grants**: admission-ctl is the only writer (S2). If the caller's number **fits in the
+places still free** (`free_slots`, written by admission-ctl every tick), join waits up to `JOIN_GRANT_WAIT_MS`
+(1000) for the next tick (every 500 ms) to grant it, so FR-05 answers `granted: true` in the same response and
+the app skips the waiting room. At sale start this is the whole first batch (up to `MAX_CONCURRENT_SLOTS`), not
+just ticket 1. The hot path, including that wait, is **Redis only**. Aurora is read once, on a rejoin after the
+customer's turn came.
 
 Called when the customer presses the event button: "Masuk Antrian" (`queue_state: OPEN`) **and** "Beli
-Tiket" (`DIRECT`, empty queue). Both need a grant, and only join leads to one. Coming back (refresh, bank
+Tiket" (`DIRECT`, places free). Both need a grant, and only join leads to one. Coming back (refresh, bank
 app) is `GET /queue/me`, not join.
 
 ## 2. Flow
@@ -32,6 +34,7 @@ sequenceDiagram
     participant R as Redis
     participant CAP as Turnstile
     participant DB as Aurora (writer)
+    participant CTL as admission-ctl
 
     C->>Q: POST /join {captcha_token} · X-Device-Id · Bearer? · cookie / X-Queue-Token?
     Note over Q: 1 shape: JSON ≤ 8 KB, event id usable as {ev} → else 400 VALIDATION_ERROR / 404 NOT_FOUND
@@ -52,7 +55,7 @@ sequenceDiagram
         Note over Q: fail open + CaptchaFailOpenSeconds
     end
 
-    Q->>R: 5 snapshot: state, now_serving, issued, name, sale_starts_at, full_booked_at (1 pipeline)
+    Q->>R: 5 snapshot: state, now_serving, free_slots, free_slots_at, issued, name, sale_starts_at, full_booked_at (1 pipeline)
     alt SCHEDULED
         Q-->>C: 409 SALE_NOT_OPEN {queue_state NOT_OPEN, sale_starts_at}
     else CLOSED
@@ -76,13 +79,14 @@ sequenceDiagram
 
     Q->>R: 9 SET acct NX (logged in) · INCR issued · HSET token · ZADD by_ticket
 
-    opt 10 queue empty: ticket_no == now_serving + 1 (FR-05)
+    opt 10 I fit: free_slots_at ≤ 2 s old and ticket_no ≤ now_serving + min(free_slots, JOIN_DIRECT_MAX) (FR-05)
+        Note over CTL: next tick (≤ 500 ms): INSERT GRANTED · HSET grant · HSET token grant_token
         loop every 100 ms, up to JOIN_GRANT_WAIT_MS (1000)
-            Q->>DB: SELECT status, grant_token, booking_expires_at WHERE event_id, queue_token
+            Q->>R: HMGET token:{qt} grant_token, booking_expires_at
         end
-        alt row found
+        alt grant_token found
             Q-->>C: 200 granted true, grant_token, queue_token, booking_expires_at
-        else no row in time / Aurora error / client hung up
+        else not in time / Redis error / client hung up
             Note over Q: fall through to the queued answer.<br/>The turn arrives via the broadcast + /me
         end
     end
@@ -124,7 +128,9 @@ order wins.
 9. **Issue**: `SET acct NX` (logged in; a lost race waits up to 2 s for the winner's token and returns that
    place) → `INCR issued` → `HSET token` (+ TTL) → `ZADD by_ticket`. Token before `by_ticket`, so
    admission-ctl never sees a member without its hash. A failure releases `acct` and answers 503
-10. **FR-05**: if `ticket_no == now_serving + 1`, poll the writer for the GRANTED row, ≤ 1 s, read only
+10. **FR-05**: if the number fits (`free_slots_at` at most `JOIN_FREE_SLOTS_MAX_AGE_SECONDS` old and
+    `ticket_no ≤ now_serving + min(free_slots, JOIN_DIRECT_MAX)`), poll `token:{qt}` in Redis for the
+    `grant_token` admission-ctl writes, ≤ 1 s, read only. Otherwise answer queued at once
 11. **Respond**: `queue_token` in the body and `Set-Cookie: queue_token=…; Domain=my-rusuh.my.id; Path=/events/{event_id};
     Max-Age={SALE_WINDOW_SECONDS}; HttpOnly; Secure; SameSite=Strict`. **Mobile** keeps the body token in
     secure storage and sends `X-Queue-Token`. **Web** ignores it and relies on the cookie (the stream's
@@ -137,11 +143,11 @@ Full catalog: [`../redis-keys.md`](../redis-keys.md).
 | Store | Key / table | Op | Notes |
 |---|---|---|---|
 | Redis | `rl:join:{ip}`, `rl:joinacct:{id}` | token bucket (`pkg/ratelimit` Lua) | 20 / 5 min, 3 / min |
-| Redis | `queue:{ev}:state`, `queue:{ev}` (`now_serving`, `name`, `sale_starts_at`), `queue:{ev}:issued`, `queue:{ev}:full_booked_at` | one pipelined read | `name` and `sale_starts_at` are seeded by sale-ops |
-| Redis | `token:{queue_token}` | HGETALL (rejoin), HSET + EXPIRE | `qt_` + ULID. Fields `ticket_no`, `event_id`, `joined_at`, `account_id` (logged in), `device_hash` (`HMAC(DEVICE_PEPPER, device id)`, whenever a device id is sent). TTL `SALE_WINDOW_SECONDS` |
+| Redis | `queue:{ev}:state`, `queue:{ev}` (`now_serving`, `free_slots`, `free_slots_at`, `name`, `sale_starts_at`), `queue:{ev}:issued`, `queue:{ev}:full_booked_at` | one pipelined read | `name` and `sale_starts_at` are seeded by sale-ops; `free_slots*` by the advance Lua |
+| Redis | `token:{queue_token}` | HGETALL (rejoin), HSET + EXPIRE, HMGET `grant_token`, `booking_expires_at` (FR-05 wait, ≤ 11 reads) | `qt_` + ULID. Fields `ticket_no`, `event_id`, `joined_at`, `account_id` (logged in), `device_hash` (`HMAC(DEVICE_PEPPER, device id)`, whenever a device id is sent). TTL `SALE_WINDOW_SECONDS`. admission-ctl adds `grant_token`, `booking_id`, `booking_expires_at` when it grants |
 | Redis | `acct:{ev}:{account_id}` | GET, SET NX EX, WATCH/MULTI replace | logged-in only |
 | Redis | `queue:{ev}:by_ticket` | ZADD on issue; ZADD NX under WATCH on repair | score = `ticket_no` |
-| Aurora | `bookings` (migration `0005`: `grant_token`, `UNIQUE (event_id, queue_token)`) | SELECT on the writer | empty-queue wait (≤ 11 reads) and one read on a rejoin after the turn |
+| Aurora | `bookings` (migration `0005`: `grant_token`, `UNIQUE (event_id, queue_token)`) | SELECT on the writer | one read on a rejoin after the turn (the FR-05 wait no longer reads Aurora) |
 
 Join never runs the admission Lua, never publishes and never writes to Aurora.
 
@@ -173,10 +179,22 @@ Join never runs the admission Lua, never publishes and never writes to Aurora.
 - **DECIDED (S2): join never grants.** ADR-005's bypass ran `advance_now_serving.lua` and the INSERT inside
   the Lambda, a second writer. Now the Lambda only reads. If it dies while waiting, nothing is lost: the ctl
   grants anyway and the client finds out from the broadcast + `/me`.
-- **"Queue empty" check:** `ticket_no == now_serving + 1` right after the `INCR`, using the snapshot's
-  `now_serving`. Two simultaneous first joiners: only the first waits; the second learns its turn from the
-  broadcast + `/me`.
-- **Wait budget:** ≤ 1 s, only on an empty queue. Typical 250–500 ms. Lambda timeout 10 s (≥ 3 × the wait).
+- **DECIDED (2026-11-08, ADR-006 §8.11): everyone who fits goes straight in.** Replaces "only
+  `ticket_no == now_serving + 1` waits". admission-ctl's Lua writes `free_slots = max(0, deficit − admitted
+  numbers)` and `free_slots_at` atomically with `now_serving` on every run that reads the counts, **SCHEDULED
+  included**, so at T0 `free_slots` is already `min(MAX, ceil(stock / 3))`. `free_slots > 0` means nobody was
+  waiting at that tick, so the next `free_slots` joiners are exactly the ones the next tick admits.
+  - **Stale or missing `free_slots`** (older than `JOIN_FREE_SLOTS_MAX_AGE_SECONDS` = 2, e.g. admission-ctl down
+    or Aurora COUNT failing): no wait. Joiners don't hang for 1 s while the queue is frozen.
+  - **Cap `JOIN_DIRECT_MAX`** (default 500): bounds the Lambdas held at T0 (Lambda concurrency, default regional
+    limit 1000). Tune from the load test with `MAX_CONCURRENT_SLOTS`.
+  - **Half a second old:** more room than recorded → a few customers see the waiting room who could have
+    skipped it; less room → the waiter is not granted within 1 s and gets the queued answer. Never a grant by
+    join, never a double grant.
+  - **Redis, not Aurora:** admission-ctl copies `grant_token`, `booking_id`, `booking_expires_at` into
+    `token:{qt}` (only if it exists, so no TTL-less hash) after `HSET grant`, before `ZREM`. Up to 500 waiters ×
+    10 polls at T0 is ~5k Redis reads/s instead of SQL on the writer.
+- **Wait budget:** ≤ 1 s, only when the number fits. Typical 250–500 ms. Lambda timeout 10 s (≥ 3 × the wait).
 - **DECIDED (2026-11-07): a presented token rejoins only for its owner.** Guest token: `X-Device-Id` must hash to
   `device_hash` (no rebind; a guest who clears site data starts again). Logged-in token: the Bearer account must be its
   `account_id`, from any device. Otherwise 401 and the cookie is cleared, so the next join is fresh. A logged-in caller
@@ -209,9 +227,10 @@ All in `services/queue/features/` (godog, strict) plus Go unit tests under `inte
 - [x] integration: token ownership: guest token from another device → 401 `DEVICE_MISMATCH`; logged-in token of another account or a guest → 401 `UNAUTHORIZED`; cookie cleared (`join_token_binding.feature`)
 - [x] integration: capacity reached → `QUEUE_FULL`, `issued` not incremented; a rejoiner is not refused
 - [x] integration: `FULL_BOOKED` → 409 for new joiners, rejoiners keep their place
-- [ ] integration: empty queue + ctl running → `granted: true` within 1 s (stand-in controller passes; real ctl `@e2e` after step 3)
-- [x] integration: empty queue + ctl stopped → queued answer after ≤ 1 s, ≤ 11 reads, SELECT only
-- [x] integration: non-empty queue → no wait, no SQL, no PUBLISH, no Lua but the rate limiter
+- [x] integration: number fits + ctl running → `granted: true` within 1 s, first batch at T0 (stand-in controller; real ctl `@e2e` after step 3)
+- [x] unit: who waits (fits / no room / over `JOIN_DIRECT_MAX` / `free_slots` stale or missing)
+- [x] integration: not granted in time → queued answer after ≤ 1 s, ≤ 11 Redis reads, no SQL
+- [x] integration: no room → no wait, no SQL, no PUBLISH, no Lua but the rate limiter
 - [x] concurrency: 10k parallel joins → `ticket_no` 1..10k each once, `by_ticket` size = 10k; 10 parallel joins of one account → one place
 - [x] contract: the 8 documented responses validate against the Apidog schemas
 
@@ -224,6 +243,7 @@ All in `services/queue/features/` (godog, strict) plus Go unit tests under `inte
 - [x] config: secrets (`TURNSTILE_SECRET_KEY`, `DEVICE_PEPPER`, `JWT_SECRET`, `DATABASE_URL`) from Secrets Manager, never in the repo
 - [x] usecase `Join` + HTTP handler + cookie
 - [x] FR-05 bounded wait for the grant row
+- [x] FR-05 v2 (ADR-006 §8.11): read `free_slots*` in the snapshot, "fits" rule, poll `token:{qt}` instead of Aurora, config `JOIN_DIRECT_MAX`, `JOIN_FREE_SLOTS_MAX_AGE_SECONDS`
 - [x] `template.yaml` route + provisioned concurrency parameter
 - [x] contract updates in `documentations` (api-contracts v2.8.0 + Apidog: codes, cookie, `sse_url`, all join responses). Edited on branch `docs/queue-adr-006`, **not committed yet**
 - [ ] CI: Redis + Postgres services so `@integration` runs in CI (today CI runs unit level only)

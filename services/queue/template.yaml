@@ -38,7 +38,7 @@ Parameters:
 
 Globals:
   Function:
-    # At least 3x JOIN_GRANT_WAIT_MS (1 s): the empty-queue wait must never be
+    # At least 3x JOIN_GRANT_WAIT_MS (1 s): the wait for a grant must never be
     # cut off by the function timeout.
     Timeout: 10
     MemorySize: 512
@@ -71,6 +71,8 @@ Resources:
           QUEUE_CAPACITY: "300000"
           SALE_WINDOW_SECONDS: "21600"
           JOIN_GRANT_WAIT_MS: "1000"
+          JOIN_DIRECT_MAX: "500"
+          JOIN_FREE_SLOTS_MAX_AGE_SECONDS: "2"
           CAPTCHA_PROVIDER: turnstile
           TURNSTILE_TIMEOUT_MS: "1000"
           DATABASE_MAX_CONNS: "2"

@@ -27,6 +27,8 @@ func (s SaleState) Known() bool {
 type EventSnapshot struct {
 	State        SaleState // "" when queue:{ev}:state is missing
 	NowServing   int64
+	FreeSlots    int64 // queue:{ev} free_slots: places admission-ctl could still fill at FreeSlotsAt
+	FreeSlotsAt  int64 // queue:{ev} free_slots_at, epoch seconds; 0 when never written
 	Issued       int64
 	Name         string // queue:{ev} field "name", seeded by sale-ops
 	SaleStartsAt string // queue:{ev} field "sale_starts_at" (RFC 3339)
@@ -51,9 +53,15 @@ const (
 	EngagementQueued = "QUEUED"
 )
 
-// Booking is the part of a bookings row join reads (empty-queue wait, rejoin).
+// Booking is the part of a bookings row join reads on a rejoin after the turn
+// came. The grant itself is never taken from here: see Grant.
 type Booking struct {
-	Status           string
+	Status string
+}
+
+// Grant is what admission-ctl copies into token:<queue_token> when it grants a
+// place (FR-05): join hands it to a caller that waited for it.
+type Grant struct {
 	GrantToken       string
 	BookingExpiresAt time.Time
 }

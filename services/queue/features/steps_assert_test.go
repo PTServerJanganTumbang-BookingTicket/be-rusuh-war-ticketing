@@ -208,7 +208,7 @@ func registerAssertSteps(sc *godog.ScenarioContext, W func() *world) {
 	})
 
 	// ---- data
-	sc.Step(`^data is exactly granted true, grant_token, queue_token and booking_expires_at from the row$`, func() error {
+	sc.Step(`^data is exactly granted true, grant_token, queue_token and booking_expires_at from token:<queue_token>$`, func() error {
 		return lastDo(func(r *response) error { return W().grantedFromRow(r) })
 	})
 	sc.Step(`^data is (\{.*\})$`, func(want string) error {
@@ -518,9 +518,79 @@ func registerAssertSteps(sc *godog.ScenarioContext, W func() *world) {
 		}
 		return nil
 	})
-	sc.Step(`^the join made at most (\d+) reads of bookings$`, func(n int) error {
-		if s := tracer.statements(); len(s) > n {
-			return fmt.Errorf("%d reads of bookings, want at most %d", len(s), n)
+	sc.Step(`^the join read token:<queue_token> at most (\d+) times while waiting$`, func(n int) error {
+		got := len(W().hook.grantReadTimes())
+		if got == 0 || got > n {
+			return fmt.Errorf("%d grant reads, want 1 to %d", got, n)
+		}
+		return nil
+	})
+	sc.Step(`^join (waits|does not wait) for the grant$`, func(how string) error {
+		got := len(W().hook.grantReadTimes())
+		if (how == "waits") != (got > 0) {
+			return fmt.Errorf("join %s: %d grant reads", how, got)
+		}
+		return nil
+	})
+	sc.Step(`^join wrote nothing to Redis after ZADD by_ticket$`, func() error {
+		names, _ := W().hook.snapshot()
+		last := -1
+		for i, n := range names {
+			if n == "zadd" {
+				last = i
+			}
+		}
+		if last < 0 {
+			return errors.New("join never ran ZADD by_ticket")
+		}
+		for _, n := range names[last+1:] {
+			switch n {
+			case "set", "setnx", "hset", "hsetnx", "hdel", "zadd", "zrem", "incr", "del", "expire", "eval", "evalsha", "publish":
+				return fmt.Errorf("join sent %s after ZADD by_ticket", n)
+			}
+		}
+		return nil
+	})
+	sc.Step(`^the guests with ticket_no (\d+) to (\d+) got "([^"]*)"$`, func(from, to int, msg string) error {
+		// One after another from an empty queue: the i-th response holds ticket i.
+		for t := from; t <= to; t++ {
+			if err := W().messageOf(t, msg); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	sc.Step(`^the guest with ticket_no (\d+) got "([^"]*)" in less than (\d+) ms$`, func(t int, msg string, ms int) error {
+		w := W()
+		if err := w.messageOf(t, msg); err != nil {
+			return err
+		}
+		if took := w.resps[t-1].took; took >= time.Duration(ms)*time.Millisecond {
+			return fmt.Errorf("ticket %d took %v, want < %d ms", t, took, ms)
+		}
+		return nil
+	})
+	sc.Step(`^both responses say "([^"]*)"$`, func(msg string) error {
+		for i, r := range W().resps {
+			m, err := r.meta()
+			if err != nil || m["message"] != msg {
+				return fmt.Errorf("response %d: message %v (%v), want %q", i, m["message"], err, msg)
+			}
+		}
+		return nil
+	})
+	sc.Step(`^they hold ticket_no (\d+) and (\d+)$`, func(a, b int) error {
+		w := W()
+		got := map[int]bool{}
+		for _, r := range w.resps {
+			v, err := w.rdb.HGet(context.Background(), rediskeys.Token(r.queueToken()), "ticket_no").Int()
+			if err != nil {
+				return err
+			}
+			got[v] = true
+		}
+		if len(got) != 2 || !got[a] || !got[b] {
+			return fmt.Errorf("tickets %v, want %d and %d", got, a, b)
 		}
 		return nil
 	})
@@ -547,14 +617,15 @@ func registerAssertSteps(sc *godog.ScenarioContext, W func() *world) {
 		cancelAt, _ := w.captured["cancelAt"].(time.Time)
 		returned, _ := w.captured["returnedAt"].(time.Time)
 		limit := cancelAt.Add(time.Duration(ms) * time.Millisecond)
-		if last := w.fbook.lastRead(); last.After(limit) {
-			return fmt.Errorf("last bookings read %v after cancel", last.Sub(cancelAt))
+		reads := w.hook.grantReadTimes()
+		if len(reads) == 0 {
+			return errors.New("join never polled: the wait for the grant did not start")
+		}
+		if last := reads[len(reads)-1]; last.After(limit) {
+			return fmt.Errorf("last grant read %v after cancel", last.Sub(cancelAt))
 		}
 		if returned.After(limit) {
 			return fmt.Errorf("join returned %v after cancel", returned.Sub(cancelAt))
-		}
-		if len(w.fbook.reads) == 0 {
-			return errors.New("join never polled: the empty-queue wait did not start")
 		}
 		return nil
 	})
@@ -1156,16 +1227,23 @@ func (w *world) sameShape() error {
 	return nil
 }
 
-// grantAll is a BookingReader where admission-ctl has granted everyone.
-type grantAll struct{}
-
-func (grantAll) ByQueueToken(context.Context, string, string) (domain.Booking, bool, error) {
-	return domain.Booking{Status: "GRANTED", GrantToken: "gt_contract", BookingExpiresAt: time.Now().Add(5 * time.Minute)}, true, nil
+// messageOf checks the message of the n-th recorded response (1-based).
+func (w *world) messageOf(n int, want string) error {
+	if n < 1 || n > len(w.resps) {
+		return fmt.Errorf("no response %d (have %d)", n, len(w.resps))
+	}
+	m, err := w.resps[n-1].meta()
+	if err != nil {
+		return err
+	}
+	if m["message"] != want {
+		return fmt.Errorf("ticket %d: message %q, want %q", n, m["message"], want)
+	}
+	return nil
 }
 
 // produceDocumented produces one response per documented case.
 func (w *world) produceDocumented() error {
-	w.bookings = grantAll{}
 	w.limiter = &countingLimiter{}
 	if err := w.seedEvent("E1", "OPEN", ptr(int64(10)), ptr(int64(20)), "Konser A — Jakarta"); err != nil {
 		return err
@@ -1174,6 +1252,12 @@ func (w *world) produceDocumented() error {
 	out["200"] = w.do(joinReq{eventID: "E1", deviceID: "dev-contract-0000001"})
 	out["200 rejoined"] = w.do(joinReq{eventID: "E1", deviceID: "dev-contract-0000001", queueToken: out["200"].queueToken()})
 	if err := w.setCounters("E1", 21, 21); err != nil {
+		return err
+	}
+	if err := w.setFreeSlots("E1", 5, w.clock().Unix()); err != nil {
+		return err
+	}
+	if err := w.startStandIn(50 * time.Millisecond); err != nil {
 		return err
 	}
 	out["200 granted"] = w.do(joinReq{eventID: "E1", deviceID: "dev-contract-0000002"})

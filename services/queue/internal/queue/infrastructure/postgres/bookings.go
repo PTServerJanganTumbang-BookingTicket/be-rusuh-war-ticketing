@@ -3,7 +3,6 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"time"
@@ -26,28 +25,20 @@ type Bookings struct{ db Querier }
 // NewBookings builds the reader on the writer pool.
 func NewBookings(db Querier) *Bookings { return &Bookings{db: db} }
 
-const byQueueTokenSQL = `SELECT status, grant_token, booking_expires_at
+const byQueueTokenSQL = `SELECT status
 FROM bookings WHERE event_id = $1 AND queue_token = $2`
 
 // ByQueueToken returns the booking for (event_id, queue_token), if any.
 func (b *Bookings) ByQueueToken(ctx context.Context, eventID, queueToken string) (domain.Booking, bool, error) {
-	var (
-		status  string
-		grant   sql.NullString
-		expires sql.NullTime
-	)
-	err := b.db.QueryRow(ctx, byQueueTokenSQL, eventID, queueToken).Scan(&status, &grant, &expires)
+	var status string
+	err := b.db.QueryRow(ctx, byQueueTokenSQL, eventID, queueToken).Scan(&status)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Booking{}, false, nil
 	}
 	if err != nil {
 		return domain.Booking{}, false, fmt.Errorf("bookings by queue_token: %w", err)
 	}
-	out := domain.Booking{Status: status, GrantToken: grant.String}
-	if expires.Valid {
-		out.BookingExpiresAt = expires.Time.UTC()
-	}
-	return out, true, nil
+	return domain.Booking{Status: status}, true, nil
 }
 
 // NewPool opens the writer pool.

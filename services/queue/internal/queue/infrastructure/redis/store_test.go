@@ -72,3 +72,50 @@ func TestClaimAccount_reportsTheWinner(t *testing.T) {
 		t.Fatalf("replace = %v %q", ok, cur)
 	}
 }
+
+// admission-ctl copies the grant into token:<qt> field by field; join must
+// not hand out half of it, nor treat a stray grant-only hash as a place.
+func TestGrant_waitsForTheWholeGrant(t *testing.T) {
+	s, rdb, _ := newStore(t)
+	ctx := context.Background()
+	if _, found, err := s.Grant(ctx, "qt_A"); found || err != nil {
+		t.Fatalf("no hash: found=%v err=%v", found, err)
+	}
+	rdb.HSet(ctx, rediskeys.Token("qt_A"), FieldGrantToken, "gt_1")
+	if _, found, err := s.Grant(ctx, "qt_A"); found || err != nil {
+		t.Fatalf("grant_token without booking_expires_at: found=%v err=%v; want not ready", found, err)
+	}
+	rdb.HSet(ctx, rediskeys.Token("qt_A"), FieldBookingExpiresAt, "2026-11-10T19:05:00Z")
+	g, found, err := s.Grant(ctx, "qt_A")
+	if !found || err != nil || g.GrantToken != "gt_1" || g.BookingExpiresAt.Format(time.RFC3339) != "2026-11-10T19:05:00Z" {
+		t.Fatalf("Grant = %+v, %v, %v", g, found, err)
+	}
+	rdb.HSet(ctx, rediskeys.Token("qt_A"), FieldBookingExpiresAt, "soon")
+	if _, found, err := s.Grant(ctx, "qt_A"); found || err == nil {
+		t.Fatalf("malformed expiry: found=%v err=%v; want an error", found, err)
+	}
+}
+
+func TestEngagement_aGrantOnlyHashIsNotAPlace(t *testing.T) {
+	s, rdb, _ := newStore(t)
+	ctx := context.Background()
+	rdb.HSet(ctx, rediskeys.Token("qt_B"), FieldGrantToken, "gt_1", FieldBookingExpiresAt, "2026-11-10T19:05:00Z")
+	if _, found, err := s.Engagement(ctx, "qt_B"); found || err != nil {
+		t.Fatalf("Engagement = found %v, err %v; want not found, no error", found, err)
+	}
+}
+
+func TestSnapshot_malformedFreeSlotsReadsAsNotWritten(t *testing.T) {
+	s, rdb, ev := newStore(t)
+	ctx := context.Background()
+	rdb.Set(ctx, ev.QueueState(), "OPEN", 0)
+	rdb.HSet(ctx, ev.QueueHash(), FieldFreeSlots, "5.0", FieldFreeSlotsAt, "1800000000")
+	snap, err := s.Snapshot(ctx, ev)
+	if err != nil || snap.FreeSlots != 0 || snap.FreeSlotsAt != 0 {
+		t.Fatalf("Snapshot = %+v, %v; want free_slots ignored", snap, err)
+	}
+	rdb.HSet(ctx, ev.QueueHash(), FieldFreeSlots, "5")
+	if snap, _ = s.Snapshot(ctx, ev); snap.FreeSlots != 5 || snap.FreeSlotsAt != 1800000000 {
+		t.Fatalf("Snapshot = %+v; want 5 at 1800000000", snap)
+	}
+}

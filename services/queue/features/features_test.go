@@ -3,6 +3,7 @@ package features
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -14,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -135,6 +137,25 @@ type cmdHook struct {
 	mu      sync.Mutex
 	names   []string
 	scripts []string // EVALSHA sha / "eval"
+
+	// FR-05 wait: HMGET token:<qt> grant_token booking_expires_at
+	grantReads     []time.Time
+	failGrantReads atomic.Bool
+}
+
+func isGrantRead(c goredis.Cmder) bool {
+	a := c.Args()
+	if !strings.EqualFold(c.Name(), "hmget") || len(a) < 2 {
+		return false
+	}
+	k, _ := a[1].(string)
+	return strings.HasPrefix(k, "token:")
+}
+
+func (h *cmdHook) grantReadTimes() []time.Time {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]time.Time(nil), h.grantReads...)
 }
 
 func (h *cmdHook) record(c goredis.Cmder) {
@@ -142,6 +163,9 @@ func (h *cmdHook) record(c goredis.Cmder) {
 	defer h.mu.Unlock()
 	name := strings.ToLower(c.Name())
 	h.names = append(h.names, name)
+	if isGrantRead(c) {
+		h.grantReads = append(h.grantReads, time.Now())
+	}
 	switch name {
 	case "evalsha", "evalsha_ro":
 		h.scripts = append(h.scripts, fmt.Sprint(c.Args()[1]))
@@ -155,6 +179,9 @@ func (h *cmdHook) DialHook(next goredis.DialHook) goredis.DialHook { return next
 func (h *cmdHook) ProcessHook(next goredis.ProcessHook) goredis.ProcessHook {
 	return func(ctx context.Context, c goredis.Cmder) error {
 		h.record(c)
+		if h.failGrantReads.Load() && isGrantRead(c) {
+			return errors.New("redis: connection reset while reading the grant")
+		}
 		return next(ctx, c)
 	}
 }
