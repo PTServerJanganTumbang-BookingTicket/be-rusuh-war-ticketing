@@ -48,6 +48,34 @@ Parameters:
       branch that can run a job naming this environment obtains these
       credentials. infra/bootstrap/configure-github.sh does that.
 
+  SubClaimPrefix:
+    Type: String
+    Default: ""
+    Description: >
+      Literal prefix of the OIDC subject claim. Empty means repo:<GitHubRepo>.
+
+      GitHub's IMMUTABLE SUBJECT CLAIMS change this. When a repository has them
+      enabled, the subject embeds numeric owner and repository IDs:
+
+        repo:my-org@342404453/my-repo@1442410470:environment:prod
+
+      instead of
+
+        repo:my-org/my-repo:environment:prod
+
+      The IDs survive renames, which is the point - but the name-only form then
+      never matches, and the only symptom is:
+
+        Not authorized to perform sts:AssumeRoleWithWebIdentity
+
+      which says nothing about subjects. Nothing in the repository hints that
+      the feature is on. Ask GitHub before guessing:
+
+        gh api repos/<owner>/<repo>/actions/oidc/customization/sub
+
+      If use_immutable_subject is true, paste its sub_claim_prefix here
+      verbatim. Note the delimiter is "@"; earlier documentation said "-".
+
   CreateOidcProvider:
     Type: String
     Default: "true"
@@ -67,6 +95,7 @@ Parameters:
 
 Conditions:
   ShouldCreateProvider: !Equals [!Ref CreateOidcProvider, "true"]
+  HasSubPrefix: !Not [!Equals [!Ref SubClaimPrefix, ""]]
 
 Resources:
   GitHubOidcProvider:
@@ -121,9 +150,19 @@ Resources:
                 # Still exact strings, never `repo:owner/repo:*` - the
                 # wildcard form also matches pull_request and fork refs, which
                 # is how a fork PR ends up holding deploy credentials.
+                #
+                # The prefix is SubClaimPrefix when given, because a repo with
+                # immutable subject claims presents IDs rather than names, and
+                # repo:<owner>/<repo> would silently never match.
                 token.actions.githubusercontent.com:sub:
-                  - !Sub repo:${GitHubRepo}:environment:${AllowedEnvironment}
-                  - !Sub repo:${GitHubRepo}:ref:refs/heads/${AllowedBranch}
+                  - !If
+                    - HasSubPrefix
+                    - !Sub ${SubClaimPrefix}:environment:${AllowedEnvironment}
+                    - !Sub repo:${GitHubRepo}:environment:${AllowedEnvironment}
+                  - !If
+                    - HasSubPrefix
+                    - !Sub ${SubClaimPrefix}:ref:refs/heads/${AllowedBranch}
+                    - !Sub repo:${GitHubRepo}:ref:refs/heads/${AllowedBranch}
 
       Policies:
         # ── CloudFormation and the SAM artifact buckets ──────────────────────
@@ -267,6 +306,46 @@ Resources:
                   - !Sub arn:${AWS::Partition}:codebuild:*:${AWS::AccountId}:project/rusuh-*
 
         # ── IAM, for the execution roles SAM generates ──────────────────────
+        # ── SSM Parameter Store ─────────────────────────────────────────────
+        #
+        # The foundation publishes twelve parameters under /rusuh/, and every
+        # service template resolves its infrastructure from them with
+        # AWS::SSM::Parameter::Value<...>. That resolution happens at deploy
+        # time using THIS identity, not the Lambda's, so without these the
+        # service stacks cannot be created either.
+        #
+        # Omitting this was a real failure, not a theoretical one: the
+        # foundation got as far as SsmEmailFromAddress and stopped with
+        # "Access denied for operation 'PutParameter'", then could not roll
+        # back - DeleteParameter was denied too, leaving ROLLBACK_FAILED.
+        - PolicyName: ManageSsmParameters
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: WriteRusuhParameters
+                Effect: Allow
+                Action:
+                  - ssm:PutParameter
+                  - ssm:DeleteParameter
+                  - ssm:DeleteParameters
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:GetParameterHistory
+                  - ssm:AddTagsToResource
+                  - ssm:RemoveTagsFromResource
+                  - ssm:ListTagsForResource
+                  - ssm:LabelParameterVersion
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:parameter/rusuh/*
+              - Sid: DescribeParametersIsAccountWide
+                Effect: Allow
+                # ssm:DescribeParameters does not support resource-level
+                # permissions - it is a list operation and takes "*" or
+                # nothing. The write actions above are what is actually
+                # scoped; this only allows enumerating names.
+                Action: ssm:DescribeParameters
+                Resource: "*"
+
         - PolicyName: ManageExecutionRoles
           PolicyDocument:
             Version: "2012-10-17"
