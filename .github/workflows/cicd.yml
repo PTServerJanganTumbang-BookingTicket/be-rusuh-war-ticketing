@@ -177,6 +177,13 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      # Staggered on purpose. Every one of these jobs downloads the same
+      # golangci-lint binary from GitHub releases, and firing all of them at
+      # once produced "Unexpected HTTP response: 504" on four of five modules -
+      # not a lint finding, but it fails the quality gate identically and
+      # blocks the deploy. Two at a time costs about a minute of wall clock on
+      # a 26-second job and removes the thundering herd.
+      max-parallel: 2
       matrix:
         module: ${{ fromJSON(needs.detect-changes.outputs.modules) }}
     steps:

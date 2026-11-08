@@ -57,6 +57,14 @@ Parameters:
       in this account already created it, or this stack will fail with
       EntityAlreadyExists.
 
+      Changing true -> false on an existing stack stops managing the provider;
+      DeletionPolicy: Retain keeps the provider itself alive. Without that
+      policy the provider would be deleted and every GitHub-federated role in
+      the account would fail with "The web identity token provided could not
+      be validated".
+
+      Check what exists before choosing:  aws iam list-open-id-connect-providers
+
 Conditions:
   ShouldCreateProvider: !Equals [!Ref CreateOidcProvider, "true"]
 
@@ -64,6 +72,19 @@ Resources:
   GitHubOidcProvider:
     Type: AWS::IAM::OIDCProvider
     Condition: ShouldCreateProvider
+    # Retain, because this resource is account-global and conditional - a
+    # combination that bites.
+    #
+    # Flipping CreateOidcProvider to false removes the resource from the
+    # stack, and without Retain CloudFormation DELETES the provider. Every
+    # role in the account that federates GitHub then breaks at once, with
+    # "The web identity token provided could not be validated" - an error that
+    # points at the token, not at the stack update that caused it.
+    #
+    # With Retain, false means "stop managing it", which is what the parameter
+    # actually promises.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       Url: https://token.actions.githubusercontent.com
       ClientIdList:
