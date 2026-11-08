@@ -365,6 +365,49 @@ jobs:
   #  It owns every stateful resource, so it must not ride along on an ordinary
   #  service release.
   # ══════════════════════════════════════════════════════════════════════════
+  # ── TEMPORARY DIAGNOSTIC ───────────────────────────────────────────────────
+  # Prints the subject claim this repo actually presents to AWS, so an
+  # assume-role rejection can be compared against the trust policy instead of
+  # guessed at. It declares the same environment as the deploy jobs, because
+  # that is what decides the claim's shape.
+  #
+  # Only the decoded claims are printed, never the token.
+  # Delete this job once the trust policy is confirmed.
+  debug-oidc:
+    name: Debug OIDC claims
+    needs: resolve-env
+    if: always() && needs.resolve-env.result == 'success'
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-env.outputs.environment }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Decode the OIDC subject claim
+        env:
+          ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          tok=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+                 "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" | jq -r .value)
+          if [ -z "$tok" ] || [ "$tok" = "null" ]; then
+            echo "::error::no OIDC token issued - is 'permissions: id-token: write' set?"
+            exit 1
+          fi
+          body=$(printf '%s' "$tok" | cut -d. -f2)
+          case $(( ${#body} % 4 )) in 2) body="${body}==" ;; 3) body="${body}=" ;; esac
+          claims=$(printf '%s' "$body" | tr '_-' '/+' | base64 -d 2>/dev/null)
+
+          echo "=============== what this job presents to AWS ==============="
+          printf '%s' "$claims" | jq '{sub, aud, repository, repository_owner, ref, environment, event_name}'
+          echo
+          echo "role it will try to assume:"
+          echo "  ${ROLE_ARN:-(AWS_DEPLOY_ROLE_ARN secret is EMPTY)}"
+          echo
+          echo "it must match one entry of the role's trust policy exactly:"
+          echo "  aws iam get-role --role-name rusuh-github-deploy \\"
+          echo "    --query 'Role.AssumeRolePolicyDocument.Statement[*].Condition'"
+
   deploy-foundation:
     name: Deploy foundation
     needs: [resolve-env, quality-gate]
