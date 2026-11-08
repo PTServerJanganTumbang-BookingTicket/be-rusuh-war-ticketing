@@ -189,7 +189,6 @@ Feature: Join says no early and in a fixed order, and a refusal never costs me a
 
   @integration @redis-cluster @FR-18
   Scenario: While fully booked, a new customer is refused and no number is spent
-    # Decided 2026-11-06 (Erma). New code FULL_BOOKED, to be added to Appendix A + Apidog.
     Given event "E1" is "FULL_BOOKED" with full_booked_at "2026-11-10T02:40:12Z"
     When a guest with device id "dev-aaaaaaaaaaaaaaaa" joins "E1" with captcha "cap-ok"
     Then the response status is 409 with error_code "FULL_BOOKED"
