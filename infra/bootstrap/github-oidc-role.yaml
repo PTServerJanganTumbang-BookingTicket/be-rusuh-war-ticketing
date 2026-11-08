@@ -23,9 +23,30 @@ Parameters:
     Type: String
     Default: main
     Description: >
-      Only this branch may assume the role. Narrowing the subject claim to a
-      branch is what stops a pull request from a fork obtaining production
-      credentials, so it matters more than it looks.
+      Branch allowed to assume the role via the ref-form subject claim.
+
+      This covers jobs that do NOT declare an environment. Every deploy job in
+      this pipeline does declare one, so for them AllowedEnvironment is the
+      claim that matters - read its description.
+
+  AllowedEnvironment:
+    Type: String
+    Default: prod
+    Description: >
+      GitHub Environment allowed to assume the role.
+
+      A job that declares `environment: X` gets the subject claim
+      repo:<owner>/<repo>:environment:X. That REPLACES the ref form; it is not
+      added to it. So a trust policy that only lists the branch form rejects
+      every such job with:
+
+        Not authorized to perform sts:AssumeRoleWithWebIdentity
+
+      Because the environment claim carries no branch, trusting it moves the
+      branch restriction out of this policy and into GitHub: set the
+      environment's deployment branch policy to the deploy branch, or any
+      branch that can run a job naming this environment obtains these
+      credentials. infra/bootstrap/configure-github.sh does that.
 
   CreateOidcProvider:
     Type: String
@@ -71,9 +92,17 @@ Resources:
             Condition:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                # Branch-scoped, NOT `repo:owner/repo:*`. The wildcard form
-                # would also match pull_request and fork refs.
-                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubRepo}:ref:refs/heads/${AllowedBranch}
+                # A list here means "any of", and both forms are needed:
+                #   environment:  what every deploy job presents, because each
+                #                 declares `environment: prod`
+                #   ref:          what a job WITHOUT an environment presents
+                #
+                # Still exact strings, never `repo:owner/repo:*` - the
+                # wildcard form also matches pull_request and fork refs, which
+                # is how a fork PR ends up holding deploy credentials.
+                token.actions.githubusercontent.com:sub:
+                  - !Sub repo:${GitHubRepo}:environment:${AllowedEnvironment}
+                  - !Sub repo:${GitHubRepo}:ref:refs/heads/${AllowedBranch}
 
       Policies:
         # ── CloudFormation and the SAM artifact buckets ──────────────────────

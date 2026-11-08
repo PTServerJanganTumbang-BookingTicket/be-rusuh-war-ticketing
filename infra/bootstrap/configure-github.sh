@@ -26,6 +26,10 @@ DUKCAPIL_BASE_URL="https://mock.apidog.com/m1/1409481-1420084-default"
 DUKCAPIL_EXTRA_HEADER_NAME="apidogToken"
 
 BOOTSTRAP_STACK="rusuh-cd-bootstrap"
+# Branch allowed to deploy. This is enforced in TWO places and they must
+# agree: AllowedBranch/AllowedEnvironment in the bootstrap stack, and the prod
+# environment's deployment branch policy, which this script sets below.
+DEPLOY_BRANCH="${DEPLOY_BRANCH:-test-deployment}"
 # Region of the bootstrap stack. The role it creates is global, so this only
 # has to find the stack - it need not match REGION.
 BOOTSTRAP_REGION="${BOOTSTRAP_REGION:-$(aws configure get region || echo "$REGION")}"
@@ -100,10 +104,34 @@ echo
 # Every deploy job declares `environment: prod`, so without this they all fail.
 echo "environment:"
 if gh api "repos/$REPO/environments/prod" >/dev/null 2>&1; then
-  echo "  prod already exists"
+  echo "  prod exists"
 else
   gh api -X PUT "repos/$REPO/environments/prod" >/dev/null
   echo "  created prod"
+fi
+
+# This is a security control, not housekeeping.
+#
+# Deploy jobs declare `environment: prod`, so their OIDC subject claim is
+# repo:<owner>/<repo>:environment:prod - the branch is NOT in it. The AWS
+# trust policy therefore cannot restrict by branch for these jobs, and this
+# policy is what takes over: without it, ANY branch able to run a job naming
+# the prod environment can obtain deploy credentials.
+echo "  restricting prod to branch '$DEPLOY_BRANCH'"
+gh api -X PUT "repos/$REPO/environments/prod" \
+  -F 'deployment_branch_policy[protected_branches]=false' \
+  -F 'deployment_branch_policy[custom_branch_policies]=true' >/dev/null
+
+existing=$(gh api "repos/$REPO/environments/prod/deployment-branch-policies" \
+             -q '.branch_policies[].name' 2>/dev/null | tr '\n' ' ')
+case " $existing " in
+  *" $DEPLOY_BRANCH "*) echo "  branch policy already allows $DEPLOY_BRANCH" ;;
+  *) gh api -X POST "repos/$REPO/environments/prod/deployment-branch-policies" \
+       -f "name=$DEPLOY_BRANCH" >/dev/null
+     echo "  branch policy now allows $DEPLOY_BRANCH" ;;
+esac
+if [ -n "${existing// /}" ]; then
+  echo "  (branches already allowed: $existing)"
 fi
 echo
 
@@ -132,5 +160,18 @@ esac
 
 echo
 [ "$fail" -eq 0 ] || { echo "incomplete - see above"; exit 1; }
-echo "step 3 and step 4 complete. Next: commit, then"
-echo "  git push origin HEAD:test-deployment"
+echo "step 3 and step 4 complete."
+echo
+echo "The bootstrap stack must trust the prod ENVIRONMENT, not only a branch."
+echo "If you created it before that change, redeploy it:"
+echo
+echo "  aws cloudformation deploy \\"
+echo "    --template-file infra/bootstrap/github-oidc-role.yaml \\"
+echo "    --stack-name $BOOTSTRAP_STACK \\"
+echo "    --capabilities CAPABILITY_NAMED_IAM \\"
+echo "    --region $BOOTSTRAP_REGION \\"
+echo "    --parameter-overrides GitHubRepo=$REPO AllowedBranch=$DEPLOY_BRANCH \\"
+echo "      AllowedEnvironment=prod CreateOidcProvider=false"
+echo
+echo "Then: commit, and"
+echo "  git push origin HEAD:$DEPLOY_BRANCH"
