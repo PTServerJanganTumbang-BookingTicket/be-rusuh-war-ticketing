@@ -23,6 +23,33 @@ Parameters:
     Type: String
     Default: rusuh
 
+  DatabasePassword:
+    Type: String
+    Default: ""
+    NoEcho: true
+    MaxLength: 64
+    # Alphanumeric only, and enforced rather than documented: this password is
+    # embedded verbatim in a connection URL that CloudFormation cannot
+    # percent-encode. A '?' or '#' in it silently corrupts the DSN into
+    # something that parses as host "rusuh_app" with the password as a port,
+    # and every service with a database dies at init. Rejecting it here costs
+    # one failed change set; allowing it costs a deploy, a rollback and an
+    # afternoon.
+    AllowedPattern: '^$|^[A-Za-z0-9]{16,64}$'
+    ConstraintDescription: >
+      must be empty, or 16-64 characters of letters and digits only. No
+      punctuation: it goes into a URL unescaped.
+    Description: >
+      Aurora master password. EMPTY (the default) generates a strong random
+      one, which is the right choice for anything real - read it back with
+
+        aws secretsmanager get-secret-value --secret-id rusuh-<env>/aurora-master
+
+      Set it only when a team needs a shared, memorable credential for a SQL
+      client during a POC. It is NoEcho, so it does not appear in stack events
+      or describe-stacks, but it is still stored in Secrets Manager and
+      readable by anyone who can read that secret.
+
   DatabaseUsername:
     Type: String
     Default: rusuh_app
@@ -150,6 +177,7 @@ Conditions:
   IsDbPublic: !Equals [!Ref DbPubliclyAccessible, "true"]
   # Fails closed: no allowlist entry, no public ingress rule.
   HasDbCidr: !Not [!Equals [!Ref DbAllowedCidr, ""]]
+  HasDbPassword: !Not [!Equals [!Ref DatabasePassword, ""]]
   IsDbWideOpen: !Equals [!Ref DbAllowedCidr, "0.0.0.0/0"]
 
 Resources:
@@ -538,13 +566,38 @@ Resources:
     Properties:
       Name: !Sub rusuh-${Environment}/aurora-master
       Description: Aurora master credentials. Consumed by the RDS Proxy, not by services.
-      GenerateSecretString:
-        SecretStringTemplate: !Sub '{"username":"${DatabaseUsername}"}'
-        GenerateStringKey: password
-        PasswordLength: 32
-        # Postgres accepts these, but they break naive URL assembly in shells
-        # and connection strings, so they are excluded rather than escaped.
-        ExcludeCharacters: '"@/\ ''`'
+      # Exactly one of these applies; the other resolves to AWS::NoValue.
+      # SecretString and GenerateSecretString are mutually exclusive.
+      SecretString: !If
+        - HasDbPassword
+        - !Sub '{"username":"${DatabaseUsername}","password":"${DatabasePassword}"}'
+        - !Ref AWS::NoValue
+      GenerateSecretString: !If
+       - HasDbPassword
+       - !Ref AWS::NoValue
+       - SecretStringTemplate: !Sub '{"username":"${DatabaseUsername}"}'
+         GenerateStringKey: password
+         PasswordLength: 40
+         # Alphanumeric only. This password is embedded verbatim in a URL by
+         # AppDatabaseSecret below, and CloudFormation has no way to percent-
+         # encode it, so any character with meaning in a URL corrupts the DSN.
+         #
+         # The previous version excluded a hand-picked list ("@/\ '` ) and was
+         # still wrong: it allowed '?' and '#', either of which terminates the
+         # authority. A password containing one produced
+         #
+         #   postgres://rusuh_app:PREF#IX@host:5432/db
+         #
+         # which parses as host "rusuh_app", port "PREF" - so every service
+         # with a database died at init with "invalid port ... after host",
+         # naming neither the password nor the secret. It also only showed up
+         # when the generator happened to pick one of those two characters, so
+         # it would have looked intermittent across environments.
+         #
+         # Excluding all punctuation removes the class of bug rather than the
+         # two known members. 40 alphanumerics is ~238 bits, well above the 32
+         # mixed-character ones it replaces.
+         ExcludePunctuation: true
 
   # ─────────────────────────────────────────────────────────────────────────
   #  AURORA + RDS PROXY

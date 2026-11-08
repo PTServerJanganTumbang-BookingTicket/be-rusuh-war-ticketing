@@ -401,6 +401,11 @@ jobs:
           # the intended fail-closed default.
           DB_PUBLIC: ${{ vars.DB_PUBLICLY_ACCESSIBLE || 'true' }}
           DB_ALLOWED_CIDR: ${{ vars.DB_ALLOWED_CIDR }}
+          # Optional. Unset means the stack generates a strong random password
+          # - the right default. Set the secret only when the team wants a
+          # shared credential for a SQL client during the POC. It is a secret
+          # rather than a variable so it is masked in this job's log.
+          DB_MASTER_PASSWORD: ${{ secrets.DB_MASTER_PASSWORD }}
         run: |
           set -euo pipefail
           aws cloudformation deploy \
@@ -416,6 +421,7 @@ jobs:
               "SingleAz=${SINGLE_AZ}" \
               "DbPubliclyAccessible=${DB_PUBLIC}" \
               "DbAllowedCidr=${DB_ALLOWED_CIDR}" \
+              "DatabasePassword=${DB_MASTER_PASSWORD}" \
             --tags Project=rusuh ManagedBy=github-actions
 
           aws cloudformation describe-stacks --stack-name "rusuh-${ENV}-foundation" \

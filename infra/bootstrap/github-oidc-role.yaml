@@ -217,21 +217,34 @@ Resources:
                   - cloudformation:CreateChangeSet
                 Resource:
                   - !Sub arn:${AWS::Partition}:cloudformation:*:aws:transform/Serverless-2016-10-31
+              # Wildcarded actions, tightly scoped resources - a deliberate
+              # trade, and the opposite of the statement this replaces.
+              #
+              # That one listed twelve named actions and was still wrong twice:
+              # CloudFormation's S3 handler reads back far more of a bucket's
+              # configuration than the template sets (ACL, versioning,
+              # notification, CORS, ownership controls, object lock, logging,
+              # replication, request payment, tiering...), and `aws
+              # cloudformation deploy --tags` makes it tag every resource, so
+              # s3:PutBucketTagging is needed for a bucket the template never
+              # mentions tags on. Each omission costs a full deploy, a
+              # rollback, and a cleanup.
+              #
+              # Enumerating that list is a losing game whose only prize is a
+              # longer list. The control that actually matters is below: these
+              # permissions reach exactly two bucket name patterns and nothing
+              # else in the account.
               - Sid: SamArtifactBuckets
                 Effect: Allow
                 Action:
                   - s3:CreateBucket
-                  - s3:GetBucketLocation
-                  - s3:GetBucketPolicy
-                  - s3:PutBucketPolicy
-                  - s3:PutBucketVersioning
-                  - s3:PutEncryptionConfiguration
-                  - s3:PutLifecycleConfiguration
-                  - s3:ListBucket
-                  - s3:GetObject
-                  - s3:PutObject
+                  - s3:DeleteBucket
+                  - s3:Get*
+                  - s3:Put*
+                  - s3:List*
                   - s3:DeleteObject
-                  - s3:GetObjectVersion
+                  - s3:DeleteObjectVersion
+                  - s3:DeleteBucketPolicy
                 Resource:
                   - !Sub arn:${AWS::Partition}:s3:::aws-sam-cli-managed-*
                   - !Sub arn:${AWS::Partition}:s3:::aws-sam-cli-managed-*/*
