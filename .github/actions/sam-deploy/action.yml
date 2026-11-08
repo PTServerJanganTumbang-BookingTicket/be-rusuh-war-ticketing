@@ -44,10 +44,50 @@ runs:
         role-to-assume: ${{ inputs.role-to-assume }}
         aws-region: ${{ inputs.aws-region }}
 
-    # NOT --use-container. Every service module resolves the shared library
-    # through `replace ... => ../../pkg`, and CodeUri is the service directory,
-    # so a container build mounts only that directory and ../../pkg disappears.
-    # The on-host build works because the relative path really is there.
+    # Vendor BEFORE sam build. This is what makes the monorepo work.
+    #
+    # Each service resolves the shared library through
+    #   replace .../pkg => ../../pkg
+    # and the template sets CodeUri to the service directory. `sam build` with
+    # BuildMethod: makefile runs CustomMakeBuilder:CopySource first - it copies
+    # CodeUri to a scratch directory and runs `make` in the COPY. ../../pkg
+    # points outside that copy, so the build fails with:
+    #
+    #   replacement directory ../../pkg does not exist
+    #
+    # No sam flag fixes this; the shared package is simply not inside CodeUri.
+    # `go mod vendor` resolves the replace here, in the real tree, and writes
+    # pkg's source into vendor/ - which lives inside CodeUri and is copied
+    # along with everything else. The build in the scratch directory then needs
+    # no path outside itself.
+    #
+    # GOWORK=off because go.work at the repo root is not in the copy either,
+    # and a workspace changes how vendoring resolves modules.
+    #
+    # Side benefit: the make step no longer downloads anything, so a slow or
+    # failing module proxy cannot break a deploy.
+    - name: Vendor the shared package into the service
+      shell: bash
+      working-directory: services/${{ inputs.service }}
+      env:
+        GOWORK: off
+      run: |
+        set -euo pipefail
+        go mod vendor
+
+        # Fail here rather than three minutes later inside sam build, where
+        # the error names a path instead of a cause.
+        pkg="github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg"
+        if ! grep -q "^# ${pkg} " vendor/modules.txt; then
+          echo "::error::vendor/modules.txt has no entry for ${pkg}."
+          echo "::error::The replace directive did not resolve - check go.mod in services/${{ inputs.service }}."
+          exit 1
+        fi
+        echo "vendored $(grep -c '^# ' vendor/modules.txt) modules, including the shared pkg"
+
+    # NOT --use-container: the on-host toolchain is already correct, and a
+    # container build adds minutes per service for no benefit now that the
+    # source is self-contained.
     - name: SAM build
       shell: bash
       working-directory: services/${{ inputs.service }}
