@@ -548,6 +548,7 @@ jobs:
             /rusuh/${ENV}/redis/addr
             /rusuh/${ENV}/ses/configuration-set
             /rusuh/${ENV}/ses/from-address
+            /rusuh/${ENV}/sam/artifact-bucket
           "
           # The Defaults in services/*/template.yaml are literal
           # /rusuh/prod/... paths. Deploying another environment without
@@ -612,6 +613,7 @@ jobs:
           stack-name: rusuh-${{ needs.resolve-env.outputs.environment }}-booking
           aws-region: ${{ vars.AWS_REGION }}
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          environment: ${{ needs.resolve-env.outputs.environment }}
           parameter-overrides: Environment=${{ needs.resolve-env.outputs.environment }}
 
   deploy-nik-verify:
@@ -631,6 +633,7 @@ jobs:
           stack-name: rusuh-${{ needs.resolve-env.outputs.environment }}-nik-verify
           aws-region: ${{ vars.AWS_REGION }}
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          environment: ${{ needs.resolve-env.outputs.environment }}
           # Everything else - subnets, security group, the three secret ARNs
           # and the pepper's KMS key - is resolved by the template itself from
           # SSM. Only what the pipeline genuinely owns is passed here.
@@ -673,6 +676,7 @@ jobs:
           stack-name: rusuh-${{ needs.resolve-env.outputs.environment }}-notification
           aws-region: ${{ vars.AWS_REGION }}
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          environment: ${{ needs.resolve-env.outputs.environment }}
           parameter-overrides: >-
             Environment=${{ needs.resolve-env.outputs.environment }}
             AppBaseUrl=${{ vars.APP_BASE_URL }}
@@ -710,6 +714,7 @@ jobs:
           stack-name: rusuh-${{ needs.resolve-env.outputs.environment }}-user
           aws-region: ${{ vars.AWS_REGION }}
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          environment: ${{ needs.resolve-env.outputs.environment }}
           # NikVerifyBaseUrl comes from the SSM parameter nik-verify writes,
           # which is why this job waits on that deploy.
           parameter-overrides: >-
@@ -736,6 +741,7 @@ jobs:
           stack-name: rusuh-${{ needs.resolve-env.outputs.environment }}-outbox-publisher
           aws-region: ${{ vars.AWS_REGION }}
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          environment: ${{ needs.resolve-env.outputs.environment }}
           # The queue URL and ARN come from the SSM parameters notification
           # writes, which is why this job waits on that deploy.
           parameter-overrides: Environment=${{ needs.resolve-env.outputs.environment }}

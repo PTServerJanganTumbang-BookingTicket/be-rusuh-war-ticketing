@@ -848,6 +848,56 @@ Resources:
       Type: String
       Value: !Sub "${RedisCluster.RedisEndpoint.Address}:${RedisCluster.RedisEndpoint.Port}"
 
+  # ── SAM build artifacts ─────────────────────────────────────────────────
+  #
+  # Replaces `sam deploy --resolve-s3`, which keeps its bucket in a
+  # CloudFormation stack of its own and creates it lazily on first use. That
+  # does not survive this pipeline: wave 1 deploys three services in parallel,
+  # all three find the stack absent, all three try to create it, and the losers
+  # fail with
+  #
+  #   Stack aws-sam-cli-managed-default ... not in a healthy state
+  #   (Current state: REVIEW_IN_PROGRESS / ROLLBACK_IN_PROGRESS)
+  #
+  # Creating the bucket here removes the race entirely - it exists before any
+  # service deploys, because preflight depends on this stack.
+  SamArtifactBucket:
+    Type: AWS::S3::Bucket
+    # Build artifacts are reproducible; losing them costs one rebuild.
+    DeletionPolicy: Delete
+    Properties:
+      # Deterministic, and globally unique via account + region.
+      BucketName: !Sub rusuh-${Environment}-sam-${AWS::AccountId}-${AWS::Region}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          # The managed bucket has no lifecycle rule at all, so artifacts
+          # accumulate forever - five services times every deploy. Thirty days
+          # is longer than any rollback window that matters here.
+          - Id: expire-old-artifacts
+            Status: Enabled
+            ExpirationInDays: 30
+          - Id: abort-incomplete-uploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+
+  SsmSamArtifactBucket:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /rusuh/${Environment}/sam/artifact-bucket
+      Type: String
+      Description: S3 bucket the deploy pipeline uploads Lambda zips to
+      Value: !Ref SamArtifactBucket
+
   SsmSesConfigurationSet:
     Type: AWS::SSM::Parameter
     Properties:
@@ -926,6 +976,9 @@ Outputs:
           - !Sub "PUBLIC endpoint, restricted to ${DbAllowedCidr} - POC only"
         - "PUBLIC endpoint but NO allowlist entry: nothing outside the VPC can connect. Set DbAllowedCidr."
       - "private: in-VPC only"
+  SamArtifactBucketName:
+    Description: Pass to sam deploy --s3-bucket. Also published to SSM.
+    Value: !Ref SamArtifactBucket
   CostMode:
     Description: Which cost profile this stack was deployed with
     Value: !If

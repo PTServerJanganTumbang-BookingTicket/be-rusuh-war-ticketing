@@ -19,11 +19,23 @@ inputs:
     required: true
   role-to-assume:
     required: true
+  environment:
+    description: >
+      Environment name, used to locate the artifact bucket in SSM. Only needed
+      when artifact-bucket is not given.
+    required: false
+    default: prod
+
   artifact-bucket:
     description: >
-      S3 bucket for SAM build artifacts. Passed explicitly instead of using
-      --resolve-s3 so every environment deploys through a bucket whose
-      lifecycle and encryption are known.
+      S3 bucket for SAM build artifacts. Left empty, it is read from
+      /rusuh/<environment>/sam/artifact-bucket, which infra/foundation
+      publishes.
+
+      Never --resolve-s3: that keeps its bucket in a CloudFormation stack SAM
+      creates lazily on first use, and three services deploying in parallel
+      race to create it. It also has no lifecycle rule, so artifacts
+      accumulate forever.
     required: false
     default: ""
 
@@ -100,9 +112,26 @@ runs:
         STACK: ${{ inputs.stack-name }}
         REGION: ${{ inputs.aws-region }}
         BUCKET: ${{ inputs.artifact-bucket }}
+        ENVIRONMENT: ${{ inputs.environment }}
         OVERRIDES: ${{ inputs.parameter-overrides }}
       run: |
         set -euo pipefail
+
+        # Resolve the artifact bucket from SSM when it was not passed in.
+        # Credentials are already configured by this point, and the foundation
+        # publishes the name, so nothing has to be threaded through the
+        # workflow or kept in a repo variable.
+        if [ -z "$BUCKET" ]; then
+          param="/rusuh/${ENVIRONMENT}/sam/artifact-bucket"
+          BUCKET=$(aws ssm get-parameter --name "$param" --region "$REGION" \
+                     --query Parameter.Value --output text 2>/dev/null || true)
+          if [ -z "$BUCKET" ] || [ "$BUCKET" = "None" ]; then
+            echo "::error::No artifact bucket. $param does not exist and none was passed."
+            echo "::error::It is created by infra/foundation - deploy that first."
+            exit 1
+          fi
+          echo "artifact bucket from SSM: $BUCKET"
+        fi
 
         args=(
           --stack-name "$STACK"
@@ -115,11 +144,7 @@ runs:
           --tags "Project=rusuh" "ManagedBy=github-actions"
         )
 
-        if [ -n "$BUCKET" ]; then
-          args+=(--s3-bucket "$BUCKET" --s3-prefix "$STACK")
-        else
-          args+=(--resolve-s3)
-        fi
+        args+=(--s3-bucket "$BUCKET" --s3-prefix "$STACK")
 
         # Drop pairs whose value is empty. Several overrides come from repo
         # variables that are legitimately unset - DUKCAPIL_BASE_URL in stub
