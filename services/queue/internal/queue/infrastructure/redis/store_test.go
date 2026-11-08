@@ -158,3 +158,52 @@ func TestIssueTicket_isHINCRBYOnTheHash(t *testing.T) {
 		t.Fatalf("keys after issuing = %v, want only %s", keys, ev.QueueHash())
 	}
 }
+
+func TestNowServing_readsTheHashFieldAndTreatsMissingAsZero(t *testing.T) {
+	s, rdb, ev := newStore(t)
+	ctx := context.Background()
+	if n, err := s.NowServing(ctx, ev); err != nil || n != 0 {
+		t.Fatalf("empty hash: %d %v", n, err)
+	}
+	rdb.HSet(ctx, ev.QueueHash(), "now_serving", 31600)
+	if n, err := s.NowServing(ctx, ev); err != nil || n != 31600 {
+		t.Fatalf("now_serving %d %v", n, err)
+	}
+}
+
+func TestInLine_isTrueOnlyWhileTheTokenIsInByTicket(t *testing.T) {
+	s, rdb, ev := newStore(t)
+	ctx := context.Background()
+	if in, err := s.InLine(ctx, ev, "qt1"); err != nil || in {
+		t.Fatalf("not added yet: %v %v", in, err)
+	}
+	rdb.ZAdd(ctx, ev.ByTicket(), goredis.Z{Score: 5, Member: "qt1"})
+	if in, err := s.InLine(ctx, ev, "qt1"); err != nil || !in {
+		t.Fatalf("added: %v %v", in, err)
+	}
+}
+
+func TestSettled_readsTheTombstoneBookingID(t *testing.T) {
+	s, rdb, _ := newStore(t)
+	ctx := context.Background()
+	if _, found, err := s.Settled(ctx, "qt1"); err != nil || found {
+		t.Fatalf("no tombstone: found=%v err=%v", found, err)
+	}
+	rdb.Set(ctx, rediskeys.Settled("qt1"), "RB-9", 0)
+	if id, found, err := s.Settled(ctx, "qt1"); err != nil || !found || id != "RB-9" {
+		t.Fatalf("tombstone: %q %v %v", id, found, err)
+	}
+}
+
+func TestEngagement_carriesTheGrantTokenOnceGranted(t *testing.T) {
+	s, rdb, _ := newStore(t)
+	ctx := context.Background()
+	rdb.HSet(ctx, rediskeys.Token("qt1"), "ticket_no", 7, "event_id", "E1")
+	if e, _, _ := s.Engagement(ctx, "qt1"); e.GrantToken != "" {
+		t.Fatalf("grant token %q before the grant", e.GrantToken)
+	}
+	rdb.HSet(ctx, rediskeys.Token("qt1"), "grant_token", "gt_1")
+	if e, _, _ := s.Engagement(ctx, "qt1"); e.GrantToken != "gt_1" {
+		t.Fatalf("grant token %q after the grant", e.GrantToken)
+	}
+}

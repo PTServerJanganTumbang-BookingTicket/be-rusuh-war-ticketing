@@ -101,12 +101,15 @@ func Wire(cfg config.Config, c Clients) (*Server, error) {
 		}
 	}
 	var bookings outbound.BookingReader
+	var details outbound.BookingDetails
 	if c.DB != nil {
-		bookings = queuepg.NewBookings(c.DB)
+		pg := queuepg.NewBookings(c.DB)
+		bookings, details = pg, pg
 	}
 	join := usecase.NewJoin(cfg.Join, usecase.Deps{
 		Store:    queueredis.NewStore(c.Redis),
 		Bookings: bookings,
+		Details:  details,
 		Captcha:  captcha,
 		Limiter:  ratelimit.New(c.Redis),
 		Tokens:   issuer,
@@ -114,11 +117,22 @@ func Wire(cfg config.Config, c Clients) (*Server, error) {
 		Clock:    c.Clock,
 		NewToken: func() string { return idgen.NewPrefixed("qt_") },
 	})
+	me := usecase.NewMe(cfg.Join, usecase.Deps{
+		Store:   queueredis.NewStore(c.Redis),
+		Details: details,
+		Tokens:  issuer,
+		Metrics: c.Metrics,
+		Clock:   c.Clock,
+	})
 	h := queuehttp.NewHandler(join, queuehttp.Options{
 		CookieDomain: cfg.CookieDomain,
 		CookieMaxAge: cfg.Join.SaleWindow,
 		SSEBaseURL:   cfg.SSEBaseURL,
 	})
+
+	if details != nil { // /queue/me needs Aurora for customers who already have a grant
+		h.WithMe(me)
+	}
 
 	mux := http.NewServeMux()
 	apinizer.RegisterHealthCheck(mux, "/sys/ping")

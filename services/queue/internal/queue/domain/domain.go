@@ -46,6 +46,7 @@ type Engagement struct {
 	AccountID  string // logged-in only
 	DeviceHash string // HMAC(DEVICE_PEPPER, device id), when a device id was sent
 	JoinedAt   time.Time
+	GrantToken string // set by admission-ctl once the place is granted; empty while waiting
 }
 
 // Engagement states reported on rejoin (api-contracts §3.3).
@@ -65,6 +66,26 @@ type Grant struct {
 	GrantToken       string
 	BookingExpiresAt time.Time
 }
+
+// BookingDetail is the part of a bookings row /queue/me needs to describe where the customer is.
+type BookingDetail struct {
+	ID               string
+	Status           string
+	GrantToken       string
+	BookingExpiresAt time.Time
+	PaymentExpiresAt time.Time
+	PaymentRef       string
+}
+
+// States /queue/me reports (api-contracts §3.3).
+const (
+	MeQueued          = "QUEUED"
+	MeGranted         = "GRANTED"
+	MeSelecting       = "SELECTING"
+	MeAwaitingPayment = "AWAITING_PAYMENT"
+	MeConfirmed       = "CONFIRMED"
+	MeExpired         = "EXPIRED"
+)
 
 // CaptchaResult is the outcome of one CAPTCHA verification.
 type CaptchaResult int
@@ -115,5 +136,6 @@ const (
 	MetricBR07Recovered        = "Br07JoinRecovered"
 	MetricJoinRepaired         = "JoinRepaired"
 	MetricDeviceMismatch       = "DeviceMismatch"       // a guest token presented from another device
+	MetricLostGrant            = "LostGrant"            // a place that was admitted but has no grant or booking
 	MetricTokenAccountMismatch = "TokenAccountMismatch" // an account's token presented by another account or a guest
 )

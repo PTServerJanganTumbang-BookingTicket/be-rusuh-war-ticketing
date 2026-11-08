@@ -257,7 +257,7 @@ func (t *Tick) finish(ctx context.Context, eventID, queueToken string) bool {
 	now := t.clock.Now()
 	g := domain.Grant{
 		EventID: eventID, QueueToken: queueToken, AccountID: info.AccountID,
-		BookingID: idgen.NewPrefixed("BK-"), GrantToken: idgen.NewPrefixed("gt_"),
+		BookingID: idgen.NewPrefixed("RB-"), GrantToken: idgen.NewPrefixed("gt_"),
 		GrantedAt: now, ExpiresAt: now.Add(t.cfg.BookingTTL),
 	}
 	var b domain.Booking

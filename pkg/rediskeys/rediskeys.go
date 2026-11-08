@@ -66,6 +66,9 @@ func Token(queueToken string) string { return "token:" + queueToken }
 // Grant is grant:<grant_token>.
 func Grant(grantToken string) string { return "grant:" + grantToken }
 
+// Settled is the tombstone of a paid booking: a plain string holding the booking_id and nothing else (api-contracts §3.3).
+func Settled(queueToken string) string { return "settled:" + queueToken }
+
 // JoinRateLimit is rl:join:<ip> (20 joins / 5 min).
 func JoinRateLimit(ip string) string { return "rl:join:" + ip }
 

@@ -162,6 +162,7 @@ func (s *Store) Engagement(ctx context.Context, queueToken string) (domain.Engag
 		AccountID:  m[FieldAccountID],
 		DeviceHash: m[FieldDeviceHash],
 		JoinedAt:   joinedAt,
+		GrantToken: m[FieldGrantToken],
 	}, true, nil
 }
 
@@ -313,4 +314,34 @@ func (s *Store) RepairLine(ctx context.Context, ev rediskeys.Event, queueToken s
 		return added, err
 	}
 	return false, fmt.Errorf("%s: repair kept racing the advance", ev.ByTicket())
+}
+
+// NowServing reads now_serving; a missing field is 0.
+func (s *Store) NowServing(ctx context.Context, ev rediskeys.Event) (int64, error) {
+	n, err := s.rdb.HGet(ctx, ev.QueueHash(), rediskeys.FieldNowServing).Int64()
+	if errors.Is(err, goredis.Nil) {
+		return 0, nil
+	}
+	return n, err
+}
+
+// InLine says whether queueToken is still in by_ticket (ZSCORE).
+func (s *Store) InLine(ctx context.Context, ev rediskeys.Event, queueToken string) (bool, error) {
+	_, err := s.rdb.ZScore(ctx, ev.ByTicket(), queueToken).Result()
+	if errors.Is(err, goredis.Nil) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// Settled reads the tombstone of a paid booking: settled:<queue_token> holds the booking_id.
+func (s *Store) Settled(ctx context.Context, queueToken string) (string, bool, error) {
+	id, err := s.rdb.Get(ctx, rediskeys.Settled(queueToken)).Result()
+	if errors.Is(err, goredis.Nil) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return id, true, nil
 }

@@ -36,6 +36,12 @@ type QueueStore interface {
 	Grant(ctx context.Context, queueToken string) (g domain.Grant, found bool, err error)
 	// AddToLine is ZADD queue:{ev}:by_ticket <ticketNo> <qt>.
 	AddToLine(ctx context.Context, ev rediskeys.Event, queueToken string, ticketNo int64) error
+	// NowServing is HGET queue:{ev} now_serving; a missing field is 0.
+	NowServing(ctx context.Context, ev rediskeys.Event) (int64, error)
+	// InLine is ZSCORE queue:{ev}:by_ticket <qt>: is the place still in the line?
+	InLine(ctx context.Context, ev rediskeys.Event, queueToken string) (bool, error)
+	// Settled reads the tombstone settled:<qt>, which holds the booking_id of a paid booking.
+	Settled(ctx context.Context, queueToken string) (bookingID string, found bool, err error)
 	// RepairLine puts qt back into by_ticket (ZADD NX) only while ticketNo is
 	// still ahead of now_serving, atomically with admission-ctl's advance.
 	// added is false if it was already there or its turn has passed.
@@ -45,6 +51,11 @@ type QueueStore interface {
 // BookingReader reads bookings (Aurora writer pool, SELECT only).
 type BookingReader interface {
 	ByQueueToken(ctx context.Context, eventID, queueToken string) (b domain.Booking, found bool, err error)
+}
+
+// BookingDetails reads a customer's booking for /queue/me (Aurora, single connection).
+type BookingDetails interface {
+	Detail(ctx context.Context, eventID, queueToken string) (d domain.BookingDetail, found bool, err error)
 }
 
 // Captcha verifies an invisible CAPTCHA token server-side.

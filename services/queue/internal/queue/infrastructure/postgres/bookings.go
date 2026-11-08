@@ -55,3 +55,28 @@ func NewPool(ctx context.Context, dsn string, maxConns int32, lifetime time.Dura
 	}
 	return pgxpool.NewWithConfig(ctx, cfg)
 }
+
+const detailSQL = `SELECT id, status, COALESCE(grant_token, ''), booking_expires_at, payment_expires_at, COALESCE(payment_ref, '')
+FROM bookings WHERE event_id = $1 AND queue_token = $2`
+
+// Detail reads the booking of a customer for /queue/me. Missing deadlines read as the zero time.
+func (b *Bookings) Detail(ctx context.Context, eventID, queueToken string) (domain.BookingDetail, bool, error) {
+	var (
+		d              domain.BookingDetail
+		booking, payBy *time.Time
+	)
+	err := b.db.QueryRow(ctx, detailSQL, eventID, queueToken).Scan(&d.ID, &d.Status, &d.GrantToken, &booking, &payBy, &d.PaymentRef)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.BookingDetail{}, false, nil
+	}
+	if err != nil {
+		return domain.BookingDetail{}, false, fmt.Errorf("booking detail: %w", err)
+	}
+	if booking != nil {
+		d.BookingExpiresAt = booking.UTC()
+	}
+	if payBy != nil {
+		d.PaymentExpiresAt = payBy.UTC()
+	}
+	return d, true, nil
+}

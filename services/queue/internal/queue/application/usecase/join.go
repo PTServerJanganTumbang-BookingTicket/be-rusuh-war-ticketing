@@ -3,10 +3,6 @@ package usecase
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"crypto/subtle"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -17,7 +13,6 @@ import (
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/apperror"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/ratelimit"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/rediskeys"
-	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/token"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/queue/internal/queue/domain"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/queue/internal/queue/port/outbound"
 )
@@ -59,6 +54,7 @@ func DefaultConfig() Config {
 type Deps struct {
 	Store    outbound.QueueStore
 	Bookings outbound.BookingReader
+	Details  outbound.BookingDetails // /queue/me only
 	Captcha  outbound.Captcha
 	Limiter  outbound.RateLimiter
 	Tokens   outbound.TokenVerifier
@@ -189,21 +185,12 @@ func (j *Join) Join(ctx context.Context, in JoinInput) (JoinResult, error) {
 	return j.issue(ctx, ev, snap, accountID, deviceHash, stale)
 }
 
+func (j *Join) caller() caller {
+	return caller{tokens: j.d.Tokens, metrics: j.d.Metrics, pepper: j.cfg.DevicePepper}
+}
+
 func (j *Join) identity(in JoinInput) (accountID string, err error) {
-	if in.Bearer != "" {
-		claims, verr := j.d.Tokens.Verify(in.Bearer)
-		switch {
-		case errors.Is(verr, token.ErrExpired):
-			return "", apperror.ErrUnauthorized("Sesi sudah kedaluwarsa").WithCode(domain.CodeTokenExpired)
-		case verr != nil:
-			return "", apperror.ErrUnauthorized("Sesi tidak valid").WithCode(domain.CodeTokenInvalid)
-		}
-		accountID = claims.Subject
-	}
-	if in.DeviceID == "" && accountID == "" {
-		return "", apperror.ErrBadRequest("X-Device-Id wajib untuk pembeli tamu").WithCode(domain.CodeDeviceIDRequired)
-	}
-	return accountID, nil
+	return j.caller().identity(in.Bearer, in.DeviceID)
 }
 
 func (j *Join) rateLimit(ctx context.Context, ip, accountID string) error {
@@ -306,28 +293,8 @@ func (j *Join) rejoin(ctx context.Context, ev rediskeys.Event, snap domain.Event
 	return res, err == nil, "", err
 }
 
-// owns rejects a presented token of this event that is not the caller's: a
-// logged-in token needs the same account; a guest token, presented by a guest,
-// needs the same device. A guest token with a logged-in caller is not an error.
 func (j *Join) owns(e domain.Engagement, accountID, deviceHash string) error {
-	if e.AccountID != "" {
-		if e.AccountID != accountID {
-			j.d.Metrics.Incr(domain.MetricTokenAccountMismatch)
-			return errForeignToken(domain.CodeUnauthorized, "Token antrian milik akun lain")
-		}
-		return nil
-	}
-	if accountID == "" && !sameDevice(e.DeviceHash, deviceHash) {
-		j.d.Metrics.Incr(domain.MetricDeviceMismatch)
-		return errForeignToken(domain.CodeDeviceMismatch, "Token antrian terdaftar di perangkat lain")
-	}
-	return nil
-}
-
-// sameDevice compares device hashes in constant time. A token without a
-// device_hash matches no device (fail closed).
-func sameDevice(stored, presented string) bool {
-	return stored != "" && subtle.ConstantTimeCompare([]byte(stored), []byte(presented)) == 1
+	return j.caller().owns(e, accountID, deviceHash)
 }
 
 // waitEngagement reads token:<qt>, waiting up to `wait` for a concurrent
@@ -490,11 +457,4 @@ func (j *Join) waitForGrant(ctx context.Context, qt string) (domain.Grant, bool)
 	}
 }
 
-func (j *Join) deviceHash(deviceID string) string {
-	if deviceID == "" {
-		return ""
-	}
-	m := hmac.New(sha256.New, j.cfg.DevicePepper)
-	m.Write([]byte(deviceID))
-	return hex.EncodeToString(m.Sum(nil))
-}
+func (j *Join) deviceHash(deviceID string) string { return j.caller().deviceHash(deviceID) }
