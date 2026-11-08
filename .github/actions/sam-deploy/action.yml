@@ -1,0 +1,104 @@
+name: SAM deploy
+description: >
+  Build and deploy one service stack. Factored out because five deploy jobs
+  otherwise repeat the same thirty lines, and a fix applied to four of them is
+  worse than no fix at all.
+
+inputs:
+  service:
+    description: Directory under services/
+    required: true
+  stack-name:
+    description: CloudFormation stack name
+    required: true
+  parameter-overrides:
+    description: Space-separated Key=Value pairs passed to sam deploy
+    required: false
+    default: ""
+  aws-region:
+    required: true
+  role-to-assume:
+    required: true
+  artifact-bucket:
+    description: >
+      S3 bucket for SAM build artifacts. Passed explicitly instead of using
+      --resolve-s3 so every environment deploys through a bucket whose
+      lifecycle and encryption are known.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+      with:
+        go-version: '1.26'
+        check-latest: true
+
+    - uses: aws-actions/setup-sam@819220f63fb333a9a394dd0a5cab2d8303fd3ca1 # v2.0.0
+      with:
+        use-installer: true
+
+    - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+      with:
+        role-to-assume: ${{ inputs.role-to-assume }}
+        aws-region: ${{ inputs.aws-region }}
+
+    # NOT --use-container. Every service module resolves the shared library
+    # through `replace ... => ../../pkg`, and CodeUri is the service directory,
+    # so a container build mounts only that directory and ../../pkg disappears.
+    # The on-host build works because the relative path really is there.
+    - name: SAM build
+      shell: bash
+      working-directory: services/${{ inputs.service }}
+      run: sam build
+
+    - name: SAM deploy
+      shell: bash
+      working-directory: services/${{ inputs.service }}
+      env:
+        STACK: ${{ inputs.stack-name }}
+        REGION: ${{ inputs.aws-region }}
+        BUCKET: ${{ inputs.artifact-bucket }}
+        OVERRIDES: ${{ inputs.parameter-overrides }}
+      run: |
+        set -euo pipefail
+
+        args=(
+          --stack-name "$STACK"
+          --region "$REGION"
+          --capabilities CAPABILITY_IAM
+          --no-confirm-changeset
+          # An empty changeset is the normal outcome of redeploying an
+          # unchanged service, not a failure.
+          --no-fail-on-empty-changeset
+          --tags "Project=rusuh" "ManagedBy=github-actions"
+        )
+
+        if [ -n "$BUCKET" ]; then
+          args+=(--s3-bucket "$BUCKET" --s3-prefix "$STACK")
+        else
+          args+=(--resolve-s3)
+        fi
+
+        # Drop pairs whose value is empty. Several overrides come from repo
+        # variables that are legitimately unset - DUKCAPIL_BASE_URL in stub
+        # mode, for instance - and word-splitting leaves those as a bare
+        # "Key=", which sam's parameter parser treats as malformed rather than
+        # as "use the template default". Omitting the key entirely is what we
+        # actually mean: take the template's Default on a first deploy, keep
+        # the current value on an update.
+        params=()
+        for pair in $OVERRIDES; do
+          case "$pair" in
+            *=) echo "skipping empty override: ${pair%=}" ;;
+            *)  params+=("$pair") ;;
+          esac
+        done
+
+        if [ ${#params[@]} -gt 0 ]; then
+          args+=(--parameter-overrides "${params[@]}")
+        fi
+
+        echo "sam deploy ${args[*]}"
+        sam deploy "${args[@]}"

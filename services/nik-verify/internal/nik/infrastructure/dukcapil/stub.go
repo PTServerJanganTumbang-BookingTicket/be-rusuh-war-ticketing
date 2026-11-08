@@ -9,9 +9,11 @@ import (
 
 // StubAdapter is the no-network implementation for local development and CI.
 //
-// It is selected by DUKCAPIL_MODE=stub and never by default, so a deployment
-// that forgets to configure the real endpoint fails at startup rather than
-// quietly verifying every NIK it is given.
+// It is selected by DUKCAPIL_MODE=stub. The Go default is "live", so a
+// deployment that sets no mode at all fails at startup rather than quietly
+// verifying every NIK; the POC's CloudFormation template does set stub
+// explicitly, and derives APP_ENV=poc to satisfy the production guard in
+// config.validate(). That default is a POC convenience - see DEPLOY.md.
 //
 // Unlike a blanket "everything is valid" stub, this one can produce all three
 // outcomes, so the rejection and outage paths are reachable without a real

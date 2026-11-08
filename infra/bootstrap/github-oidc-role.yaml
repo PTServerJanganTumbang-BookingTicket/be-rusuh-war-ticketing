@@ -1,0 +1,268 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  rusuh CD bootstrap — the GitHub Actions OIDC provider and the deploy role.
+
+  THIS IS THE ONE STACK CI CANNOT DEPLOY ITSELF. It creates the role the
+  pipeline assumes, so it has to exist before the pipeline can do anything.
+  Deploy it once, by hand, with credentials that can create IAM roles:
+
+    aws cloudformation deploy \
+      --template-file infra/bootstrap/github-oidc-role.yaml \
+      --stack-name rusuh-cd-bootstrap \
+      --capabilities CAPABILITY_NAMED_IAM \
+      --parameter-overrides GitHubRepo=<owner>/<repo>
+
+  Then put the RoleArn output into the repository secret AWS_DEPLOY_ROLE_ARN.
+
+Parameters:
+  GitHubRepo:
+    Type: String
+    Description: owner/repo, e.g. PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing
+
+  AllowedBranch:
+    Type: String
+    Default: main
+    Description: >
+      Only this branch may assume the role. Narrowing the subject claim to a
+      branch is what stops a pull request from a fork obtaining production
+      credentials, so it matters more than it looks.
+
+  CreateOidcProvider:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: >
+      The GitHub OIDC provider is account-global. Set false if another stack
+      in this account already created it, or this stack will fail with
+      EntityAlreadyExists.
+
+Conditions:
+  ShouldCreateProvider: !Equals [!Ref CreateOidcProvider, "true"]
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: ShouldCreateProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      # GitHub rotates this; IAM no longer validates it for this provider, but
+      # the field is still required.
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: rusuh-github-deploy
+      Description: Assumed by GitHub Actions to deploy the rusuh stacks
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - ShouldCreateProvider
+                - !Ref GitHubOidcProvider
+                - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                # Branch-scoped, NOT `repo:owner/repo:*`. The wildcard form
+                # would also match pull_request and fork refs.
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubRepo}:ref:refs/heads/${AllowedBranch}
+
+      Policies:
+        # ── CloudFormation and the SAM artifact buckets ──────────────────────
+        - PolicyName: DeployStacks
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: CloudFormationOnRusuhStacks
+                Effect: Allow
+                Action:
+                  - cloudformation:CreateStack
+                  - cloudformation:UpdateStack
+                  - cloudformation:DeleteStack
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:DescribeStackResource
+                  - cloudformation:DescribeStackResources
+                  - cloudformation:GetTemplate
+                  - cloudformation:GetTemplateSummary
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:ListStackResources
+                  - cloudformation:ValidateTemplate
+                  - cloudformation:TagResource
+                Resource:
+                  - !Sub arn:${AWS::Partition}:cloudformation:*:${AWS::AccountId}:stack/rusuh-*/*
+              # SAM needs this one unscoped; it is read-only metadata.
+              - Sid: CloudFormationTransform
+                Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                  - cloudformation:ListStacks
+                  - cloudformation:CreateChangeSet
+                Resource:
+                  - !Sub arn:${AWS::Partition}:cloudformation:*:aws:transform/Serverless-2016-10-31
+              - Sid: SamArtifactBuckets
+                Effect: Allow
+                Action:
+                  - s3:CreateBucket
+                  - s3:GetBucketLocation
+                  - s3:GetBucketPolicy
+                  - s3:PutBucketPolicy
+                  - s3:PutBucketVersioning
+                  - s3:PutEncryptionConfiguration
+                  - s3:PutLifecycleConfiguration
+                  - s3:ListBucket
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:GetObjectVersion
+                Resource:
+                  - !Sub arn:${AWS::Partition}:s3:::aws-sam-cli-managed-*
+                  - !Sub arn:${AWS::Partition}:s3:::aws-sam-cli-managed-*/*
+                  - !Sub arn:${AWS::Partition}:s3:::rusuh-*
+                  - !Sub arn:${AWS::Partition}:s3:::rusuh-*/*
+
+        # ── The resources the stacks create ─────────────────────────────────
+        #
+        # Deliberately NOT scoped by resource for most of these. Creating a
+        # VPC or an Aurora cluster needs ec2:*/rds:* actions that do not accept
+        # a resource ARN at create time, so a scoped policy here would simply
+        # fail. The containment is the branch-scoped trust policy above and the
+        # rusuh-* naming, not these action lists.
+        #
+        # Splitting this into a narrow service-deploy role and a separate,
+        # rarely-used foundation role is the right move before production.
+        - PolicyName: ManageServiceResources
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: Serverless
+                Effect: Allow
+                Action:
+                  - lambda:*
+                  - apigateway:*
+                  - sqs:*
+                  - events:*
+                  - scheduler:*
+                  - logs:*
+                Resource: "*"
+              - Sid: Foundation
+                Effect: Allow
+                Action:
+                  - ec2:*
+                  - rds:*
+                  - elasticache:*
+                  - ses:*
+                Resource: "*"
+              - Sid: SecretsAndKeys
+                Effect: Allow
+                Action:
+                  - secretsmanager:CreateSecret
+                  - secretsmanager:UpdateSecret
+                  - secretsmanager:DescribeSecret
+                  - secretsmanager:TagResource
+                  - secretsmanager:GetRandomPassword
+                  - secretsmanager:PutSecretValue
+                  - secretsmanager:DeleteSecret
+                  - secretsmanager:GetResourcePolicy
+                  - kms:CreateKey
+                  - kms:CreateAlias
+                  - kms:DeleteAlias
+                  - kms:DescribeKey
+                  - kms:TagResource
+                  - kms:PutKeyPolicy
+                  - kms:EnableKeyRotation
+                  - kms:DisableKeyRotation
+                  - kms:ScheduleKeyDeletion
+                  - kms:ListAliases
+                Resource: "*"
+              # GetSecretValue is required because the service templates inject
+              # DATABASE_URL, JWT_SECRET, DUKCAPIL_API_KEY and NIK_PEPPER via
+              # {{resolve:secretsmanager:...}}, and CloudFormation resolves
+              # those using THIS role's permissions.
+              #
+              # This is a deliberate weakening, recorded rather than hidden.
+              # The pepper is the one that matters: ADR-005 section 8 gives it
+              # no rotation path, so a leak is permanent, and it now passes
+              # through CloudFormation and lands in the function's environment.
+              # The pre-production fix is to fetch it at runtime in Go and
+              # remove it from the template, after which this statement should
+              # be narrowed to the three rotatable secrets.
+              - Sid: ReadRusuhSecretsForDynamicReferences
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  - !Sub arn:${AWS::Partition}:secretsmanager:*:${AWS::AccountId}:secret:rusuh-*
+
+              - Sid: Migrator
+                Effect: Allow
+                Action:
+                  - codebuild:CreateProject
+                  - codebuild:UpdateProject
+                  - codebuild:DeleteProject
+                  - codebuild:BatchGetProjects
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                Resource:
+                  - !Sub arn:${AWS::Partition}:codebuild:*:${AWS::AccountId}:project/rusuh-*
+
+        # ── IAM, for the execution roles SAM generates ──────────────────────
+        - PolicyName: ManageExecutionRoles
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ServiceLinkedRoles
+                Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:GetRole
+                  - iam:TagRole
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:GetRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                  - iam:UpdateAssumeRolePolicy
+                Resource:
+                  # SAM names generated roles after the stack, so rusuh-*
+                  # covers them. The wildcard tail catches SAM's own suffixes.
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/rusuh-*
+              - Sid: PassRoleToServices
+                Effect: Allow
+                Action: iam:PassRole
+                Resource:
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/rusuh-*
+                Condition:
+                  StringEquals:
+                    iam:PassedToService:
+                      - lambda.amazonaws.com
+                      - codebuild.amazonaws.com
+                      - rds.amazonaws.com
+              - Sid: CreateServiceLinkedRoles
+                Effect: Allow
+                Action: iam:CreateServiceLinkedRole
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    iam:AWSServiceName:
+                      - rds.amazonaws.com
+                      - elasticache.amazonaws.com
+                      - ops.apigateway.amazonaws.com
+
+Outputs:
+  RoleArn:
+    Description: Set this as the repository secret AWS_DEPLOY_ROLE_ARN
+    Value: !GetAtt DeployRole.Arn

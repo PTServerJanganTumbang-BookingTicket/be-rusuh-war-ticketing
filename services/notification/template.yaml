@@ -3,14 +3,25 @@ Transform: AWS::Serverless-2016-10-31
 Description: rusuh-notification — SQS to SES. Owns the notification queue and its DLQ.
 
 Parameters:
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues: [dev, prod]
+    Description: >
+      Suffixes every physical resource name. Without it the hardcoded names
+      below collide and two environments cannot share an account and region.
+
   VpcSubnetIds:
-    Type: List<AWS::EC2::Subnet::Id>
+    Type: AWS::SSM::Parameter::Value<List<AWS::EC2::Subnet::Id>>
+    Default: /rusuh/prod/vpc/private-subnet-ids
     Description: Private subnets with reachability to Redis and the SES endpoint
   SecurityGroupIds:
-    Type: List<AWS::EC2::SecurityGroup::Id>
+    Type: AWS::SSM::Parameter::Value<List<AWS::EC2::SecurityGroup::Id>>
+    Default: /rusuh/prod/vpc/lambda-security-group-ids
     Description: Security group permitting Redis (6379) egress
   RedisAddr:
-    Type: String
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/redis/addr
     Description: ElastiCache primary endpoint, host:port
   AppBaseUrl:
     Type: String
@@ -19,11 +30,12 @@ Parameters:
       endpoint reads its token from a cookie, so the app route sets the cookie
       and then calls the API. Must be https — these links carry login tokens.
   EmailFromAddress:
-    Type: String
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/ses/from-address
     Description: Verified SES identity to send from
   SesConfigurationSet:
-    Type: String
-    Default: ""
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/ses/configuration-set
     Description: >
       SES configuration set routing bounces and complaints to SNS. Strongly
       recommended: without it a bouncing address is invisible and SES
@@ -44,7 +56,7 @@ Resources:
   NotificationDLQ:
     Type: AWS::SQS::Queue
     Properties:
-      QueueName: rusuh-notification-dlq
+      QueueName: !Sub rusuh-${Environment}-notification-dlq
       # Two weeks: long enough that a holiday weekend does not lose the
       # evidence of what failed.
       MessageRetentionPeriod: 1209600
@@ -52,7 +64,7 @@ Resources:
   NotificationQueue:
     Type: AWS::SQS::Queue
     Properties:
-      QueueName: rusuh-notification
+      QueueName: !Sub rusuh-${Environment}-notification
       # Six times the function timeout, per AWS guidance, so a slow send is
       # not redelivered while the first attempt is still running.
       VisibilityTimeout: 180
@@ -68,7 +80,7 @@ Resources:
     Metadata:
       BuildMethod: makefile
     Properties:
-      FunctionName: rusuh-notification
+      FunctionName: !Sub rusuh-${Environment}-notification
       Handler: bootstrap
       CodeUri: .
       VpcConfig:
@@ -85,10 +97,15 @@ Resources:
       Policies:
         - AWSLambdaVPCAccessExecutionRole
         - Statement:
+            # Scoped to the one verified identity and the one configuration
+            # set. Resource "*" here would let a misconfigured deploy send
+            # from any identity in the account, with bounces going nowhere.
             - Effect: Allow
               Action:
                 - ses:SendEmail
-              Resource: "*"
+              Resource:
+                - !Sub arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/*
+                - !Sub arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:configuration-set/*
       Events:
         Queue:
           Type: SQS
@@ -100,6 +117,31 @@ Resources:
             # nine recipients get a duplicate email.
             FunctionResponseTypes:
               - ReportBatchItemFailures
+
+  # Declared explicitly because SAM does not create it: Lambda would, on first
+  # invoke, with retention set to NEVER EXPIRE. For a POC that is a slow leak
+  # of storage cost with no upside.
+  NotificationLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/rusuh-${Environment}-notification
+      RetentionInDays: 14
+
+  # Published for services/outbox-publisher, which writes to this queue and
+  # resolves both values from these paths.
+  SsmQueueUrl:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /rusuh/${Environment}/notification/queue-url
+      Type: String
+      Value: !Ref NotificationQueue
+
+  SsmQueueArn:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /rusuh/${Environment}/notification/queue-arn
+      Type: String
+      Value: !GetAtt NotificationQueue.Arn
 
 Outputs:
   QueueUrl:

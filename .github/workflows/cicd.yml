@@ -1,10 +1,45 @@
 name: Golang CI/CD
 
 on:
+  # Candidate deploy branches. This list only decides which pushes START a
+  # run; which one may actually reach AWS is decided by the deploy role's
+  # trust policy (AllowedBranch in infra/bootstrap), and that names exactly
+  # one branch at a time. A push to a branch listed here but not trusted by
+  # the role runs the quality jobs and then fails at assume-role, which is
+  # the intended outcome - the gate is the role, not this file.
   push:
-    branches: [ "main", "cicd" ]
+    branches: [ "main", "cicd", "test-deployment" ]
   pull_request:
-    branches: [ "main", "cicd" ]
+    branches: [ "main", "cicd", "test-deployment" ]
+  # Manual releases, and the only way to deploy the foundation stack: it owns
+  # Aurora, Redis and the secrets, so it must never ride along on a code push.
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: >
+          Target environment. Only prod exists: the service templates bake
+          /rusuh/prod/... into their SSM parameter Defaults, and a
+          CloudFormation Default cannot reference another parameter. Adding a
+          second environment means overriding those paths deliberately - see
+          DEPLOY.md - so the choice is not offered here, where forgetting
+          would point dev's Lambdas at prod's database.
+        type: choice
+        options: [prod]
+        default: prod
+      deploy_foundation:
+        description: >
+          Also deploy infra/foundation (VPC, Aurora, Redis, secrets).
+          Required on the very first deploy into an account.
+        type: boolean
+        default: false
+      cost_optimized:
+        description: >
+          POC cost mode. Aurora scales to 0 ACU and auto-pauses, and no RDS
+          Proxy is created - roughly $66/month cheaper when idle, at the cost
+          of a ~15s first request after a pause. Turn OFF for load testing or
+          anything resembling production.
+        type: boolean
+        default: true
 
 # Cancel superseded runs on the same ref so rapid pushes don't stack deploys.
 concurrency:
@@ -27,6 +62,8 @@ jobs:
       notification: ${{ steps.filter.outputs.notification }}
       outbox_publisher: ${{ steps.filter.outputs.outbox_publisher }}
       pkg: ${{ steps.filter.outputs.pkg }}
+      infra: ${{ steps.filter.outputs.infra }}
+      migrations: ${{ steps.filter.outputs.migrations }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
@@ -56,6 +93,11 @@ jobs:
               - 'services/outbox-publisher/**'
               - 'pkg/**'
               - 'go.work'
+            infra:
+              - 'infra/foundation/**'
+            migrations:
+              - 'migrations/**'
+              - 'infra/migrator/**'
       - id: set
         # Build the module matrix. A pkg change forces ALL service modules.
         run: |
@@ -71,6 +113,64 @@ jobs:
           echo "modules=$json" >> "$GITHUB_OUTPUT"
           echo "matrix: $json"
 
+  # ---- Deploy target, and whether to deploy at all. ----
+  #
+  # Deploys happen on a push to main or an explicit workflow_dispatch. A push
+  # to `cicd` runs the full CI but deploys nothing, so that branch stays safe
+  # for pipeline work.
+  resolve-env:
+    name: Resolve Deploy Target
+    needs: detect-changes
+    # Deploys happen from main, cicd, or test-deployment.
+    #
+    # cicd is here because workflow_dispatch only exists on the DEFAULT branch
+    # - GitHub reads the workflow definition from there, so a Run workflow
+    # button for a feature branch does not exist. Without a push trigger that
+    # deploys, the only route to AWS would be merging to main, and this whole
+    # pipeline would be unexercised until the one merge that matters.
+    #
+    # The OIDC role is branch-scoped, so deploying from cicd also requires the
+    # bootstrap stack to have been created with AllowedBranch=cicd. Otherwise
+    # every deploy job fails at assume-role, which is the correct failure: the
+    # branch gate lives in the trust policy, not here.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && (
+        github.ref == 'refs/heads/main' ||
+        github.ref == 'refs/heads/cicd' ||
+        github.ref == 'refs/heads/test-deployment'))
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.env.outputs.environment }}
+      booking: ${{ needs.detect-changes.outputs.booking }}
+      user: ${{ needs.detect-changes.outputs.user }}
+      nik_verify: ${{ needs.detect-changes.outputs.nik_verify }}
+      notification: ${{ needs.detect-changes.outputs.notification }}
+      outbox_publisher: ${{ needs.detect-changes.outputs.outbox_publisher }}
+      foundation_changed: ${{ needs.detect-changes.outputs.infra }}
+      any_service_changed: ${{ steps.env.outputs.any_service_changed }}
+    steps:
+      - id: env
+        env:
+          B: ${{ needs.detect-changes.outputs.booking }}
+          U: ${{ needs.detect-changes.outputs.user }}
+          N: ${{ needs.detect-changes.outputs.nik_verify }}
+          T: ${{ needs.detect-changes.outputs.notification }}
+          O: ${{ needs.detect-changes.outputs.outbox_publisher }}
+        run: |
+          set -eu
+          # Only prod exists - see the workflow_dispatch input's description.
+          environment="${{ inputs.environment || 'prod' }}"
+          echo "environment=$environment" >> "$GITHUB_OUTPUT"
+
+          any=false
+          for f in "$B" "$U" "$N" "$T" "$O"; do
+            [ "$f" = "true" ] && any=true
+          done
+          echo "any_service_changed=$any" >> "$GITHUB_OUTPUT"
+
+          echo "environment        : $environment"
+          echo "any service changed: $any"
   golangci-lint:
     name: Lint (${{ matrix.module }})
     needs: detect-changes
@@ -182,7 +282,12 @@ jobs:
     name: Sonarqube Checker
     needs: [golangci-lint, test, govulncheck]
     runs-on: ubuntu-latest
-    if: github.event_name != 'workflow_dispatch'
+    # Skipped rather than failed when Sonar is not configured. The old
+    # condition let an unset SONAR_HOST_URL fail this job, and because the
+    # deploy jobs gated on it directly, nothing could ever be released.
+    if: >-
+      github.event_name != 'workflow_dispatch' &&
+      vars.SONAR_HOST_URL != ''
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -216,196 +321,466 @@ jobs:
           args: >
             -Dsonar.go.coverage.reportPaths=${{ steps.cov.outputs.paths }}
 
-  deploy-booking:
-    name: Deploy booking → AWS Lambda (SAM)
-    needs: [detect-changes, sonarqube]
+  # ══════════════════════════════════════════════════════════════════════════
+  #  QUALITY GATE
+  #
+  #  One place to decide whether the code is fit to deploy. Sonar is allowed
+  #  to be SKIPPED (an unconfigured SONAR_HOST_URL must not block a release)
+  #  but never allowed to FAIL silently, which is what gating directly on
+  #  `needs: [sonarqube]` did.
+  # ══════════════════════════════════════════════════════════════════════════
+  quality-gate:
+    name: Quality Gate
+    needs: [golangci-lint, test, govulncheck, sonarqube]
+    if: always()
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && needs.detect-changes.outputs.booking == 'true'
-    permissions:
-      id-token: write   # required for AWS OIDC
-      contents: read
-    defaults:
-      run:
-        working-directory: services/booking
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
-        with:
-          go-version: '1.26'
-          check-latest: true
-      - uses: aws-actions/setup-sam@819220f63fb333a9a394dd0a5cab2d8303fd3ca1 # v2.0.0
-        with:
-          use-installer: true
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
-        with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
-      - name: SAM build
-        run: sam build
-      - name: SAM deploy
+      - name: Require lint, test and vuln scan; tolerate a skipped Sonar
         run: |
-          sam deploy \
-            --stack-name rusuh-booking \
-            --resolve-s3 \
-            --capabilities CAPABILITY_IAM \
-            --no-confirm-changeset \
-            --no-fail-on-empty-changeset \
-            --region ${{ vars.AWS_REGION }}
+          set -eu
+          fail=0
+          check() {
+            case "$2" in
+              success|skipped) echo "ok      $1 ($2)" ;;
+              *)               echo "BLOCKED $1 ($2)"; fail=1 ;;
+            esac
+          }
+          check golangci-lint "${{ needs.golangci-lint.result }}"
+          check test          "${{ needs.test.result }}"
+          check govulncheck   "${{ needs.govulncheck.result }}"
+          check sonarqube     "${{ needs.sonarqube.result }}"
+          [ "$fail" -eq 0 ] || { echo "Quality gate failed; not deploying."; exit 1; }
 
-  deploy-user:
-    name: Deploy user → AWS Lambda (SAM)
-    needs: [detect-changes, sonarqube]
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && needs.detect-changes.outputs.user == 'true'
-    permissions:
-      id-token: write   # required for AWS OIDC
-      contents: read
-    defaults:
-      run:
-        working-directory: services/user
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
-        with:
-          go-version: '1.26'
-          check-latest: true
-      - uses: aws-actions/setup-sam@819220f63fb333a9a394dd0a5cab2d8303fd3ca1 # v2.0.0
-        with:
-          use-installer: true
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
-        with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
-      - name: SAM build
-        run: sam build
-      - name: SAM deploy
-        run: |
-          sam deploy \
-            --stack-name rusuh-user \
-            --resolve-s3 \
-            --capabilities CAPABILITY_IAM \
-            --no-confirm-changeset \
-            --no-fail-on-empty-changeset \
-            --region ${{ vars.AWS_REGION }}
-
-  deploy-nik-verify:
-    name: Deploy nik-verify → AWS Lambda (SAM)
-    needs: [detect-changes, sonarqube]
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && needs.detect-changes.outputs.nik_verify == 'true'
-    permissions:
-      id-token: write   # required for AWS OIDC
-      contents: read
-    defaults:
-      run:
-        working-directory: services/nik-verify
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
-        with:
-          go-version: '1.26'
-          check-latest: true
-      - uses: aws-actions/setup-sam@819220f63fb333a9a394dd0a5cab2d8303fd3ca1 # v2.0.0
-        with:
-          use-installer: true
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
-        with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
-      - name: SAM build
-        run: sam build
-      - name: SAM deploy
-        run: |
-          sam deploy \
-            --stack-name rusuh-nik-verify \
-            --resolve-s3 \
-            --capabilities CAPABILITY_IAM \
-            --no-confirm-changeset \
-            --no-fail-on-empty-changeset \
-            --region ${{ vars.AWS_REGION }}
-
-  deploy-notification:
-    name: Deploy notification → AWS Lambda (SAM)
-    needs: [detect-changes, sonarqube]
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && needs.detect-changes.outputs.notification == 'true'
-    permissions:
-      id-token: write   # required for AWS OIDC
-      contents: read
-    defaults:
-      run:
-        working-directory: services/notification
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
-        with:
-          go-version: '1.26'
-          check-latest: true
-      - uses: aws-actions/setup-sam@819220f63fb333a9a394dd0a5cab2d8303fd3ca1 # v2.0.0
-        with:
-          use-installer: true
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
-        with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
-      - name: SAM build
-        run: sam build
-      - name: SAM deploy
-        run: |
-          sam deploy \
-            --stack-name rusuh-notification \
-            --resolve-s3 \
-            --capabilities CAPABILITY_IAM \
-            --no-confirm-changeset \
-            --no-fail-on-empty-changeset \
-            --region ${{ vars.AWS_REGION }}
-
-  deploy-outbox-publisher:
-    name: Deploy outbox-publisher → AWS Lambda (SAM)
-    # Also gated on deploy-notification: this stack takes the notification
-    # queue's URL and ARN as parameters, so that stack has to exist first.
-    needs: [detect-changes, sonarqube, deploy-notification]
-    runs-on: ubuntu-latest
-    # always() keeps this running when deploy-notification was skipped because
-    # nothing in that service changed; the queue already exists in that case.
+  # ══════════════════════════════════════════════════════════════════════════
+  #  FOUNDATION  (VPC, Aurora + RDS Proxy, Redis, secrets)
+  #
+  #  Deployed only when infra/foundation/** changes or when asked for by hand.
+  #  It owns every stateful resource, so it must not ride along on an ordinary
+  #  service release.
+  # ══════════════════════════════════════════════════════════════════════════
+  deploy-foundation:
+    name: Deploy foundation
+    needs: [resolve-env, quality-gate]
     if: >-
       always() &&
-      github.event_name == 'push' &&
-      needs.detect-changes.outputs.outbox_publisher == 'true' &&
-      needs.sonarqube.result != 'failure' &&
-      needs.deploy-notification.result != 'failure'
+      needs.quality-gate.result == 'success' &&
+      (needs.resolve-env.outputs.foundation_changed == 'true' ||
+       inputs.deploy_foundation == true)
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-env.outputs.environment }}
     permissions:
-      id-token: write   # required for AWS OIDC
+      id-token: write
       contents: read
-    defaults:
-      run:
-        working-directory: services/outbox-publisher
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
-        with:
-          go-version: '1.26'
-          check-latest: true
-      - uses: aws-actions/setup-sam@819220f63fb333a9a394dd0a5cab2d8303fd3ca1 # v2.0.0
-        with:
-          use-installer: true
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+      - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
-      - name: SAM build
-        run: sam build
-      - name: SAM deploy
+      - name: Deploy foundation stack
+        env:
+          ENV: ${{ needs.resolve-env.outputs.environment }}
+          # Defaults to the cheap profile: a push to main that happens to
+          # touch infra/foundation must not silently provision the expensive
+          # one. Use workflow_dispatch to change it deliberately.
+          COST_OPTIMIZED: ${{ (github.event_name == 'workflow_dispatch' && inputs.cost_optimized == false) && 'false' || 'true' }}
+          ENABLE_NAT: ${{ vars.ENABLE_NAT_GATEWAY || 'true' }}
+          # Single AZ by default. Lambda, Redis and the Aurora instance all
+          # land in one zone, so nothing in the request path pays cross-AZ
+          # transfer. Set the repo variable to "false" for a multi-AZ deploy.
+          SINGLE_AZ: ${{ vars.SINGLE_AZ || 'true' }}
+          # POC: Aurora gets a public endpoint so developers can attach a SQL
+          # client. Unreachable until DB_ALLOWED_CIDR names a range, which is
+          # the intended fail-closed default.
+          DB_PUBLIC: ${{ vars.DB_PUBLICLY_ACCESSIBLE || 'true' }}
+          DB_ALLOWED_CIDR: ${{ vars.DB_ALLOWED_CIDR }}
         run: |
-          sam deploy \
-            --stack-name rusuh-outbox-publisher \
-            --resolve-s3 \
-            --capabilities CAPABILITY_IAM \
-            --no-confirm-changeset \
+          set -euo pipefail
+          aws cloudformation deploy \
+            --template-file infra/foundation/template.yaml \
+            --stack-name "rusuh-${ENV}-foundation" \
+            --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset \
-            --region ${{ vars.AWS_REGION }}
+            --parameter-overrides \
+              "Environment=${ENV}" \
+              "EmailFromAddress=${{ vars.EMAIL_FROM_ADDRESS }}" \
+              "CostOptimized=${COST_OPTIMIZED}" \
+              "EnableNatGateway=${ENABLE_NAT}" \
+              "SingleAz=${SINGLE_AZ}" \
+              "DbPubliclyAccessible=${DB_PUBLIC}" \
+              "DbAllowedCidr=${DB_ALLOWED_CIDR}" \
+            --tags Project=rusuh ManagedBy=github-actions
+
+          aws cloudformation describe-stacks --stack-name "rusuh-${ENV}-foundation" \
+            --query 'Stacks[0].Outputs[?OutputKey==`CostMode`].OutputValue' --output text
+          echo -n "availability zone: "
+          aws cloudformation describe-stacks --stack-name "rusuh-${ENV}-foundation" \
+            --query 'Stacks[0].Outputs[?OutputKey==`DeploymentAz`].OutputValue' --output text
+          echo -n "database access: "
+          aws cloudformation describe-stacks --stack-name "rusuh-${ENV}-foundation" \
+            --query 'Stacks[0].Outputs[?OutputKey==`DbAccessMode`].OutputValue' --output text
+
+  # ══════════════════════════════════════════════════════════════════════════
+  #  PREFLIGHT
+  #
+  #  The service stacks resolve their own infrastructure parameters from SSM
+  #  (Type: AWS::SSM::Parameter::Value<...>, published by the foundation), so
+  #  there is no longer a job that reads stack outputs and threads them back
+  #  through --parameter-overrides.
+  #
+  #  This only checks the paths exist. Without it a missing parameter fails
+  #  per-service, after `sam build`, several minutes in; with it the run stops
+  #  in seconds with the path named.
+  # ══════════════════════════════════════════════════════════════════════════
+  preflight:
+    name: Preflight (SSM parameters)
+    needs: [resolve-env, quality-gate, deploy-foundation]
+    if: >-
+      always() &&
+      needs.quality-gate.result == 'success' &&
+      needs.deploy-foundation.result != 'failure' &&
+      needs.resolve-env.outputs.any_service_changed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      # Repo variables are checked before any AWS call, because the failure
+      # they cause otherwise is a mid-wave CloudFormation rollback after a
+      # successful build.
+      - name: Repository variables must be consistent
+        env:
+          DUKCAPIL_MODE: ${{ vars.DUKCAPIL_MODE || 'stub' }}
+          DUKCAPIL_BASE_URL: ${{ vars.DUKCAPIL_BASE_URL }}
+          DUKCAPIL_EXTRA_HEADER_NAME: ${{ vars.DUKCAPIL_EXTRA_HEADER_NAME }}
+          HAS_EXTRA_HEADER_VALUE: ${{ secrets.DUKCAPIL_EXTRA_HEADER_VALUE != '' }}
+          APP_BASE_URL: ${{ vars.APP_BASE_URL }}
+          NEEDS_NOTIFICATION: ${{ needs.resolve-env.outputs.notification }}
+        run: |
+          set -euo pipefail
+          fail=0
+
+          case "$DUKCAPIL_MODE" in
+            live)
+              if [ -z "$DUKCAPIL_BASE_URL" ]; then
+                echo "::error::DUKCAPIL_MODE is live but the DUKCAPIL_BASE_URL variable is empty."
+                echo "::error::Set it to the Dukcapil endpoint or a mock server, or unset"
+                echo "::error::DUKCAPIL_MODE to fall back to the POC stub."
+                fail=1
+              fi
+              # The client builds its URL as baseURL + "/verify". Both of these
+              # deploy cleanly and then 404 on every single verification, which
+              # reads as "the mock is broken" rather than "the URL has one
+              # segment too many".
+              case "$DUKCAPIL_BASE_URL" in
+                */verify)
+                  echo "::error::DUKCAPIL_BASE_URL ends in /verify: '$DUKCAPIL_BASE_URL'."
+                  echo "::error::The client appends /verify itself, so this would request /verify/verify."
+                  echo "::error::Use: ${DUKCAPIL_BASE_URL%/verify}"
+                  fail=1
+                  ;;
+                */)
+                  echo "::error::DUKCAPIL_BASE_URL has a trailing slash: '$DUKCAPIL_BASE_URL'."
+                  echo "::error::The client appends /verify, so this would request //verify."
+                  echo "::error::Use: ${DUKCAPIL_BASE_URL%/}"
+                  fail=1
+                  ;;
+              esac
+              if [ -n "$DUKCAPIL_EXTRA_HEADER_NAME" ] && [ "$HAS_EXTRA_HEADER_VALUE" != "true" ]; then
+                echo "::error::DUKCAPIL_EXTRA_HEADER_NAME is '$DUKCAPIL_EXTRA_HEADER_NAME' but the"
+                echo "::error::DUKCAPIL_EXTRA_HEADER_VALUE secret is empty. The header would be sent blank."
+                fail=1
+              fi
+              ;;
+            stub)
+              # Loud on purpose. In stub mode nik-verify answers from the NIK
+              # itself: everything verifies except a NIK ending 0000, which is
+              # rejected, and one ending 9999, which simulates an outage.
+              echo "::warning::DUKCAPIL_MODE=stub (the POC default) - NIK verification is simulated, not real."
+              if [ -n "$DUKCAPIL_BASE_URL" ]; then
+                # Almost always a forgotten switch: someone set up an endpoint
+                # and expected it to be called. Not fatal - keeping the URL set
+                # while testing the stub is legitimate.
+                echo "::warning::DUKCAPIL_BASE_URL is set but the mode is stub, so it will NOT be called."
+                echo "::warning::Set the DUKCAPIL_MODE variable to 'live' if you meant to use it."
+              fi
+              ;;
+            *)
+              echo "::error::DUKCAPIL_MODE must be 'live' or 'stub', got '$DUKCAPIL_MODE'."
+              fail=1
+              ;;
+          esac
+
+          if [ "$NEEDS_NOTIFICATION" = "true" ] && [ -z "$APP_BASE_URL" ]; then
+            echo "::error::APP_BASE_URL is empty and notification is being deployed."
+            echo "::error::It has no template default - email links are built from it."
+            fail=1
+          fi
+
+          [ "$fail" -eq 0 ] || exit 1
+          echo "Repository variables OK."
+
+      - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Every parameter the service stacks resolve must exist
+        env:
+          ENV: ${{ needs.resolve-env.outputs.environment }}
+        run: |
+          set -euo pipefail
+          paths="
+            /rusuh/${ENV}/vpc/private-subnet-ids
+            /rusuh/${ENV}/vpc/lambda-security-group-ids
+            /rusuh/${ENV}/vpc/id
+            /rusuh/${ENV}/db/secret-arn
+            /rusuh/${ENV}/nik/pepper-secret-arn
+            /rusuh/${ENV}/nik/pepper-kms-key-arn
+            /rusuh/${ENV}/auth/jwt-secret-arn
+            /rusuh/${ENV}/dukcapil/api-key-secret-arn
+            /rusuh/${ENV}/redis/addr
+            /rusuh/${ENV}/ses/configuration-set
+            /rusuh/${ENV}/ses/from-address
+          "
+          # The Defaults in services/*/template.yaml are literal
+          # /rusuh/prod/... paths. Deploying another environment without
+          # overriding them would resolve PROD's subnets, database and Redis,
+          # which fails silently rather than loudly. Refuse instead.
+          if [ "$ENV" != "prod" ]; then
+            echo "::error::Environment is '$ENV' but the service templates resolve /rusuh/prod/... by default."
+            echo "::error::Pass the paths explicitly for a non-prod deploy; see DEPLOY.md."
+            exit 1
+          fi
+
+          missing=""
+          for pth in $paths; do
+            if aws ssm get-parameter --name "$pth" >/dev/null 2>&1; then
+              echo "  ok      $pth"
+            else
+              echo "  MISSING $pth"
+              missing="$missing $pth"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Missing SSM parameters:$missing"
+            echo "::error::These are published by infra/foundation. Deploy it first:"
+            echo "::error::  workflow_dispatch with deploy_foundation = true"
+            exit 1
+          fi
+          echo "All infrastructure parameters present."
+
+  # ══════════════════════════════════════════════════════════════════════════
+  #  NOTE: there is deliberately NO migration step.
+  #
+  #  POC decision: the schema is created and changed by hand with a SQL client
+  #  against the public Aurora endpoint. migrations/*.up.sql is the reference
+  #  for what to run, and infra/migrator/ can still apply it on demand
+  #  (DEPLOY.md), but the pipeline does not.
+  #
+  #  The consequence to know about: a service deploy reports success whether
+  #  or not the schema matches, so a missing table shows up as a runtime 500
+  #  instead of a failed release.
+  # ══════════════════════════════════════════════════════════════════════════
+
+  # ══════════════════════════════════════════════════════════════════════════
+  #  WAVE 1 — services nothing else depends on
+  #
+  #  nik-verify and notification publish outputs that wave 2 consumes, so they
+  #  have to land first. booking rides along because it depends on neither.
+  # ══════════════════════════════════════════════════════════════════════════
+  deploy-booking:
+    name: Deploy booking
+    needs: [resolve-env, preflight]
+    if: always() && needs.preflight.result == 'success' && needs.resolve-env.outputs.booking == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-env.outputs.environment }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/sam-deploy
+        with:
+          service: booking
+          stack-name: rusuh-${{ needs.resolve-env.outputs.environment }}-booking
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          parameter-overrides: Environment=${{ needs.resolve-env.outputs.environment }}
+
+  deploy-nik-verify:
+    name: Deploy nik-verify
+    needs: [resolve-env, preflight]
+    if: always() && needs.preflight.result == 'success' && needs.resolve-env.outputs.nik_verify == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-env.outputs.environment }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/sam-deploy
+        with:
+          service: nik-verify
+          stack-name: rusuh-${{ needs.resolve-env.outputs.environment }}-nik-verify
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          # Everything else - subnets, security group, the three secret ARNs
+          # and the pepper's KMS key - is resolved by the template itself from
+          # SSM. Only what the pipeline genuinely owns is passed here.
+          #
+          # DUKCAPIL_MODE defaults to "stub" for the POC: no Dukcapil contract
+          # exists, so a deploy with nothing configured still works. The
+          # template moves APP_ENV off "production" to match, which the
+          # service requires before it will accept a stub.
+          #
+          # Set the variable to "live" and point DUKCAPIL_BASE_URL at the real
+          # API or a mock server to exercise the HTTP path. Live mode with no
+          # base URL is rejected by the template's Rules block at deploy time,
+          # and by preflight before that.
+          #
+          # DUKCAPIL_EXTRA_HEADER_* carry one header for whatever fronts that
+          # endpoint - an Apidog mock authenticates with apidogToken. The value
+          # is a secret so it is masked in the deploy log, which echoes its
+          # arguments.
+          parameter-overrides: >-
+            Environment=${{ needs.resolve-env.outputs.environment }}
+            DukcapilMode=${{ vars.DUKCAPIL_MODE || 'stub' }}
+            DukcapilBaseUrl=${{ vars.DUKCAPIL_BASE_URL }}
+            DukcapilExtraHeaderName=${{ vars.DUKCAPIL_EXTRA_HEADER_NAME }}
+            DukcapilExtraHeaderValue=${{ secrets.DUKCAPIL_EXTRA_HEADER_VALUE }}
+
+  deploy-notification:
+    name: Deploy notification
+    needs: [resolve-env, preflight]
+    if: always() && needs.preflight.result == 'success' && needs.resolve-env.outputs.notification == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-env.outputs.environment }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/sam-deploy
+        with:
+          service: notification
+          stack-name: rusuh-${{ needs.resolve-env.outputs.environment }}-notification
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          parameter-overrides: >-
+            Environment=${{ needs.resolve-env.outputs.environment }}
+            AppBaseUrl=${{ vars.APP_BASE_URL }}
+
+  # ══════════════════════════════════════════════════════════════════════════
+  #  WAVE 2 — services that consume wave 1's published parameters
+  #
+  #  user reads /nik-verify/base-url and outbox-publisher reads
+  #  /notification/queue-{url,arn}. Those are written as SSM parameters by the
+  #  wave-1 stacks themselves, so nothing is passed between jobs - but the
+  #  ORDER still matters, because the parameter has to exist before the stack
+  #  that resolves it is created.
+  #
+  #  `!= 'failure'` rather than `== 'success'`: a wave-1 service that was
+  #  SKIPPED because nothing in it changed has already published its
+  #  parameter from an earlier run.
+  # ══════════════════════════════════════════════════════════════════════════
+  deploy-user:
+    name: Deploy user
+    needs: [resolve-env, preflight, deploy-nik-verify]
+    if: >-
+      always() && needs.preflight.result == 'success' &&
+      needs.deploy-nik-verify.result != 'failure' &&
+      needs.resolve-env.outputs.user == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-env.outputs.environment }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/sam-deploy
+        with:
+          service: user
+          stack-name: rusuh-${{ needs.resolve-env.outputs.environment }}-user
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          # NikVerifyBaseUrl comes from the SSM parameter nik-verify writes,
+          # which is why this job waits on that deploy.
+          parameter-overrides: >-
+            Environment=${{ needs.resolve-env.outputs.environment }}
+            CookieDomain=${{ vars.COOKIE_DOMAIN }}
+
+  deploy-outbox-publisher:
+    name: Deploy outbox-publisher
+    needs: [resolve-env, preflight, deploy-notification]
+    if: >-
+      always() && needs.preflight.result == 'success' &&
+      needs.deploy-notification.result != 'failure' &&
+      needs.resolve-env.outputs.outbox_publisher == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-env.outputs.environment }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/sam-deploy
+        with:
+          service: outbox-publisher
+          stack-name: rusuh-${{ needs.resolve-env.outputs.environment }}-outbox-publisher
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          # The queue URL and ARN come from the SSM parameters notification
+          # writes, which is why this job waits on that deploy.
+          parameter-overrides: Environment=${{ needs.resolve-env.outputs.environment }}
+
+  # ══════════════════════════════════════════════════════════════════════════
+  #  SMOKE
+  #
+  #  A deploy that reports success while the function cannot start is the
+  #  failure this catches. /sys/ping is the only endpoint that needs no auth
+  #  and no request body.
+  # ══════════════════════════════════════════════════════════════════════════
+  smoke:
+    name: Smoke test
+    needs: [resolve-env, deploy-booking, deploy-nik-verify, deploy-user]
+    if: >-
+      always() &&
+      needs.deploy-booking.result != 'failure' &&
+      needs.deploy-nik-verify.result != 'failure' &&
+      needs.deploy-user.result != 'failure' &&
+      needs.resolve-env.outputs.any_service_changed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: GET /sys/ping on every HTTP service
+        env:
+          ENV: ${{ needs.resolve-env.outputs.environment }}
+        run: |
+          set -euo pipefail
+          fail=0
+          for svc in booking nik-verify user; do
+            url=$(aws cloudformation describe-stacks --stack-name "rusuh-${ENV}-${svc}" \
+              --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue" \
+              --output text 2>/dev/null || true)
+            if [ -z "$url" ] || [ "$url" = "None" ]; then
+              echo "skip  $svc (not deployed)"
+              continue
+            fi
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "${url}/sys/ping" || echo 000)
+            if [ "$code" = "200" ]; then
+              echo "ok    $svc -> 200"
+            else
+              echo "FAIL  $svc -> $code  ($url/sys/ping)"
+              fail=1
+            fi
+          done
+          # A 502 here is usually the handler failing to start: a missing
+          # environment variable, or an IAM permission the function needs at
+          # init. Check its log group before redeploying.
+          [ "$fail" -eq 0 ] || exit 1

@@ -1,0 +1,910 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  rusuh foundation — VPC, Aurora PostgreSQL + RDS Proxy, ElastiCache Redis and
+  the shared secrets. Everything the five service stacks take as parameters is
+  created here and published as stack Outputs; the CD pipeline reads those
+  Outputs and passes them through as --parameter-overrides.
+
+  Deployed rarely and on its own. It owns all stateful resources, so its
+  removal policies are deliberately stricter than the service stacks'.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues: [dev, prod]
+    Description: Suffixes every resource name so two environments can share an account.
+
+  VpcCidr:
+    Type: String
+    Default: 10.0.0.0/16
+
+  DatabaseName:
+    Type: String
+    Default: rusuh
+
+  DatabaseUsername:
+    Type: String
+    Default: rusuh_app
+    Description: Master user. The password is generated into Secrets Manager, never templated.
+
+  # Aurora Serverless v2 scales between these. 0.5 ACU is the floor AWS allows
+  # and is what an idle preprod costs; the ceiling is what absorbs the batch
+  # GRANTED inserts during a sale.
+  MinAuroraCapacity:
+    Type: Number
+    Default: 0.5
+  MaxAuroraCapacity:
+    Type: Number
+    Default: 4
+
+  CostOptimized:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: >
+      POC cost mode. true: Aurora scales to 0 ACU and auto-pauses, the RDS
+      Proxy is not created, backups keep one day. false: a 0.5 ACU floor that
+      never pauses, plus the proxy. See the cost table in DEPLOY.md.
+
+  SingleAz:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: >
+      Run every workload in ONE availability zone. Removes cross-AZ data
+      transfer (billed both directions) and keeps the whole request path in
+      one zone. The tradeoff is explicit: losing that zone takes the POC with
+      it, and nothing fails over.
+
+      NOTE: the RDS subnet group still spans two AZs because RDS requires it
+      ("Each DB subnet group must have subnets in at least two Availability
+      Zones"). Only the INSTANCE is pinned to one zone, which is what the
+      billing and the latency follow.
+
+  EnableNatGateway:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: >
+      A NAT gateway is the largest fixed line item here. It is needed for
+      egress to SES, Dukcapil and Midtrans. Set false only when Dukcapil runs
+      in mock mode and no email is sent, because nothing in a private subnet
+      reaches the internet without it.
+
+  AutoPauseSeconds:
+    Type: Number
+    Default: 3600
+    MinValue: 300
+    MaxValue: 86400
+    Description: >
+      Idle time before Aurora pauses, when CostOptimized. Resuming takes
+      roughly 15 seconds, which is longer than the booking and nik-verify
+      Lambda timeouts, so the FIRST request after a pause can fail. One hour
+      keeps it awake through a working session and lets it pause overnight;
+      warm it before a demo (DEPLOY.md).
+
+  DbPubliclyAccessible:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: >
+      POC convenience: give Aurora a public endpoint so developers can attach
+      DBeaver directly, instead of tunnelling through a bastion.
+
+      This puts PostgreSQL on the public internet, where port 5432 is scanned
+      continuously, and this cluster holds nik_hmac and payment rows. The only
+      things between an attacker and the data are the password and the CIDR
+      allowlist below. Acceptable for a throwaway POC; set false before
+      anything resembling production.
+
+  DbAllowedCidr:
+    Type: String
+    Default: ""
+    Description: >
+      CIDR allowed to reach 5432 when the endpoint is public, e.g. the office
+      range 203.0.113.0/24 or one developer at 203.0.113.7/32.
+
+      EMPTY MEANS NO PUBLIC INGRESS. That is deliberate: a forgotten value
+      should fail closed with "cannot connect" rather than open the database
+      to the world. Never set this to 0.0.0.0/0.
+
+  RedisNodeType:
+    Type: String
+    Default: cache.t4g.micro
+    Description: >
+      POC sizing. ADR-005 §15 sizes production on operation throughput and
+      Multi-AZ rather than memory — the 300k working set is only ~80MB.
+
+  EmailFromAddress:
+    Type: String
+    Description: >
+      Address the notification service sends from. The SES identity itself is
+      NOT created here: domain verification needs DNS records that live outside
+      this stack. Verify it once by hand, then pass it in.
+
+Conditions:
+  IsProd: !Equals [!Ref Environment, prod]
+  IsCostOptimized: !Equals [!Ref CostOptimized, "true"]
+  # The proxy and Aurora auto-pause are mutually exclusive in practice: the
+  # proxy holds warm connections to the cluster, which keep it from ever
+  # reaching an idle state.
+  EnableProxy: !Equals [!Ref CostOptimized, "false"]
+  EnableNat: !Equals [!Ref EnableNatGateway, "true"]
+  IsSingleAz: !Equals [!Ref SingleAz, "true"]
+  IsDbPublic: !Equals [!Ref DbPubliclyAccessible, "true"]
+  # Fails closed: no allowlist entry, no public ingress rule.
+  HasDbCidr: !Not [!Equals [!Ref DbAllowedCidr, ""]]
+
+Resources:
+
+  # ─────────────────────────────────────────────────────────────────────────
+  #  NETWORK
+  #  Two AZs because Aurora and ElastiCache both require a subnet group
+  #  spanning at least two, even when running a single node.
+  # ─────────────────────────────────────────────────────────────────────────
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      # Required: Lambda resolves the RDS Proxy and ElastiCache endpoints by
+      # DNS name, and both are private-hosted-zone records.
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub rusuh-${Environment}
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub rusuh-${Environment}
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: !Select [0, !Cidr [!Ref VpcCidr, 4, 8]]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub rusuh-${Environment}-public-a
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock: !Select [1, !Cidr [!Ref VpcCidr, 4, 8]]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub rusuh-${Environment}-public-b
+
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: !Select [2, !Cidr [!Ref VpcCidr, 4, 8]]
+      Tags:
+        - Key: Name
+          Value: !Sub rusuh-${Environment}-private-a
+
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock: !Select [3, !Cidr [!Ref VpcCidr, 4, 8]]
+      Tags:
+        - Key: Name
+          Value: !Sub rusuh-${Environment}-private-b
+
+  # One NAT gateway, not one per AZ. It is a POC cost decision and the
+  # tradeoff is explicit: losing AZ A takes outbound egress with it until the
+  # route is moved. Dukcapil and Midtrans are reached through this.
+  NatEip:
+    Type: AWS::EC2::EIP
+    Condition: EnableNat
+    DependsOn: AttachGateway
+    Properties:
+      Domain: vpc
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Condition: EnableNat
+    Properties:
+      AllocationId: !GetAtt NatEip.AllocationId
+      SubnetId: !Ref PublicSubnetA
+      Tags:
+        - Key: Name
+          Value: !Sub rusuh-${Environment}
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetARouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnetBRouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Condition: EnableNat
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  PrivateSubnetARouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetA
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnetBRouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetB
+      RouteTableId: !Ref PrivateRouteTable
+
+  # A GATEWAY endpoint, which is free. S3 is on the cold-start path because
+  # that is where the Lambda deployment package is fetched from.
+  S3GatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.s3
+      VpcEndpointType: Gateway
+      RouteTableIds:
+        - !Ref PrivateRouteTable
+
+  # INTERFACE endpoints are billed per hour PER AZ, so this one costs about
+  # $15/month across two AZs. At POC request volume the NAT data charge it
+  # saves is cents, so it is created only when not cost-optimising. The
+  # latency argument is real but secondary: it trims a few milliseconds off a
+  # cold start that is already hundreds.
+  SecretsManagerEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: EnableProxy
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.secretsmanager
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      # Interface endpoints bill per AZ-hour, so one zone is half the price.
+      SubnetIds: !If
+        - IsSingleAz
+        - [!Ref PrivateSubnetA]
+        - [!Ref PrivateSubnetA, !Ref PrivateSubnetB]
+      SecurityGroupIds:
+        - !Ref VpcEndpointSecurityGroup
+
+  # ─────────────────────────────────────────────────────────────────────────
+  #  SECURITY GROUPS
+  #  Descriptions are ASCII only: CloudFormation validates GroupDescription
+  #  against ^([a-zA-Z0-9. _\-:/()#,@[\]+=&;{}!$*])*$ and rejects en/em dashes.
+  # ─────────────────────────────────────────────────────────────────────────
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Lambda functions - egress to Aurora, Redis and the internet
+      VpcId: !Ref Vpc
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Outbound to Dukcapil, Midtrans, SES and AWS APIs
+      Tags:
+        - Key: Name
+          Value: !Sub rusuh-${Environment}-lambda
+
+  VpcEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: EnableProxy
+    Properties:
+      GroupDescription: Interface VPC endpoints - HTTPS from Lambda
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref LambdaSecurityGroup
+          Description: HTTPS from Lambda
+      Tags:
+        - Key: Name
+          Value: !Sub rusuh-${Environment}-vpce
+
+  RdsProxySecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: EnableProxy
+    Properties:
+      GroupDescription: RDS Proxy - Postgres from Lambda and the migrator
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub rusuh-${Environment}-rdsproxy
+
+  AuroraSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Aurora PostgreSQL - Postgres from the RDS Proxy only
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub rusuh-${Environment}-aurora
+
+  RedisSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ElastiCache Redis - inbound from Lambda
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 6379
+          ToPort: 6379
+          SourceSecurityGroupId: !Ref LambdaSecurityGroup
+          Description: Redis from Lambda
+      Tags:
+        - Key: Name
+          Value: !Sub rusuh-${Environment}-redis
+
+  # Ingress rules are separate resources because SG-to-SG references between
+  # inline rules would be a circular dependency.
+  RdsProxyIngressFromLambda:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: EnableProxy
+    Properties:
+      GroupId: !Ref RdsProxySecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      SourceSecurityGroupId: !Ref LambdaSecurityGroup
+      Description: Postgres from Lambda
+
+  RdsProxyEgressToAurora:
+    Type: AWS::EC2::SecurityGroupEgress
+    Condition: EnableProxy
+    Properties:
+      GroupId: !Ref RdsProxySecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      DestinationSecurityGroupId: !Ref AuroraSecurityGroup
+      Description: Postgres to Aurora
+
+  # Cost-optimised mode has no proxy, so the clients connect to the cluster
+  # directly and this is the rule that lets them.
+  AuroraIngressFromLambda:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: IsCostOptimized
+    Properties:
+      GroupId: !Ref AuroraSecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      SourceSecurityGroupId: !Ref LambdaSecurityGroup
+      Description: Postgres from Lambda and the migrator, no proxy in between
+
+  # The only path from outside the VPC. Created ONLY when DbAllowedCidr is
+  # set, so an unset value leaves the public endpoint unreachable rather than
+  # open.
+  AuroraIngressFromDevCidr:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: HasDbCidr
+    Properties:
+      GroupId: !Ref AuroraSecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      CidrIp: !Ref DbAllowedCidr
+      Description: Postgres from the developer allowlist, POC only
+
+  AuroraIngressFromProxy:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: EnableProxy
+    Properties:
+      GroupId: !Ref AuroraSecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      SourceSecurityGroupId: !Ref RdsProxySecurityGroup
+      Description: Postgres from the RDS Proxy
+
+  # ─────────────────────────────────────────────────────────────────────────
+  #  SECRETS
+  # ─────────────────────────────────────────────────────────────────────────
+
+  # The NIK pepper gets its own customer-managed key so that reading it is
+  # auditable in CloudTrail separately from every other secret.
+  #
+  # ADR-005 §8 chose "pepper as a managed secret" over a KMS HMAC key with
+  # GenerateMac precisely BECAUSE a managed secret can be restored from backup,
+  # and §16 records that a lost pepper breaks BR-02 permanently. Rotation is
+  # not available as a remediation either, so a leak is unrecoverable.
+  #
+  # Hence: RETAIN on both key and secret even in dev, and rotation disabled on
+  # the key so nobody mistakes CMK rotation for pepper rotation.
+  NikPepperKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: !Sub CMK for the rusuh-${Environment} NIK pepper. Loss breaks BR-02 permanently.
+      EnableKeyRotation: false
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EnableRootPermissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
+            Action: kms:*
+            Resource: "*"
+
+  NikPepperKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub alias/rusuh-${Environment}-nik-pepper
+      TargetKeyId: !Ref NikPepperKey
+
+  NikPepperSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Sub rusuh-${Environment}/nik-pepper
+      Description: HMAC pepper for NIK. NOT ROTATABLE - see ADR-005 section 8 and 16. Back this up.
+      KmsKeyId: !Ref NikPepperKey
+      GenerateSecretString:
+        PasswordLength: 64
+        ExcludePunctuation: true
+
+  # The JWT signing key is deliberately a DIFFERENT secret from the pepper and
+  # on the account-default key: unlike the pepper, this one is rotatable, and
+  # conflating them would make the rotatable thing unrotatable.
+  JwtSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub rusuh-${Environment}/jwt-signing
+      Description: Access-token signing secret. Rotatable, unlike the NIK pepper.
+      GenerateSecretString:
+        PasswordLength: 64
+        ExcludePunctuation: true
+
+  DukcapilApiKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub rusuh-${Environment}/dukcapil-api-key
+      Description: Dukcapil API key. Populate by hand once the contract is signed.
+      SecretString: '{"api_key":"REPLACE_ME"}'
+
+  AuroraMasterSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Sub rusuh-${Environment}/aurora-master
+      Description: Aurora master credentials. Consumed by the RDS Proxy, not by services.
+      GenerateSecretString:
+        SecretStringTemplate: !Sub '{"username":"${DatabaseUsername}"}'
+        GenerateStringKey: password
+        PasswordLength: 32
+        # Postgres accepts these, but they break naive URL assembly in shells
+        # and connection strings, so they are excluded rather than escaped.
+        ExcludeCharacters: '"@/\ ''`'
+
+  # ─────────────────────────────────────────────────────────────────────────
+  #  AURORA + RDS PROXY
+  # ─────────────────────────────────────────────────────────────────────────
+  # Two subnets either way: RDS rejects a subnet group that does not span two
+  # availability zones ("DB Subnet Group doesn't meet availability zone
+  # coverage requirement"). The group says where the instance MAY live;
+  # AuroraInstance pins where it actually does.
+  #
+  # A public endpoint requires subnets whose route table reaches the internet
+  # gateway, so the group switches to the public subnets. Lambda in the
+  # private subnets still reaches it: that traffic stays inside the VPC and is
+  # governed by the security group, not by the route table.
+  DbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: !Sub rusuh-${Environment} database subnets
+      SubnetIds: !If
+        - IsDbPublic
+        - [!Ref PublicSubnetA, !Ref PublicSubnetB]
+        - [!Ref PrivateSubnetA, !Ref PrivateSubnetB]
+
+  AuroraCluster:
+    Type: AWS::RDS::DBCluster
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      Engine: aurora-postgresql
+      EngineVersion: "16.15"
+      EngineMode: provisioned
+      DatabaseName: !Ref DatabaseName
+      MasterUsername: !Sub '{{resolve:secretsmanager:${AuroraMasterSecret}:SecretString:username}}'
+      MasterUserPassword: !Sub '{{resolve:secretsmanager:${AuroraMasterSecret}:SecretString:password}}'
+      DBSubnetGroupName: !Ref DbSubnetGroup
+      VpcSecurityGroupIds:
+        - !Ref AuroraSecurityGroup
+      # MinCapacity 0 lets the cluster pause entirely. Storage is still
+      # billed (cents at POC size) but ACU billing stops, which removes the
+      # largest idle cost in this stack.
+      ServerlessV2ScalingConfiguration: !If
+        - IsCostOptimized
+        - MinCapacity: 0
+          MaxCapacity: !Ref MaxAuroraCapacity
+          SecondsUntilAutoPause: !Ref AutoPauseSeconds
+        - MinCapacity: !Ref MinAuroraCapacity
+          MaxCapacity: !Ref MaxAuroraCapacity
+      StorageEncrypted: true
+      # Point-in-time recovery. ADR-005 accepts an RPO of zero for paid data,
+      # so the backup window is not optional.
+      BackupRetentionPeriod: !If [IsCostOptimized, 1, 7]
+      DeletionProtection: !If [IsProd, true, false]
+      EnableCloudwatchLogsExports:
+        - postgresql
+
+  AuroraInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBClusterIdentifier: !Ref AuroraCluster
+      DBInstanceClass: db.serverless
+      Engine: aurora-postgresql
+      PubliclyAccessible: !If [IsDbPublic, true, false]
+      # Pinned to the same zone as the Lambdas and Redis, so no request in the
+      # hot path crosses an AZ boundary. Public and private subnet A are both
+      # AZ index 0, so this holds in either mode. Omitted for multi-AZ, where
+      # RDS places it.
+      AvailabilityZone: !If
+        - IsSingleAz
+        - !Select [0, !GetAZs ""]
+        - !Ref AWS::NoValue
+
+  RdsProxyRole:
+    Type: AWS::IAM::Role
+    Condition: EnableProxy
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: rds.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ReadMasterSecret
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref AuroraMasterSecret
+
+  # The RDS Proxy is not a nicety here, it is what makes VPC Lambda and
+  # Postgres compatible at all. Every warm execution environment holds its own
+  # pool, so a few hundred concurrent Lambdas open a few hundred times
+  # DATABASE_MAX_CONNS connections and exhaust the cluster. The proxy
+  # multiplexes them onto a small real pool.
+  RdsProxy:
+    Type: AWS::RDS::DBProxy
+    Condition: EnableProxy
+    Properties:
+      DBProxyName: !Sub rusuh-${Environment}
+      EngineFamily: POSTGRESQL
+      RoleArn: !GetAtt RdsProxyRole.Arn
+      Auth:
+        - AuthScheme: SECRETS
+          SecretArn: !Ref AuroraMasterSecret
+          IAMAuth: DISABLED
+      # Two subnets unconditionally: the proxy, like the RDS subnet group,
+      # requires more than one AZ. It is only created in full mode anyway.
+      VpcSubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      VpcSecurityGroupIds:
+        - !Ref RdsProxySecurityGroup
+      RequireTLS: true
+      # Longer than the longest Lambda timeout (60s, outbox-publisher) so a
+      # borrowed connection is not reclaimed mid-transaction.
+      IdleClientTimeout: 300
+
+  RdsProxyTargetGroup:
+    Type: AWS::RDS::DBProxyTargetGroup
+    Condition: EnableProxy
+    Properties:
+      DBProxyName: !Ref RdsProxy
+      TargetGroupName: default
+      DBClusterIdentifiers:
+        - !Ref AuroraCluster
+      ConnectionPoolConfigurationInfo:
+        # Leave headroom on the cluster for the migrator and for psql sessions
+        # during an incident.
+        MaxConnectionsPercent: 90
+        MaxIdleConnectionsPercent: 50
+        ConnectionBorrowTimeout: 120
+
+  # What the services actually receive: a ready-to-use connection string
+  # pointing at the PROXY, not at the cluster. Services never see the master
+  # secret, and the host can change without touching any service template.
+  AppDatabaseSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Sub rusuh-${Environment}/database-url
+      Description: Postgres connection string via the RDS Proxy. This is what services read.
+      # Host is the proxy when there is one and the cluster writer otherwise,
+      # so no service template changes between the two modes.
+      SecretString: !Sub
+        - '{"url":"postgres://${User}:${Pass}@${Host}:5432/${DatabaseName}?sslmode=require","host":"${Host}","port":"5432","dbname":"${DatabaseName}","username":"${User}"}'
+        - User: !Sub '{{resolve:secretsmanager:${AuroraMasterSecret}:SecretString:username}}'
+          Pass: !Sub '{{resolve:secretsmanager:${AuroraMasterSecret}:SecretString:password}}'
+          Host: !If
+            - EnableProxy
+            - !GetAtt RdsProxy.Endpoint
+            - !GetAtt AuroraCluster.Endpoint.Address
+
+  # ─────────────────────────────────────────────────────────────────────────
+  #  ELASTICACHE REDIS
+  # ─────────────────────────────────────────────────────────────────────────
+  RedisSubnetGroup:
+    Type: AWS::ElastiCache::SubnetGroup
+    Properties:
+      CacheSubnetGroupName: !Sub rusuh-${Environment}
+      Description: !Sub rusuh-${Environment} private subnets
+      # ElastiCache, unlike RDS, accepts a single-subnet group.
+      SubnetIds: !If
+        - IsSingleAz
+        - [!Ref PrivateSubnetA]
+        - [!Ref PrivateSubnetA, !Ref PrivateSubnetB]
+
+  # Single node in POC. Note what this costs architecturally: ADR-005 §11
+  # describes a leader-lease failover scenario that depends on async replica
+  # promotion, and with one node that scenario cannot be demonstrated at all.
+  RedisCluster:
+    Type: AWS::ElastiCache::CacheCluster
+    Properties:
+      ClusterName: !Sub rusuh-${Environment}
+      Engine: redis
+      EngineVersion: "7.1"
+      CacheNodeType: !Ref RedisNodeType
+      NumCacheNodes: 1
+      CacheSubnetGroupName: !Ref RedisSubnetGroup
+      VpcSecurityGroupIds:
+        - !Ref RedisSecurityGroup
+      PreferredAvailabilityZone: !If
+        - IsSingleAz
+        - !GetAtt PrivateSubnetA.AvailabilityZone
+        - !Ref AWS::NoValue
+      # No AUTH token and no TLS: the cluster is unreachable outside the VPC,
+      # and the Lua scripts in ADR-005 are latency-sensitive. Revisit for
+      # production, where in-transit encryption should be on.
+      AutoMinorVersionUpgrade: true
+
+  # ─────────────────────────────────────────────────────────────────────────
+  #  SES
+  # ─────────────────────────────────────────────────────────────────────────
+  # Without a configuration set a bouncing address is invisible, and SES
+  # throttles the whole account for poor reputation before anyone notices.
+  SesConfigurationSet:
+    Type: AWS::SES::ConfigurationSet
+    Properties:
+      Name: !Sub rusuh-${Environment}
+      ReputationOptions:
+        ReputationMetricsEnabled: true
+
+  # ─────────────────────────────────────────────────────────────────────────
+  #  SSM PARAMETERS
+  #
+  #  The same values as the Outputs below, published where a service stack can
+  #  resolve them ITSELF. A service declares
+  #
+  #    Type: AWS::SSM::Parameter::Value<List<AWS::EC2::Subnet::Id>>
+  #    Default: /rusuh/prod/vpc/private-subnet-ids
+  #
+  #  and CloudFormation reads it at deploy time. That removes the whole
+  #  read-outputs-and-pass-them-back dance from the pipeline: `sam deploy`
+  #  needs no --parameter-overrides for infrastructure at all.
+  #
+  #  Standard-tier parameters are free, so this costs nothing.
+  #
+  #  Outputs are kept as well: they are what a human reads, and what the
+  #  local deploy path in DEPLOY.md uses.
+  # ─────────────────────────────────────────────────────────────────────────
+
+  SsmPrivateSubnetIds:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /rusuh/${Environment}/vpc/private-subnet-ids
+      # StringList, because the consumer declares List<AWS::EC2::Subnet::Id>.
+      # One entry in single-AZ mode, which is still a valid list.
+      Type: StringList
+      Value: !If
+        - IsSingleAz
+        - !Ref PrivateSubnetA
+        - !Join [",", [!Ref PrivateSubnetA, !Ref PrivateSubnetB]]
+      Description: Subnets for Lambda VpcConfig
+
+  SsmAllPrivateSubnetIds:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /rusuh/${Environment}/vpc/all-private-subnet-ids
+      Type: StringList
+      Value: !Join [",", [!Ref PrivateSubnetA, !Ref PrivateSubnetB]]
+      Description: Both subnets, for anything that needs two AZs
+
+  SsmLambdaSecurityGroup:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /rusuh/${Environment}/vpc/lambda-security-group-ids
+      Type: StringList
+      Value: !Ref LambdaSecurityGroup
+      Description: Security group for Lambda VpcConfig
+
+  SsmVpcId:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /rusuh/${Environment}/vpc/id
+      Type: String
+      Value: !Ref Vpc
+
+  SsmDatabaseSecretArn:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /rusuh/${Environment}/db/secret-arn
+      Type: String
+      # The ARN, not the secret. Reading it still needs IAM.
+      Value: !Ref AppDatabaseSecret
+
+  SsmNikPepperSecretArn:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /rusuh/${Environment}/nik/pepper-secret-arn
+      Type: String
+      Value: !Ref NikPepperSecret
+
+  SsmNikPepperKmsKeyArn:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /rusuh/${Environment}/nik/pepper-kms-key-arn
+      Type: String
+      Value: !GetAtt NikPepperKey.Arn
+      Description: Required for kms:Decrypt alongside GetSecretValue
+
+  SsmJwtSecretArn:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /rusuh/${Environment}/auth/jwt-secret-arn
+      Type: String
+      Value: !Ref JwtSecret
+
+  SsmDukcapilApiKeySecretArn:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /rusuh/${Environment}/dukcapil/api-key-secret-arn
+      Type: String
+      Value: !Ref DukcapilApiKeySecret
+
+  SsmRedisAddr:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /rusuh/${Environment}/redis/addr
+      Type: String
+      Value: !Sub "${RedisCluster.RedisEndpoint.Address}:${RedisCluster.RedisEndpoint.Port}"
+
+  SsmSesConfigurationSet:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /rusuh/${Environment}/ses/configuration-set
+      Type: String
+      Value: !Ref SesConfigurationSet
+
+  SsmEmailFromAddress:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /rusuh/${Environment}/ses/from-address
+      Type: String
+      Value: !Ref EmailFromAddress
+
+Outputs:
+  PrivateSubnetIds:
+    Description: >
+      Pass to every service stack as VpcSubnetIds. One subnet in single-AZ
+      mode, which is what keeps Lambda ENIs and the migrator in the same zone
+      as Aurora and Redis.
+    Value: !If
+      - IsSingleAz
+      - !Ref PrivateSubnetA
+      - !Join [",", [!Ref PrivateSubnetA, !Ref PrivateSubnetB]]
+  DeploymentAz:
+    Description: The zone everything runs in when SingleAz is true
+    Value: !If
+      - IsSingleAz
+      - !GetAtt PrivateSubnetA.AvailabilityZone
+      - "multi-az"
+  AllPrivateSubnetIds:
+    Description: >
+      Both private subnets regardless of mode. Needed by anything that
+      requires two AZs even in a single-AZ deployment, such as the RDS Proxy.
+    Value: !Join [",", [!Ref PrivateSubnetA, !Ref PrivateSubnetB]]
+  LambdaSecurityGroupId:
+    Description: Pass to every service stack as SecurityGroupIds
+    Value: !Ref LambdaSecurityGroup
+  DatabaseSecretArn:
+    Description: RDS Proxy connection string. Pass as DatabaseSecretArn.
+    Value: !Ref AppDatabaseSecret
+  NikPepperSecretArn:
+    Value: !Ref NikPepperSecret
+  NikPepperKmsKeyArn:
+    Description: Required for kms:Decrypt. GetSecretValue alone cannot read a CMK-encrypted secret.
+    Value: !GetAtt NikPepperKey.Arn
+  JwtSecretArn:
+    Value: !Ref JwtSecret
+  DukcapilApiKeySecretArn:
+    Value: !Ref DukcapilApiKeySecret
+  RedisAddr:
+    Description: host:port. Pass as RedisAddr.
+    Value: !Sub "${RedisCluster.RedisEndpoint.Address}:${RedisCluster.RedisEndpoint.Port}"
+  SesConfigurationSetName:
+    Value: !Ref SesConfigurationSet
+  EmailFromAddress:
+    Value: !Ref EmailFromAddress
+  VpcId:
+    Value: !Ref Vpc
+  AuroraClusterEndpoint:
+    Description: >
+      Cluster writer endpoint. Reachable from a developer machine only when
+      DbPubliclyAccessible is true AND that machine is inside DbAllowedCidr.
+    Value: !GetAtt AuroraCluster.Endpoint.Address
+  AuroraPort:
+    Value: !GetAtt AuroraCluster.Endpoint.Port
+  DbAccessMode:
+    Description: How the database can be reached
+    Value: !If
+      - IsDbPublic
+      - !If
+        - HasDbCidr
+        - !Sub "PUBLIC endpoint, restricted to ${DbAllowedCidr} - POC only"
+        - "PUBLIC endpoint but NO allowlist entry: nothing outside the VPC can connect. Set DbAllowedCidr."
+      - "private: in-VPC only"
+  CostMode:
+    Description: Which cost profile this stack was deployed with
+    Value: !If
+      - IsCostOptimized
+      - "cost-optimised: Aurora pauses at 0 ACU, no RDS Proxy, 1-day backups"
+      - "full: 0.5 ACU floor, RDS Proxy, 7-day backups"

@@ -14,9 +14,10 @@ import (
 
 // Client calls the real Dukcapil HTTP API.
 type Client struct {
-	baseURL string
-	apiKey  string
-	http    *http.Client
+	baseURL      string
+	apiKey       string
+	extraHeaders map[string]string
+	http         *http.Client
 }
 
 // NewClient builds a Dukcapil client with a hard timeout.
@@ -24,11 +25,17 @@ type Client struct {
 // The timeout is not optional. Without it a hung government endpoint holds a
 // Lambda invocation until the platform kills it, and the circuit breaker never
 // sees a failure to record because nothing ever returns.
-func NewClient(baseURL, apiKey string, timeout time.Duration) portout.IDukcapilAdapter {
+// extraHeaders is sent on every request in addition to the two below, and may
+// be nil. It exists for whatever sits in front of Dukcapil in a given
+// environment - a mock server, an API gateway, a corporate proxy - each of
+// which authenticates the caller its own way. Those header names are not part
+// of the Dukcapil contract, so they do not get fields of their own here.
+func NewClient(baseURL, apiKey string, timeout time.Duration, extraHeaders map[string]string) portout.IDukcapilAdapter {
 	return &Client{
-		baseURL: baseURL,
-		apiKey:  apiKey,
-		http:    &http.Client{Timeout: timeout},
+		baseURL:      baseURL,
+		apiKey:       apiKey,
+		extraHeaders: extraHeaders,
+		http:         &http.Client{Timeout: timeout},
 	}
 }
 
@@ -58,6 +65,10 @@ func (c *Client) VerifyNIK(ctx context.Context, nik string) (portout.DukcapilRes
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/verify", bytes.NewReader(body))
 	if err != nil {
 		return portout.DukcapilResult{}, fmt.Errorf("dukcapil: build request: %w", err)
+	}
+	// Extras first: the two below are the contract and must win a collision.
+	for name, value := range c.extraHeaders {
+		req.Header.Set(name, value)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Api-Key", c.apiKey)

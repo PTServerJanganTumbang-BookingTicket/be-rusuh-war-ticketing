@@ -47,11 +47,18 @@ type Redis struct {
 
 // Dukcapil holds the upstream settings from ADR-005 §8.
 type Dukcapil struct {
-	// Mode is "live" or "stub". Defaults to "live" so a misconfigured
-	// deployment fails rather than silently verifying every NIK it is given.
-	Mode             string
-	BaseURL          string
-	APIKey           string
+	// Mode is "live" or "stub". Defaults to "live" when the variable is absent
+	// entirely, so a misconfigured deployment fails rather than silently
+	// verifying every NIK it is given. The deployed value comes from the
+	// DukcapilMode stack parameter, which the POC defaults to "stub".
+	Mode    string
+	BaseURL string
+	APIKey  string
+	// ExtraHeaders are sent on every Dukcapil request alongside X-Api-Key, and
+	// may be nil. Read from DUKCAPIL_EXTRA_HEADERS as a JSON object. For
+	// gateways in front of Dukcapil that authenticate the caller their own way
+	// - an Apidog mock server wants its own apidogToken header, for instance.
+	ExtraHeaders     map[string]string
 	Timeout          time.Duration
 	RateLimitRPS     float64
 	BurstCapacity    float64

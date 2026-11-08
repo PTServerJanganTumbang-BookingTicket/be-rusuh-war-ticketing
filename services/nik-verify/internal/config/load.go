@@ -1,8 +1,10 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/envutil"
@@ -11,6 +13,11 @@ import (
 // Load reads configuration from environment variables and returns a validated
 // Config. Call once at startup, after dotenv.LoadEnv().
 func Load() (Config, error) {
+	extraHeaders, err := parseExtraHeaders(os.Getenv("DUKCAPIL_EXTRA_HEADERS"))
+	if err != nil {
+		return Config{}, err
+	}
+
 	cfg := Config{
 		App: App{
 			Env:       envutil.Env("APP_ENV", "local"),
@@ -40,6 +47,7 @@ func Load() (Config, error) {
 			BurstCapacity:    envutil.EnvFloat("DUKCAPIL_BURST_CAPACITY", 80),
 			BreakerThreshold: envutil.EnvInt("DUKCAPIL_BREAKER_FAILURE_THRESHOLD", 5),
 			BreakerOpenFor:   envutil.EnvDuration("DUKCAPIL_BREAKER_OPEN_SECONDS", 30*time.Second),
+			ExtraHeaders:     extraHeaders,
 		},
 	}
 
@@ -78,4 +86,30 @@ func (c Config) validate() error {
 		return fmt.Errorf("DUKCAPIL_RATE_LIMIT_RPS must be positive")
 	}
 	return nil
+}
+
+// parseExtraHeaders reads a JSON object of header name to value. An empty or
+// absent value yields nil, which sends no extra headers.
+//
+// A malformed value is an error rather than a silent nil: the headers it
+// carries are usually what authenticates the caller to whatever fronts
+// Dukcapil, so dropping them quietly turns a typo into every verification
+// failing with 401 for no visible reason.
+func parseExtraHeaders(raw string) (map[string]string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	var headers map[string]string
+	if err := json.Unmarshal([]byte(raw), &headers); err != nil {
+		return nil, fmt.Errorf(`DUKCAPIL_EXTRA_HEADERS must be a JSON object of string to string, e.g. {"apidogToken":"..."}: %w`, err)
+	}
+	for name := range headers {
+		if strings.TrimSpace(name) == "" {
+			return nil, fmt.Errorf("DUKCAPIL_EXTRA_HEADERS contains an empty header name")
+		}
+	}
+	if len(headers) == 0 {
+		return nil, nil
+	}
+	return headers, nil
 }

@@ -3,26 +3,40 @@ Transform: AWS::Serverless-2016-10-31
 Description: rusuh-user — native Lambda handler (Option B) behind API Gateway HTTP API
 
 Parameters:
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues: [dev, prod]
+    Description: >
+      Suffixes every physical resource name. Without it the hardcoded names
+      below collide and two environments cannot share an account and region.
+
   VpcSubnetIds:
-    Type: List<AWS::EC2::Subnet::Id>
+    Type: AWS::SSM::Parameter::Value<List<AWS::EC2::Subnet::Id>>
+    Default: /rusuh/prod/vpc/private-subnet-ids
     Description: Private subnets with reachability to Aurora, Redis and nik-verify
   SecurityGroupIds:
-    Type: List<AWS::EC2::SecurityGroup::Id>
+    Type: AWS::SSM::Parameter::Value<List<AWS::EC2::SecurityGroup::Id>>
+    Default: /rusuh/prod/vpc/lambda-security-group-ids
     Description: Security group permitting Aurora (5432) and Redis (6379) egress
   DatabaseSecretArn:
-    Type: String
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/db/secret-arn
     Description: Secrets Manager ARN holding the RDS Proxy connection string
   JwtSecretArn:
-    Type: String
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/auth/jwt-secret-arn
     Description: >
       Secrets Manager ARN holding the access-token signing secret. Shared with
       every service that verifies these tokens. This is NOT the NIK pepper and
       must be a different secret — unlike the pepper, this one is rotatable.
   NikVerifyBaseUrl:
-    Type: String
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/nik-verify/base-url
     Description: Base URL of the nik-verify service
   RedisAddr:
-    Type: String
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/redis/addr
     Description: ElastiCache primary endpoint, host:port
   CookieDomain:
     Type: String
@@ -43,7 +57,7 @@ Resources:
     Metadata:
       BuildMethod: makefile
     Properties:
-      FunctionName: rusuh-user
+      FunctionName: !Sub rusuh-${Environment}-user
       Handler: bootstrap
       CodeUri: .
       VpcConfig:
@@ -54,6 +68,24 @@ Resources:
           APP_ENV: production
           NIK_VERIFY_BASE_URL: !Ref NikVerifyBaseUrl
           NIK_VERIFY_TIMEOUT_MS: "5000"
+          # ── Secrets, injected by CloudFormation at deploy time ──────────
+          # The Go config loaders read these as PLAIN environment variables
+          # (envutil.Env("DATABASE_URL") and friends) and validate() refuses to
+          # start without them, so granting IAM to read the secret is not
+          # enough - the value has to be here.
+          #
+          # Referenced by secret NAME, not by the ARN parameter above. The name
+          # is deterministic from Environment, so !Sub substitutes a plain
+          # parameter and the dynamic reference never depends on an
+          # SSM-resolved value. The ARN parameters are still used, for the IAM
+          # policies below.
+          #
+          # Resolved only on create/update: rotating a secret does NOT reach a
+          # running function until its stack is updated again.
+          DATABASE_URL: !Sub '{{resolve:secretsmanager:rusuh-${Environment}/database-url:SecretString:url}}'
+          # Bare string, no key suffix. Unlike the pepper this one IS
+          # rotatable - a rotation needs a stack update to take effect.
+          JWT_SECRET: !Sub '{{resolve:secretsmanager:rusuh-${Environment}/jwt-signing:SecretString}}'
           REDIS_ADDR: !Ref RedisAddr
           COOKIE_DOMAIN: !Ref CookieDomain
           SECURE_COOKIES: "true"
@@ -131,6 +163,15 @@ Resources:
           Properties:
             Path: /sys/ping
             Method: GET
+
+  # Declared explicitly because SAM does not create it: Lambda would, on first
+  # invoke, with retention set to NEVER EXPIRE. For a POC that is a slow leak
+  # of storage cost with no upside.
+  UserLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/rusuh-${Environment}-user
+      RetentionInDays: 14
 
 Outputs:
   ApiUrl:
