@@ -275,6 +275,44 @@ Resources:
                   - kms:ScheduleKeyDeletion
                   - kms:ListAliases
                 Resource: "*"
+
+              # Creating a key is not the same as being allowed to USE it, and
+              # the two live in different statements for a reason: the actions
+              # above manage key metadata, these encrypt and decrypt data.
+              #
+              # Needed because NikPepperSecret sets KmsKeyId to the pepper's
+              # CMK. On CreateSecret, Secrets Manager calls KMS *on behalf of
+              # this role*, so the role must hold GenerateDataKey and Decrypt
+              # on that key or the create fails with:
+              #
+              #   "Access to KMS is not allowed" (AccessDenied)
+              #
+              # which names neither the key nor the missing action.
+              #
+              # Scoped by ViaService rather than by key ARN, because the key is
+              # created by the same stack that uses it - its ARN does not exist
+              # when this policy is written. ViaService means these permissions
+              # only apply when KMS is called through Secrets Manager, not when
+              # this role calls KMS directly, so the role still cannot read an
+              # arbitrary CMK in the account.
+              #
+              # StringLike with a wildcard region, NOT StringEquals with
+              # ${AWS::Region}: this bootstrap stack may live in a different
+              # region from the one being deployed to.
+              - Sid: UseCustomerKeysThroughSecretsManager
+                Effect: Allow
+                Action:
+                  - kms:GenerateDataKey
+                  - kms:GenerateDataKeyWithoutPlaintext
+                  - kms:Encrypt
+                  - kms:Decrypt
+                  - kms:ReEncryptFrom
+                  - kms:ReEncryptTo
+                  - kms:CreateGrant
+                Resource: "*"
+                Condition:
+                  StringLike:
+                    kms:ViaService: secretsmanager.*.amazonaws.com
               # GetSecretValue is required because the service templates inject
               # DATABASE_URL, JWT_SECRET, DUKCAPIL_API_KEY and NIK_PEPPER via
               # {{resolve:secretsmanager:...}}, and CloudFormation resolves
