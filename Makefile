@@ -21,7 +21,7 @@ COVERAGE_MIN ?= 80
 REDIS_ADDR   ?= 127.0.0.1:$(REDIS_PORT)
 DATABASE_URL ?= postgres://rusuh:rusuh-local-only@127.0.0.1:$(POSTGRES_PORT)/rusuh?sslmode=disable
 
-.PHONY: build test tidy isolation-check lint booking-run booking-build-lambda \
+.PHONY: build test tidy isolation-check lint booking-run booking-build-lambda test-module \
         fmt-check vet spec step test-short verify-fast verify deps-up deps-down coverage
 
 # Workspace-wide build/test. The repo root is NOT a module (it only holds
@@ -90,6 +90,15 @@ step: $(SPECCHECK)
 	  (cd $$d && GODOG_TAGS='@step-$(STEP) && ~@draft' go test -run '^TestFeatures$$' -count=1 .) || exit 1; \
 	done
 
+# Red -> green loop for new work (no Gherkin): all Go tests of one module, integration tests included.
+# usage: make test-module MODULE=services/admission-ctl [RUN=TestName]
+test-module: export REDIS_ADDR := $(REDIS_ADDR)
+test-module: export DATABASE_URL := $(DATABASE_URL)
+test-module:
+	@test -n "$(MODULE)" || { echo "usage: make test-module MODULE=services/<name> [RUN=TestName]"; exit 2; }
+	@echo "==> go test ($(MODULE))"
+	@cd $(MODULE) && go test -count=1 $(if $(RUN),-run '$(RUN)') ./...
+
 # Unit level only: integration tests and @integration features skip under -short.
 test-short:
 	@for m in $(MODULES); do echo "==> go test -short ($$m)"; (cd $$m && go test -short -count=1 ./...) || exit 1; done
@@ -110,14 +119,14 @@ coverage:
 	  (cd $$m && go test -count=1 -coverpkg=./... -coverprofile=$(CURDIR)/coverage/$$n.out ./...) || exit 1; done
 
 # End of each build step and CI: everything, on real Redis cluster + Postgres.
-# The coverage gate excludes cmd/ and mocks, like sonar.coverage.exclusions.
+# The coverage gate excludes cmd/, mocks and pgtest (test-only helper), like sonar.coverage.exclusions.
 verify: export REDIS_ADDR := $(REDIS_ADDR)
 verify: export DATABASE_URL := $(DATABASE_URL)
 verify: verify-fast deps-up isolation-check $(GOVULNCHECK)
 	@mkdir -p coverage
 	@for m in $(MODULES); do n=$$(echo $$m | tr / -); echo "==> go test -race ($$m)"; \
 	  (cd $$m && go test -race -count=1 -coverpkg=./... -coverprofile=$(CURDIR)/coverage/$$n.out ./...) || exit 1; \
-	  grep -vE '/(cmd|_mock|mocks?)/' $(CURDIR)/coverage/$$n.out > $(CURDIR)/coverage/$$n.gate.out; \
+	  grep -vE '/(cmd|_mock|mocks?|pgtest)/' $(CURDIR)/coverage/$$n.out > $(CURDIR)/coverage/$$n.gate.out; \
 	  pct=$$(go tool cover -func=$(CURDIR)/coverage/$$n.gate.out | awk '/^total:/{sub("%","",$$3); print $$3}'); \
 	  echo "    coverage $$m: $$pct%"; \
 	  awk -v p="$$pct" -v min=$(COVERAGE_MIN) 'BEGIN{exit (p+0 < min)}' || { echo "coverage below $(COVERAGE_MIN)% in $$m"; exit 1; }; \
