@@ -149,6 +149,19 @@ test recipient the same way, or request production access (Console → SES →
 Account dashboard → Request production access). Approval is not instant, so
 ask well before a demo.
 
+> **POC decision: stay in the sandbox.** Production access is deliberately
+> not requested. The consequence to plan around is that **every recipient must
+> be verified individually**, in the deploy region:
+>
+> ```bash
+> aws sesv2 create-email-identity --email-identity tester@example.com --region "$REGION"
+> ```
+>
+> Each address needs a click on the link AWS sends to it, within 24 hours.
+> So a demo cannot involve anyone typing their own email address - the tester
+> list has to be known and verified in advance. If that changes, requesting
+> production access is the only fix, and it needs lead time.
+
 The **mailbox simulator** is exempt from the recipient restriction and does not
 touch your reputation, which makes it the right target for pipeline testing:
 
@@ -175,13 +188,13 @@ touch your reputation, which makes it the right target for pipeline testing:
 |---|---|---|
 | `AWS_REGION` | `ap-southeast-1` | every job |
 | `EMAIL_FROM_ADDRESS` | `no-reply@rusuhtiket.com` | foundation, notification |
-| `APP_BASE_URL` | `https://rusuhtiket.com` | notification — the **frontend** URL, not the API |
+| `APP_BASE_URL` | `https://ticket.sjt.com` | notification — the **frontend** URL, not the API. See below. |
 | `DUKCAPIL_MODE` | unset (= `stub`) or `live` | nik-verify — see *Dukcapil: live, mock or stub* |
 | `DUKCAPIL_BASE_URL` | `https://mock.apidog.com/m1/1409481-1420084-default` | nik-verify — required when `DUKCAPIL_MODE=live`. Base URL only: the client appends `/verify`. |
 | `DUKCAPIL_EXTRA_HEADER_NAME` | `apidogToken` | nik-verify — one extra request header. Unused against a real Dukcapil endpoint; **required** against an Apidog mock, which rejects untokened requests. |
 | `COOKIE_DOMAIN` | `.rusuhtiket.com` or empty | user |
 | `SINGLE_AZ` | `true` (default) | foundation — `false` for multi-AZ |
-| `DB_ALLOWED_CIDR` | `203.0.113.0/24` | foundation — **empty means nothing can connect** |
+| `DB_ALLOWED_CIDR` | `0.0.0.0/0` | foundation — **empty means nothing can connect**. This POC uses `0.0.0.0/0`; see *What this costs you*. |
 | `DB_PUBLICLY_ACCESSIBLE` | `true` (default) | foundation — `false` returns Aurora to private subnets |
 | `ENABLE_NAT_GATEWAY` | `true` (default) | foundation |
 | `SONAR_HOST_URL` | optional | sonarqube |
@@ -219,6 +232,31 @@ Deploying from `cicd` requires the bootstrap role to allow it:
 `AllowedBranch=cicd` in step 1. The branch gate is the role's trust policy,
 not the workflow, so getting this wrong fails at assume-role rather than
 deploying something unintended.
+
+**3c. APP_BASE_URL when there is no frontend yet.** It has no template
+default, so `notification` will not deploy without it - but nothing validates
+that it resolves. It is concatenated into email bodies and never fetched:
+
+```
+{APP_BASE_URL}{path}?token={token}
+```
+
+So any `https://` URL works; set what you expect the frontend to become. Two
+things it must *not* be:
+
+- **An API Gateway `execute-api` URL.** The magic link points at the app, not
+  the API - the API reads the token from a cookie that the app route sets, so
+  a link straight to the API returns 400. Those URLs also do not exist until
+  after the deploy that needs this value.
+- **Anything starting `http://`.** `notification` runs with
+  `APP_ENV=production` and refuses to start: *APP_BASE_URL must be https
+  outside local: emailed links carry login tokens*. That fails at the first
+  invocation, not at deploy.
+
+With a placeholder the email still arrives and reads correctly; the link is
+just not clickable. The token is visible in it, so a tester can copy it and
+drive the endpoint directly. Changing it later is one variable and a re-run,
+with no code change.
 
 **4. GitHub Environments.** Create `prod` (and `dev` if wanted) under
 Settings → Environments. Add required reviewers on `prod` so a release pauses
@@ -632,6 +670,7 @@ address, then redeploy the foundation:
 ```
 DB_ALLOWED_CIDR = 203.0.113.0/24      # office
 DB_ALLOWED_CIDR = 203.0.113.7/32      # one machine
+DB_ALLOWED_CIDR = 0.0.0.0/0           # anywhere - this POC; read the warning below
 ```
 
 Get the connection details:
@@ -676,13 +715,36 @@ of build logs — so the commands above need your own credentials.
 Putting PostgreSQL on the public internet is a real exposure, and worth
 stating plainly once: port 5432 is scanned continuously, and this cluster
 holds `nik_hmac` and payment rows. The only things between an attacker and the
-data are the generated password and that CIDR allowlist. Two rules follow:
+data are the generated password and that CIDR allowlist.
 
-- **Never set `DB_ALLOWED_CIDR` to `0.0.0.0/0`.** That turns the allowlist off
-  and leaves only the password.
+**This POC runs with `DB_ALLOWED_CIDR = 0.0.0.0/0`**, deliberately: the team
+works from changing home and mobile addresses, an allowlist nobody can
+maintain is an allowlist that blocks the team instead of attackers, and a
+database nobody can reach is not useful. That removes the second control and
+leaves only the password.
+
+The password is what makes this survivable. It is generated by the stack, over
+30 characters, and lives in Secrets Manager - so:
+
+- **Do not replace it with something memorable**, and do not create a second
+  database login with a weak password. Either undoes the one control left.
+- **Do not load real NIKs or other real personal data while the endpoint is
+  open.** This is the part that is not recoverable. A scanned POC full of
+  synthetic rows is an embarrassment; a scanned POC full of real identity
+  numbers is a breach, with notification duties attached. Keep the data
+  synthetic until the endpoint is closed.
 - **Set `DB_PUBLICLY_ACCESSIBLE=false` before this is anything but a POC.** The
   foundation then returns Aurora to the private subnets with no code changes,
   and access goes through a bastion with SSM port forwarding instead.
+
+The `DbAccessMode` stack output says which state you are in, and the security
+group rule's own description says it too, so neither is a surprise to someone
+auditing later:
+
+```
+PUBLIC endpoint OPEN TO THE ENTIRE INTERNET (0.0.0.0/0) - POC only.
+Synthetic data only; the master password is the only control.
+```
 
 ---
 
