@@ -19,6 +19,35 @@ type Grant struct {
 type Booking struct {
 	ID         string
 	GrantToken string
+	GrantedAt  time.Time
+	ExpiresAt  time.Time
+	Status     string // GRANTED unless the row already moved on (lapsed, selecting, ...)
+}
+
+// Lapsed is a booking the sweep just moved GRANTED → LAPSED: the customer did not start choosing seats in time.
+type Lapsed struct {
+	BookingID  string
+	EventID    string
+	QueueToken string
+	GrantToken string
+}
+
+// Event is one sale the controller ticks.
+type Event struct {
+	ID         string
+	Categories []string // stock categories: the Lua sums stock:{ev}:<category>
+}
+
+// TokenInfo is what join stored in token:<queue_token> that a grant needs.
+type TokenInfo struct {
+	AccountID  string // logged-in customer
+	DeviceHash string // guest
+}
+
+// EventView is the sale state admission-ctl reads for the news.
+type EventView struct {
+	State        string
+	FullBookedAt int64 // epoch seconds, 0 when not fully booked
 }
 
 // Admission is who is inside an event right now (ADR-006 §3.2).

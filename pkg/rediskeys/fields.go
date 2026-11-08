@@ -13,3 +13,13 @@ const (
 	FieldName         = "name"           // event name, seeded by sale-ops
 	FieldSaleStartsAt = "sale_starts_at" // RFC 3339, seeded by sale-ops
 )
+
+// Field names of the token:<queue_token> hash (join writes it, admission-ctl adds the grant).
+const (
+	FieldTicketNo         = "ticket_no"
+	FieldAccountID        = "account_id"  // logged-in customer
+	FieldDeviceHash       = "device_hash" // guest
+	FieldGrantToken       = "grant_token"
+	FieldBookingID        = "booking_id"
+	FieldBookingExpiresAt = "booking_expires_at" // RFC 3339, UTC
+)

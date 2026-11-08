@@ -185,7 +185,7 @@ func sharedDB(ctx context.Context) (*testDB, error) {
 
 // ---------------------------------------------------------------- world
 
-type world struct {
+type storeWorld struct {
 	ctx   context.Context
 	db    *testDB
 	store *postgres.Bookings
@@ -200,7 +200,9 @@ type world struct {
 }
 
 func initScenario(sc *godog.ScenarioContext) {
-	w := &world{ctx: context.Background()}
+	w := &storeWorld{ctx: context.Background()}
+
+	registerTickSteps(sc)
 
 	sc.Step(`^a Postgres database with all migrations applied$`, w.sharedDatabase)
 	sc.Step(`^event "([^"]*)" exists$`, w.eventExists)
@@ -290,7 +292,7 @@ func initScenario(sc *godog.ScenarioContext) {
 	sc.Step(`^no step fails$`, func() error { return w.migrateErr })
 }
 
-func (w *world) sharedDatabase() error {
+func (w *storeWorld) sharedDatabase() error {
 	db, err := sharedDB(w.ctx)
 	if err != nil {
 		return err
@@ -303,7 +305,7 @@ func (w *world) sharedDatabase() error {
 	return nil
 }
 
-func (w *world) emptyDatabase() error {
+func (w *storeWorld) emptyDatabase() error {
 	db, err := newDatabase(w.ctx, false)
 	if err != nil {
 		return err
@@ -312,14 +314,14 @@ func (w *world) emptyDatabase() error {
 	return nil
 }
 
-func (w *world) eventExists(id string) error {
+func (w *storeWorld) eventExists(id string) error {
 	_, err := w.db.admin.Exec(w.ctx,
 		`INSERT INTO events (id, name, event_date) VALUES ($1, $1, '2026-12-01') ON CONFLICT DO NOTHING`, id)
 	return err
 }
 
 // seedBooking inserts a row directly, with the extra columns a non-GRANTED status needs.
-func (w *world) seedBooking(event, status, queueToken, grantToken string) error {
+func (w *storeWorld) seedBooking(event, status, queueToken, grantToken string) error {
 	if err := w.eventExists(event); err != nil {
 		return err
 	}
@@ -330,7 +332,7 @@ VALUES ($1, $2, $3, $4, $5, 'a@example.com', now(), now() + interval '5 minutes'
 	return err
 }
 
-func (w *world) storeInserts(ev, qt, bookingID, grantToken string) error {
+func (w *storeWorld) storeInserts(ev, qt, bookingID, grantToken string) error {
 	now := time.Date(2026, 11, 10, 19, 0, 0, 0, time.UTC)
 	b, err := w.store.InsertGranted(w.ctx, domain.Grant{
 		EventID: ev, QueueToken: qt, BookingID: bookingID, GrantToken: grantToken,
@@ -341,7 +343,7 @@ func (w *world) storeInserts(ev, qt, bookingID, grantToken string) error {
 	return nil
 }
 
-func (w *world) rowsFor(n int, ev, qt string) error {
+func (w *storeWorld) rowsFor(n int, ev, qt string) error {
 	var got int
 	err := w.db.admin.QueryRow(w.ctx, `SELECT count(*) FROM bookings WHERE event_id=$1 AND queue_token=$2`, ev, qt).Scan(&got)
 	if err != nil {
@@ -353,7 +355,7 @@ func (w *world) rowsFor(n int, ev, qt string) error {
 	return nil
 }
 
-func (w *world) noErrors() error {
+func (w *storeWorld) noErrors() error {
 	for i, err := range w.errs {
 		if err != nil {
 			return fmt.Errorf("insert %d failed: %w", i+1, err)
@@ -362,7 +364,7 @@ func (w *world) noErrors() error {
 	return nil
 }
 
-func (w *world) bothReturn(id, grantToken string) error {
+func (w *storeWorld) bothReturn(id, grantToken string) error {
 	if err := w.noErrors(); err != nil {
 		return err
 	}
@@ -374,7 +376,7 @@ func (w *world) bothReturn(id, grantToken string) error {
 	return nil
 }
 
-func (w *world) grantTokenViolation() error {
+func (w *storeWorld) grantTokenViolation() error {
 	last := w.errs[len(w.errs)-1]
 	var pg *pgconn.PgError
 	if !errors.As(last, &pg) || pg.Code != "23505" || pg.ConstraintName != "bookings_grant_token_key" {
@@ -383,7 +385,7 @@ func (w *world) grantTokenViolation() error {
 	return nil
 }
 
-func (w *world) bigTable(others, total, active int) error {
+func (w *storeWorld) bigTable(others, total, active int) error {
 	if err := w.eventExists("E1"); err != nil {
 		return err
 	}
@@ -402,7 +404,7 @@ FROM generate_series(1, $3) AS i`, others, active, total)
 	return err
 }
 
-func (w *world) explain(ev string) error {
+func (w *storeWorld) explain(ev string) error {
 	// Both plans must use the index: the custom plan of a first call, and the generic plan
 	// pgx's statement cache switches to after a few executions in production.
 	conn, err := w.db.admin.Acquire(w.ctx)

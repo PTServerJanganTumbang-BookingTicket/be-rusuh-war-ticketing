@@ -1,4 +1,4 @@
-@draft @step-3 @admission-ctl
+@step-3 @admission-ctl
 Feature: Being let in from the queue
   As a customer in the queue, I am let in when there is room inside and enough tickets left, in ticket order,
   within half a second of a place freeing up.
@@ -13,6 +13,7 @@ Feature: Being let in from the queue
     Given event "E1" is "OPEN" with MAX_CONCURRENT_SLOTS 100
     And total stock is 9000
     And the booking TTL is 5 minutes
+    And GRANT_TOKEN_TTL_SECONDS is 1080
     And the clock is frozen at "2026-11-10T19:00:00Z"
 
   # ------------------------------------------------------------ I get in
@@ -22,13 +23,36 @@ Feature: Being let in from the queue
     Given customers "c1", "c2", "c3" joined with ticket numbers 1, 2, 3 and issued is 3
     When one tick runs
     Then bookings has exactly 3 rows for "E1" with status "GRANTED"
-    And each row has the customer's account_id, queue_token and ticket_no
+    And each row has the customer's account_id and queue_token
     And each row has a unique grant_token
     And each row has booking_expires_at "2026-11-10T19:05:00Z"
-    And grant:<grant_token> exists for each row with a TTL of 300 seconds
+    And grant:<grant_token> exists for each row with a TTL of 1080 seconds
     And token:<queue_token> of each customer holds that row's grant_token, booking_id and booking_expires_at
     And by_ticket no longer holds "c1", "c2", "c3"
     And now_serving is 3
+
+  @integration @redis-cluster @adr-006-8-9
+  Scenario Outline: My grant carries what booking needs to check that it is me
+    # Booking and payment read these fields through pkg/grantauth. A guest has device_hash and no account_id,
+    # a logged-in customer the other way round (ADR-006 §8.9: same device, no rebind). Absent fields are not written.
+    Given customer "c1" is a <kind> with ticket number 1 and issued is 1
+    When one tick runs
+    Then grant:<grant_token> holds exactly the fields <fields>
+    And event_id is "E1", queue_token is c1's queue_token and booking_id is the GRANTED row's id
+    And account_id and device_hash are copied from token:<queue_token>, never supplied by the client
+
+    Examples:
+      | kind               | fields                                                 |
+      | guest              | event_id, booking_id, queue_token, device_hash         |
+      | logged-in customer | event_id, booking_id, queue_token, account_id          |
+
+  @integration @redis-cluster @adr-005-6
+  Scenario: My grant lasts long enough to finish paying
+    # booking 300 s + payment 600 s + grace 30 s = 930 s is the longest trip; the grant hash must outlive it (ADR-005 §6).
+    Given customer "c1" was granted at "2026-11-10T19:00:00Z"
+    When the clock reads "2026-11-10T19:15:00Z"
+    Then grant:<grant_token> still exists
+    And the TTL of grant:<grant_token> was set from GRANT_TOKEN_TTL_SECONDS, not from the booking deadline
 
   @unit @rule-5
   Scenario: My booking exists before anyone is told it is my turn
@@ -41,6 +65,7 @@ Feature: Being let in from the queue
       | SNAPSHOT  | ZCOUNT by_ticket -inf <snapshot now_serving> |
       | COUNT     | SELECT open, browsing FROM bookings          |
       | ADVANCE   | EVALSHA advance_now_serving                  |
+      | FINISH    | HMGET token:<queue_token> account_id device_hash |
       | FINISH    | INSERT bookings ... ON CONFLICT DO NOTHING   |
       | FINISH    | HSET grant:<token>                           |
       | FINISH    | HSET token:<queue_token> (if it exists)      |

@@ -1,4 +1,4 @@
-@draft @step-8 @admission-ctl @FR-10
+@step-8 @admission-ctl @FR-10
 Feature: If I don't use my turn within 5 minutes, I lose it
   As a customer whose turn came, I have 5 minutes to start choosing seats. If I don't, my booking moves
   GRANTED → LAPSED for good (no second chance) and the next tick gives my place to the next person.
@@ -45,8 +45,9 @@ Feature: If I don't use my turn within 5 minutes, I lose it
     Given the controller will crash right after the UPDATE that lapses "B1", before it deletes any Redis key
     When the clock reaches "2026-11-10T19:05:00Z" and SWEEP runs and the controller dies
     Then "B1" has status "LAPSED"
-    And grant:<G1> is gone once its TTL ends, at the deadline
-    # No deadline list to repair: the row is the only record, and the grant hash expires by itself.
+    And every use of G1 is rejected, because the booking is "LAPSED"
+    # No deadline list to repair: the row is the only record. The grant hash may live on until its
+    # 1080 s TTL ends (it must outlive payment), so rejection comes from the status check, not from the hash.
 
   # ------------------------------------------------------------ I did show up
 
@@ -86,13 +87,12 @@ Feature: If I don't use my turn within 5 minutes, I lose it
   # ------------------------------------------------------------ open
 
   @integration @redis-cluster @open-question
-  Scenario: After my turn lapses I cannot rejoin at the back of the line
-    # OPEN: 05 §4 deletes acct:{E1}:<account> and token:<uuid> on lapse, and join treats a
-    # missing acct as a fresh join, so the customer would get a new ticket at the back.
-    # That conflicts with "LAPSED is final, no second chance".
-    # Proposal: on lapse, DEL only grant:<token>. Keep acct and token until the sale-window
-    # TTL, and let join answer rejoined: true with state LAPSED.
+  Scenario: After my turn lapses my place in line is not given away
+    # OPEN: 05 §4 deleted acct:{E1}:<account> and token:<uuid> on lapse, and join treats a missing acct as a fresh
+    # join, so the customer would get a new ticket at the back. That conflicts with "LAPSED is final".
+    # Proposal (built): on lapse, DEL only grant:<token>. Keep acct and token until the sale-window TTL.
+    # Join then answers rejoined: true with state LAPSED (that side is covered in services/queue join_rejoin.feature).
     Given "B1" lapsed for account "acc-1"
-    When account "acc-1" joins the queue for "E1" again
-    Then join responds rejoined true with state "LAPSED"
+    Then grant:<G1> is gone
+    And acct:{E1}:acc-1 and token:<c1> still exist
     And issued is unchanged

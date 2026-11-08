@@ -1,4 +1,4 @@
-@draft @step-3 @admission-ctl @rule-2
+@step-3 @admission-ctl @rule-2
 Feature: Everyone waiting hears the same news
   As a waiting customer, I hear every move of the queue and every change of the sale (fully booked, seats back,
   closed) through the stream. I work out my own turn from nowServing; nobody sends me a personal "grant".

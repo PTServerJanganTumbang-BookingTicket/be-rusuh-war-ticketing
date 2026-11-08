@@ -43,7 +43,7 @@ flowchart LR
 | `stock:{ev}:<category>` | `Event.Stock` | counter | none | booking `hold_booking.lua`, admission-ctl sweeps | advance Lua | Seats left per category | planned |
 | `acct:{ev}:<account_id>` | `Event.Acct` | string → `queue_token` | `SALE_WINDOW_SECONDS` | join (`SET NX`; compare-and-set to replace a stale pointer) | join, `/me` | BR-07: the account's one place for this event | built |
 | `token:<queue_token>` | `Token` | hash: `ticket_no`, `event_id`, `joined_at`, `account_id`?, `device_hash`?, `grant_token`?, `booking_id`?, `booking_expires_at`? | `SALE_WINDOW_SECONDS` | join; admission-ctl adds the `grant_token`, `booking_id`, `booking_expires_at` fields at GRANT (only if the hash exists) | join (rejoin, FR-05 grant wait), `/me`, stream, admission-ctl | The engagement. `queue_token` = `qt_` + ULID | built (grant fields planned) |
-| `grant:<grant_token>` | `Grant` | hash | from the booking row's deadline | admission-ctl | `/me`, booking (`pkg/grantauth`) | A live grant (`X-Grant-Token`) | planned |
+| `grant:<grant_token>` | `Grant` | hash | `GRANT_TOKEN_TTL_SECONDS` (1080 s from `granted_at`: booking 300 + payment 600 + grace + margin; must outlive the payment) | admission-ctl | `/me`, booking (`pkg/grantauth`) | A live grant (`X-Grant-Token`). Fields: `event_id`, `booking_id`, `queue_token`, `account_id` (logged-in only), `device_hash` (guest only); absent fields are not written | planned |
 | `rl:join:<ip>` | `JoinRateLimit` | hash `{tokens, ts}` (token bucket, `pkg/ratelimit`) | refill time (300 s) | join | — | 20 joins / 5 min per IP. IP from API Gateway, never `X-Forwarded-For` | built |
 | `rl:joinacct:<account_id>` | `JoinAcctLimit` | hash `{tokens, ts}` | refill time (60 s) | join | — | 3 joins / min per account | built |
 | `rl:sse:<ip>` | `SSERateLimit` | token bucket | — | stream | — | Stream connect limit (5 / s) | built |
@@ -63,6 +63,19 @@ Field names are constants in `pkg/rediskeys` (`FieldState`, `FieldIssued`, `Fiel
 | `full_booked_at` | epoch s | advance Lua (first time stock hits 0; removed when seats return) | join (409 `FULL_BOOKED`, as ISO 8601), admission-ctl (`CLOSED` at +930 s) | Since when the sale is fully booked |
 | `rate_per_min` | int | admission-ctl | stream, `/serving`, `/me` | Ticket numbers `now_serving` passes per minute |
 | `name`, `sale_starts_at` | string | sale-ops seed | join | Echoed in the join response and the 409 `SALE_NOT_OPEN` |
+
+### Fields of `token:<queue_token>`
+
+Constants: `FieldTicketNo`, `FieldAccountID`, `FieldDeviceHash`, `FieldGrantToken`, `FieldBookingID`, `FieldBookingExpiresAt`.
+Join writes the first three (a logged-in customer has `account_id`, a guest has `device_hash`); admission-ctl adds the
+grant fields, and only if the hash still exists (`hset_if_exists.lua`), because a plain HSET would recreate it without a TTL.
+
+| Field | Written by | Read by | Meaning |
+|---|---|---|---|
+| `ticket_no` | join | join, admission-ctl (to tell a live token from a gone one) | The customer's number in line |
+| `account_id` / `device_hash` | join | admission-ctl (copied into `grant:<token>`) | Who owns the place (logged-in vs guest) |
+| `grant_token`, `booking_id` | admission-ctl (FINISH) | join (the straight-in wait), `/me` | The grant once the customer is let in |
+| `booking_expires_at` | admission-ctl (FINISH) | join, `/me` | RFC 3339 UTC deadline to start choosing seats |
 
 Removed by ADR-006 (a test in `pkg/rediskeys` fails if they come back): `regrant:{ev}`, `slots:open:{ev}`,
 `pause:{ev}`, `pause:{ev}:grace_applied`, channel `sse-grant`. **Removed by ADR-006 §8.12:** the keys

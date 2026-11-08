@@ -1,4 +1,4 @@
-@draft @step-7 @admission-ctl @FR-09
+@step-7 @admission-ctl @FR-09
 Feature: Seeing how fast the queue moves
   As a waiting customer, my app shows "about N minutes" from ratePerMin: ceil(position / ratePerMin).
   The number should be honest: a sensible guess at the start, the real speed after a minute, 0 when the queue is stuck.

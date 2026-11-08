@@ -1,4 +1,4 @@
-@draft @step-3 @admission-ctl @rule-4 @adr-006-2
+@step-3 @admission-ctl @rule-4 @adr-006-2
 Feature: Once I am let in, I am never lost
   As a customer whose turn has come, I end up with exactly one booking, even if the controller crashes
   or the database fails halfway through letting me in.
@@ -41,7 +41,9 @@ Feature: Once I am let in, I am never lost
     And the row for "c1" has booking_id "B1", grant_token "G1" and deadline "2026-11-10T19:05:00Z"
     When the clock moves 30 seconds and a new controller runs one tick
     Then the row for "c1" still has booking_id "B1", grant_token "G1" and deadline "2026-11-10T19:05:00Z"
-    And grant:G1 has a TTL of 270 seconds
+    And grant:G1 has the same fields as before the crash
+    And grant:G1 has a TTL of 1050 seconds
+    # 1080 s from granted_at, minus the 30 s that passed.
     And token:<c1> holds grant_token "G1" and booking_expires_at "2026-11-10T19:05:00Z"
 
   # ------------------------------------------------------------ database failures
@@ -103,11 +105,8 @@ Feature: Once I am let in, I am never lost
 
   # ------------------------------------------------------------ open
 
-  @unit @open-question
+  @unit
   Scenario: If my queue token expired before my booking was saved, I am dropped and the team is told
-    # OPEN: FINISH reads account_id from token:<uuid>. If that hash is gone (sale window
-    # passed, or deleted), the INSERT can't be written. Proposal: ZREM the token,
-    # count metric "GrantTokenMissing", and log it. The customer has already left.
     Given "c4" is pending and token:<c4> no longer exists
     When one tick runs
     Then no row is written for "c4"

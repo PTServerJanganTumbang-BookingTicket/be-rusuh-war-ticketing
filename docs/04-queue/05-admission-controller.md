@@ -177,7 +177,7 @@ sequenceDiagram
 
     Note over CTL,DB: 2e. FINISH each token (batched)
     loop each token
-        CTL->>R: HGET token:{uuid} account_id
+        CTL->>R: HMGET token:{uuid} account_id, device_hash
         CTL->>DB: INSERT bookings GRANTED ... ON CONFLICT (event_id, queue_token) DO NOTHING RETURNING
         opt conflict
             CTL->>DB: SELECT id, grant_token, deadlines WHERE event_id, queue_token
@@ -185,7 +185,7 @@ sequenceDiagram
         alt INSERT fails after 3 retries
             Note over CTL: leave in by_ticket (pending). Metric GrantInsertFailures
         else row exists
-            CTL->>R: HSET grant:{token} (TTL from row deadline)
+            CTL->>R: HSET grant:{token} event_id, booking_id, queue_token, account_id|device_hash (EX GRANT_TOKEN_TTL_SECONDS = 1080 from granted_at)
             CTL->>R: HSET token:{uuid} grant_token, booking_id, booking_expires_at (only if it exists)
             CTL->>R: ZREM by_ticket uuid (always last)
         end
@@ -254,7 +254,7 @@ the next tick's COUNT automatically, with no counter to decrement.
 |---|---|---|
 | Redis | `breaker:dukcapil:state`, `breaker:payment-gateway:state` | GET |
 | Redis | `queue:{ev}` (`state`, `issued`, `now_serving`, `free_slots`, `free_slots_at`, `full_booked_at`), `queue:{ev}:by_ticket`, `stock:{ev}:{cat}` | advance Lua (stock read only) |
-| Redis | `token:{uuid}` | HGET `account_id` · HSET `grant_token`, `booking_id`, `booking_expires_at` if it exists (FINISH) |
+| Redis | `token:{uuid}` | HMGET `account_id`, `device_hash` · HSET `grant_token`, `booking_id`, `booking_expires_at` if it exists (FINISH) |
 | Redis | `queue:{ev}:by_ticket` | ZRANGEBYSCORE / ZCOUNT `-inf now_serving` · ZREM (last step of grant) |
 | Redis | `grant:{token}` | HSET (FINISH) / DEL (LAPSED) |
 | Redis pub/sub | `sse-broadcast`, `sse-status` | PUBLISH |
@@ -293,6 +293,20 @@ the next tick's COUNT automatically, with no counter to decrement.
 - **DEFERRED to production: qpersist + `queue_entries` + rebuild from Aurora.** POC relies on Redis
   Multi-AZ. A *total* Redis loss would lose queue positions (paid and held seats are safe in Aurora);
   this is accepted for the POC.
+- **DECIDED (2026-11-08, Erma chose `SCAN` every 30 s): events and stock categories come from Redis, not from env.** `EVENT_IDS` and
+  `STOCK_CATEGORIES` are removed from the config.
+  - *Which events:* the worker `SCAN`s every master for hash keys matching `queue:{*}` (skipping `queue:{ev}:by_ticket`), and the event
+    id is the text between the braces. A hash without a `state` field is not an event (it is a stray write) and is ignored.
+  - *Which categories:* `SCAN stock:{<ev>}:*`; the category is the part after the last `:`.
+  - *When:* every `EVENT_REFRESH_SECONDS` (default 30), **not** every tick. A new sale is picked up within one interval. Events whose
+    `state` is `CLOSED` are dropped from the list at refresh time, so finished sales cost nothing.
+  - *Failure:* if the scan fails, keep the previous list and count `EventDiscoveryFailures`. An event with no stock keys at all is still
+    `STOCK_UNINITIALIZED` (nothing is admitted).
+  - *Cost (the reason it is not per tick):* `SCAN` walks the whole keyspace, and at 300k customers that is hundreds of thousands of
+    `token:*` / `grant:*` / `rl:*` keys per master. At 30 s and `COUNT 1000` that is acceptable for the POC; the adapter sits behind a
+    port `Events(ctx)`, so it can later switch to a registry set (`SADD events <ev>` by sale-ops) with no change to the tick.
+  - *Tests:* miniredis unit tests (event and category discovery, `by_ticket` skipped, no-`state` hash ignored, CLOSED dropped, refresh
+    only after the interval, scan failure keeps the old list) next to `infrastructure/redis/events.go` and the use case.
 - `MAX_CONCURRENT_SLOTS` value is still open (ADR-005 §17 #5): config, set from the load test.
 
 ## 7. Tests
@@ -307,39 +321,35 @@ the next tick's COUNT automatically, with no counter to decrement.
 - [ ] returned tokens are **still in `by_ticket`** (no ZREM), and a second call doesn't return them again
 - [ ] gaps in `by_ticket` (LAPSED / removed tokens) → fewer tokens than deficit, `now_serving` still moves to `to`
 - [ ] **`now_serving` never passes `issued`:** deficit 1000, 10 waiting → `now_serving` += 10, the next joiner gets `ticket_no = now_serving + 1`
-- [ ] FULL_BOOKED ↔ OPEN transitions, CLOSED no-op
+- [x] FULL_BOOKED ↔ OPEN transitions, CLOSED no-op
 - [ ] `free_slots` = what the run could not fill; written in SCHEDULED; not written on STALE / CLOSED / MISSING / STOCK_UNINITIALIZED
 
 **Tick**
 - [ ] Dukcapil / payment breaker OPEN → tick still COUNTs and ADVANCEs (no pause)
 - [ ] `sse-status` published exactly once per state change; not on unchanged ticks
-- [ ] BROADCAST is published **after** every INSERT of the tick (order assertion)
+- [x] BROADCAST is published **after** every INSERT of the tick (order assertion)
 - [ ] FINISH copies the grant into `token:{uuid}` after `HSET grant`, never recreating an expired token
 - [ ] SCHEDULED events are ticked (COUNT + ADVANCE, no INSERT)
 - [ ] INSERT fails → token still in `by_ticket`, broadcast still sent, next tick with DB healthy → granted
 - [ ] **crash test:** stop after EVALSHA, before INSERT → next tick RECOVER grants, exactly one row
 - [ ] crash test: stop after INSERT, before ZREM → RECOVER reuses the same `booking_id` / `grant_token`
-- [ ] RECOVER on an empty pending set does 1 ZRANGEBYSCORE and nothing else
+- [x] RECOVER on an empty pending set does 1 ZRANGEBYSCORE and nothing else
 - [ ] Aurora writer down → ADVANCE skipped, no grant, no broadcast change
-
-**Invariant (property test, random interleavings)**
-- [ ] random grant / claim / hold / pay / expire / lapse / second-task steps → at every step
-      `active rows + pending ≤ MAX` and every admitted browsing customer can buy 3: `browsing × 3 ≤ stock + 2`
-- [ ] LAPSED CAS: two sweepers on the same row → exactly one transition
 
 ## 8. Tasks
 
 - [x] `pkg/redisscript` + `advance_now_serving.lua` (ADR-006 §3.4) + Lua tests
 - [x] migration: `UNIQUE (event_id, queue_token)` (0005) + partial index on active statuses (0006)
-- [ ] `services/admission-ctl` scaffold (ECS, `cmd/worker`) (module + store exist; `cmd/worker` not yet)
-- [ ] tick loop skeleton (500 ms ticker) with step functions and per-step metrics
+- [x] `services/admission-ctl` scaffold (module, `cmd/worker`, config; ECS task definition not yet)
+- [x] tick loop skeleton (500 ms ticker) with step functions and per-step metrics (metrics are log lines until the EMF adapter lands)
 - [x] postgres `AdmissionCounter.Count(ev)` on the writer pool (`CountAdmission`, plus idempotent `InsertGranted`)
-- [ ] RECOVER → SNAPSHOT → COUNT → ADVANCE → FINISH, + `PendingGrants` gauge and alert
-- [ ] `free_slots` in the Lua + grant copy into `token:{uuid}` + tick SCHEDULED events (ADR-006 §8.11) (Lua part done in step 1)
+- [x] RECOVER → SNAPSHOT → COUNT → ADVANCE → FINISH, + `PendingGrants` gauge and alert
+- [x] `free_slots` in the Lua + grant copy into `token:{uuid}` + tick SCHEDULED events (ADR-006 §8.11)
 - [x] migration `0006`: partial indexes on active statuses (COUNT) and on `booking_expires_at WHERE status = 'GRANTED'` (SWEEP)
-- [ ] SWEEP: GRANTED → LAPSED
-- [ ] BROADCAST + heartbeat + `rate_per_min` ([§3.5](#35-rate_per_min), config `ETA_SEED_SLOT_MINUTES`)
-- [ ] FULL_BOOKED → CLOSED + `sse-status` on each state change
+- [x] SWEEP: GRANTED → LAPSED
+- [x] BROADCAST + heartbeat + `rate_per_min` ([§3.5](#35-rate_per_min), config `ETA_SEED_SLOT_MINUTES`)
+- [x] FULL_BOOKED → CLOSED + `sse-status` on each state change
+- [x] discover events and stock categories from Redis (`SCAN queue:{*}`, `stock:{ev}:*`, refresh every `EVENT_REFRESH_SECONDS`); remove `EVENT_IDS` / `STOCK_CATEGORIES`
 - [ ] ECS service: 1 task, deployment min 0 % / max 100 %, `CtlHeartbeatAge` alarm
 
 **Deferred (production path, ADR-006 §9):** leader lease + epoch + standby, qpersist drain → `queue_entries` + rebuild.

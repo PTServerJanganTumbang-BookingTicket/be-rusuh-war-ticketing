@@ -1,4 +1,4 @@
-@draft @step-3 @admission-ctl @integration @e2e @postgres @redis-cluster
+@step-3 @admission-ctl @integration @e2e @postgres @redis-cluster
 Feature: A real sale, end to end
   As a crowd of customers, we are let in in order, the sale fills up and closes, and nobody is lost when
   the controller, Postgres or Redis has a bad moment.

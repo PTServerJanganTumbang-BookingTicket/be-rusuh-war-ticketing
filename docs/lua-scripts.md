@@ -10,6 +10,7 @@ Sources: ADR-006 §3.4, §4.1, §8.11, §8.12 · HLD §8 · implementation-plan 
 | Script | Status | Caller | When | What for |
 |---|---|---|---|---|
 | `advance_now_serving.lua` | **built** (`pkg/redisscript`) | admission-ctl only | every 500 ms tick, per event | decide how many people to let in, raise `now_serving`, record `free_slots` |
+| `hset_if_exists.lua` | **built** (`pkg/redisscript`) | admission-ctl (FINISH) | after a customer's booking row exists | copy the grant into `token:<queue_token>` only if that hash still exists, so an expired token is never recreated without a TTL |
 | token-bucket rate limiter | **built** (Lua embedded in `pkg/ratelimit/ratelimit.go`) | join (per IP and per account), sse-server (per IP); user and nik-verify have their own limiters | on every request that passes a limiter | refill the bucket by elapsed time and take one token, atomically |
 | `hold_booking.lua` | planned (booking plan) | booking service | when a customer picks seats | reserve stock across categories, all or nothing |
 | `adjust_if_unchanged.lua` | planned (admission-ctl plan) | admission-ctl, stock reconciliation | periodic correction of stock counters | correct a counter only if it still has the value that was read |

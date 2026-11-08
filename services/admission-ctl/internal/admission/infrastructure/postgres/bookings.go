@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -16,6 +17,7 @@ import (
 // a place freed a moment ago must be seen by the next count (no replica lag).
 type Querier interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
@@ -49,7 +51,7 @@ const insertGrantedSQL = `INSERT INTO bookings
 VALUES ($1, $2, $3, NULLIF($4, ''), 'GRANTED', $5, $6, $7)
 ON CONFLICT (event_id, queue_token) DO NOTHING`
 
-const existingSQL = `SELECT id, COALESCE(grant_token, '') FROM bookings WHERE event_id = $1 AND queue_token = $2`
+const existingSQL = `SELECT id, COALESCE(grant_token, ''), granted_at, booking_expires_at, status FROM bookings WHERE event_id = $1 AND queue_token = $2`
 
 // InsertGranted saves a GRANTED row once per (event_id, queue_token). Saving the same
 // customer again changes nothing and returns the first row's booking_id and grant_token,
@@ -62,10 +64,10 @@ func (b *Bookings) InsertGranted(ctx context.Context, g domain.Grant) (domain.Bo
 		return domain.Booking{}, fmt.Errorf("insert granted booking: %w", err)
 	}
 	if tag.RowsAffected() == 1 {
-		return domain.Booking{ID: g.BookingID, GrantToken: g.GrantToken}, nil
+		return domain.Booking{ID: g.BookingID, GrantToken: g.GrantToken, GrantedAt: g.GrantedAt, ExpiresAt: g.ExpiresAt, Status: "GRANTED"}, nil
 	}
 	var first domain.Booking
-	err = b.db.QueryRow(ctx, existingSQL, g.EventID, g.QueueToken).Scan(&first.ID, &first.GrantToken)
+	err = b.db.QueryRow(ctx, existingSQL, g.EventID, g.QueueToken).Scan(&first.ID, &first.GrantToken, &first.GrantedAt, &first.ExpiresAt, &first.Status)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Booking{}, fmt.Errorf("insert granted booking: conflict row vanished for %s/%s", g.EventID, g.QueueToken)
 	}
@@ -73,4 +75,29 @@ func (b *Bookings) InsertGranted(ctx context.Context, g domain.Grant) (domain.Bo
 		return domain.Booking{}, fmt.Errorf("read existing booking: %w", err)
 	}
 	return first, nil
+}
+
+// SweepSQL lapses every GRANTED booking past its deadline in one compare-and-set UPDATE. A row another sweeper or
+// the booking service already moved no longer matches status = 'GRANTED', so exactly one caller gets it back.
+// The partial index bookings_granted_deadline_idx (migration 0006) finds the due rows without scanning the table.
+const SweepSQL = `UPDATE bookings SET status = 'LAPSED'
+WHERE status = 'GRANTED' AND booking_expires_at <= $1
+RETURNING id, event_id, COALESCE(queue_token, ''), COALESCE(grant_token, '')`
+
+// LapseDue moves due GRANTED bookings to LAPSED and returns them.
+func (b *Bookings) LapseDue(ctx context.Context, now time.Time) ([]domain.Lapsed, error) {
+	rows, err := b.db.Query(ctx, SweepSQL, now)
+	if err != nil {
+		return nil, fmt.Errorf("lapse due bookings: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.Lapsed
+	for rows.Next() {
+		var l domain.Lapsed
+		if err := rows.Scan(&l.BookingID, &l.EventID, &l.QueueToken, &l.GrantToken); err != nil {
+			return nil, fmt.Errorf("read lapsed booking: %w", err)
+		}
+		out = append(out, l)
+	}
+	return out, rows.Err()
 }
