@@ -24,7 +24,7 @@ reconciliation and the charge reconciler run in the same loop but are planned in
 
 ```mermaid
 flowchart TD
-    T([every 500 ms, single task]) --> S[1. SWEEP expiries ZSET<br/>verify in Aurora, CAS update<br/>GRANTED → LAPSED here]
+    T([every 500 ms, single task]) --> S[1. SWEEP due bookings in Aurora<br/>one CAS UPDATE per tick<br/>GRANTED → LAPSED here]
     S --> ADV[2. RECOVER pending grants<br/>SNAPSHOT now_serving + pending<br/>COUNT open, browsing in Aurora<br/>ADVANCE Lua<br/>INSERT · grant hash · ZREM]
     ADV --> B[3. BROADCAST after the INSERTs<br/>update rate_per_min<br/>PUBLISH sse-broadcast if changed or 10 s heartbeat]
     B --> SO[4. FULL_BOOKED older than 930 s → CLOSED]
@@ -44,6 +44,15 @@ is harmless (clients treat a repeated state as a no-op).
 
 **No early ticks.** A place freed by a payment, an expiry or a cancel is picked up by the next
 regular tick through the Aurora COUNT (≤ 500 ms). No other service signals the ctl.
+
+**Telling join who fits (ADR-006 §8.11, 2026-11-08).** The advance Lua writes `free_slots = max(0, deficit −
+(to − ns0))` and `free_slots_at = now` into `queue:{ev}`, atomically with `now_serving`, on every run that
+reads the counts. It does this **in SCHEDULED too** (nothing else is written then), so the ctl ticks events
+that have not opened yet, and at T0 `free_slots` is already `min(MAX, ceil(stock / 3))`. STALE, CLOSED,
+MISSING and STOCK_UNINITIALIZED write nothing, and neither does a tick whose COUNT failed, so `free_slots_at`
+ages and join stops waiting after 2 s. Join waits for a grant only when `ticket_no ≤ now_serving +
+min(free_slots, JOIN_DIRECT_MAX)` ([01 §6](01-join-queue.md#6-edge-cases-and-decisions)) and polls
+`token:{uuid}` for the `grant_token` FINISH copies there.
 
 ## 3. ADVANCE, in detail
 
@@ -163,7 +172,7 @@ sequenceDiagram
 
     Note over CTL,R: 2d. ADVANCE
     CTL->>R: EVALSHA advance_now_serving.lua (MAX, open+pending, browsing+pending, ns0, now)
-    Note over R: atomic: now_serving ≠ ns0 → STALE<br/>state gate (FULL_BOOKED / resume)<br/>stock = SUM stock:{ev}:{cat}<br/>deficit = min(room, demand)<br/>to = min(ns0 + deficit, issued)<br/>tokens = ZRANGEBYSCORE ns0+1 .. to (no ZREM)<br/>HSET now_serving to
+    Note over R: atomic: now_serving ≠ ns0 → STALE<br/>state gate (OPEN / FULL_BOOKED)<br/>stock = SUM stock:{ev}:{cat}<br/>deficit = min(room, demand)<br/>to = min(ns0 + deficit, issued)<br/>tokens = ZRANGEBYSCORE ns0+1 .. to (no ZREM)<br/>HSET now_serving to, free_slots, free_slots_at
     R-->>CTL: from, to, state, tokens
 
     Note over CTL,DB: 2e. FINISH each token (batched)
@@ -176,7 +185,8 @@ sequenceDiagram
         alt INSERT fails after 3 retries
             Note over CTL: leave in by_ticket (pending). Metric GrantInsertFailures
         else row exists
-            CTL->>R: HSET grant:{token} (TTL from row deadline) · ZADD expiries:{ev}
+            CTL->>R: HSET grant:{token} (TTL from row deadline)
+            CTL->>R: HSET token:{uuid} grant_token, booking_id, booking_expires_at (only if it exists)
             CTL->>R: ZREM by_ticket uuid (always last)
         end
     end
@@ -186,7 +196,9 @@ sequenceDiagram
     R-->>SSE: fan-out
 ```
 
-**Order rule:** INSERT → grant hash → ZREM → BROADCAST. Clients learn it's their turn from the
+**Order rule:** INSERT → grant hash → token hash → ZREM → BROADCAST. The token copy comes after the grant
+hash because join hands `grant_token` to the client the moment it appears; it is written with an
+"only if the hash exists" guard, since a plain HSET on an expired token would recreate it without a TTL. Clients learn it's their turn from the
 broadcast (S3), so by the time they call `/me` the row normally exists. A token still pending
 (INSERT failing) gets "almost there" from `/me` and the client retries.
 
@@ -226,15 +238,10 @@ sequenceDiagram
     participant R as Redis
     participant DB as Aurora
 
-    CTL->>R: ZRANGEBYSCORE expiries:{ev} 0 now
-    loop each due booking_id
-        CTL->>DB: UPDATE bookings SET status LAPSED WHERE id AND status GRANTED AND booking_expires_at <= now
-        alt 1 row (we won the CAS)
-            CTL->>R: DEL grant:{token}, DEL acct:{ev}:{account}, DEL token:{uuid}
-            CTL->>R: ZREM expiries:{ev} booking_id
-        else 0 rows
-            Note over CTL: someone else moved it, or the deadline shifted (rescore ZSET)
-        end
+    CTL->>DB: UPDATE bookings SET status LAPSED WHERE event_id AND status GRANTED AND booking_expires_at <= now RETURNING id, grant_token, queue_token, account_id
+    Note over CTL,DB: one statement is the CAS: a row is returned only to the task that changed it.<br/>A moved deadline simply does not match yet. No ZSET to rescore
+    loop each returned row
+        CTL->>R: DEL grant:{token}, DEL acct:{ev}:{account}, DEL token:{queue_token}
     end
 ```
 
@@ -246,9 +253,10 @@ the next tick's COUNT automatically, with no counter to decrement.
 | Store | Key / table | Op |
 |---|---|---|
 | Redis | `breaker:dukcapil:state`, `breaker:payment-gateway:state` | GET |
-| Redis | `queue:{ev}`, `queue:{ev}:state`, `queue:{ev}:by_ticket`, `queue:{ev}:issued`, `stock:{ev}:{cat}`, `queue:{ev}:full_booked_at`, `queue:{ev}:resume` | advance Lua (stock read only) |
+| Redis | `queue:{ev}` (`state`, `issued`, `now_serving`, `free_slots`, `free_slots_at`, `full_booked_at`), `queue:{ev}:by_ticket`, `stock:{ev}:{cat}` | advance Lua (stock read only) |
+| Redis | `token:{uuid}` | HGET `account_id` · HSET `grant_token`, `booking_id`, `booking_expires_at` if it exists (FINISH) |
 | Redis | `queue:{ev}:by_ticket` | ZRANGEBYSCORE / ZCOUNT `-inf now_serving` · ZREM (last step of grant) |
-| Redis | `grant:{token}`, `expiries:{ev}` | HSET / ZADD / DEL |
+| Redis | `grant:{token}` | HSET (FINISH) / DEL (LAPSED) |
 | Redis pub/sub | `sse-broadcast`, `sse-status` | PUBLISH |
 | Aurora | `bookings` | **COUNT (writer)** / INSERT / CAS UPDATE |
 | Aurora | `event_queue_state` | UPDATE |
@@ -267,6 +275,11 @@ the next tick's COUNT automatically, with no counter to decrement.
   and its reconciliation. A count can't drift, because it's recomputed every tick. If the
   writer is unreachable, the COUNT fails, the tick skips ADVANCE (the queue freezes, nothing is lost), and
   the INSERTs would have failed anyway.
+- **DECIDED (2026-11-08, ADR-006 §8.12): no `expiries:{ev}` ZSET.** The LAPSED sweep is one `UPDATE … WHERE status = 'GRANTED'
+  AND booking_expires_at <= now RETURNING …` on a partial index (migration `0006`). The deadline lives only in Aurora, so there is
+  no crash window between INSERT and `ZADD`, no stale score to rescore, and nothing to rebuild. Cost: one indexed query per tick,
+  like the COUNT. The booking plan's `HELD` / `AWAITING_PAYMENT` sweeps are expected to follow the same pattern (open for that plan).
+- **DECIDED (2026-11-08, ADR-006 §8.12): `state`, `issued`, `full_booked_at` are fields of `queue:{ev}`;** `queue:{ev}:resume` is gone.
 - **DECIDED: one writer (S2, ADR-006 §4).** Join, webhook, outbox and cancel never grant and never
   signal the ctl; the next tick finds freed places by itself. See [01 §2](01-join-queue.md#2-flow).
 - **DECIDED: broadcast only (S3, ADR-006 §4).** No `sse-grant`. Because BROADCAST runs after
@@ -295,11 +308,14 @@ the next tick's COUNT automatically, with no counter to decrement.
 - [ ] gaps in `by_ticket` (LAPSED / removed tokens) → fewer tokens than deficit, `now_serving` still moves to `to`
 - [ ] **`now_serving` never passes `issued`:** deficit 1000, 10 waiting → `now_serving` += 10, the next joiner gets `ticket_no = now_serving + 1`
 - [ ] FULL_BOOKED ↔ OPEN transitions, CLOSED no-op
+- [ ] `free_slots` = what the run could not fill; written in SCHEDULED; not written on STALE / CLOSED / MISSING / STOCK_UNINITIALIZED
 
 **Tick**
 - [ ] Dukcapil / payment breaker OPEN → tick still COUNTs and ADVANCEs (no pause)
 - [ ] `sse-status` published exactly once per state change; not on unchanged ticks
 - [ ] BROADCAST is published **after** every INSERT of the tick (order assertion)
+- [ ] FINISH copies the grant into `token:{uuid}` after `HSET grant`, never recreating an expired token
+- [ ] SCHEDULED events are ticked (COUNT + ADVANCE, no INSERT)
 - [ ] INSERT fails → token still in `by_ticket`, broadcast still sent, next tick with DB healthy → granted
 - [ ] **crash test:** stop after EVALSHA, before INSERT → next tick RECOVER grants, exactly one row
 - [ ] crash test: stop after INSERT, before ZREM → RECOVER reuses the same `booking_id` / `grant_token`
@@ -319,6 +335,8 @@ the next tick's COUNT automatically, with no counter to decrement.
 - [ ] tick loop skeleton (500 ms ticker) with step functions and per-step metrics
 - [ ] postgres `AdmissionCounter.Count(ev)` on the writer pool
 - [ ] RECOVER → SNAPSHOT → COUNT → ADVANCE → FINISH, + `PendingGrants` gauge and alert
+- [ ] `free_slots` in the Lua + grant copy into `token:{uuid}` + tick SCHEDULED events (ADR-006 §8.11)
+- [ ] migration `0006`: partial indexes on active statuses (COUNT) and on `booking_expires_at WHERE status = 'GRANTED'` (SWEEP)
 - [ ] SWEEP: GRANTED → LAPSED
 - [ ] BROADCAST + heartbeat + `rate_per_min` ([§3.5](#35-rate_per_min), config `ETA_SEED_SLOT_MINUTES`)
 - [ ] FULL_BOOKED → CLOSED + `sse-status` on each state change

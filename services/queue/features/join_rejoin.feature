@@ -17,7 +17,7 @@ Feature: If I come back, I get my place back, not a second one
     Then the response status is 200 with message "Rejoined existing queue position"
     And data has ticket_no 32748, now_serving 31520, position 1228, queue_token "qt_A", rejoined true, state "QUEUED"
     And the response sets cookie "queue_token" to "qt_A"
-    And queue:{E1}:issued is still 40000
+    And queue:{E1} issued is still 40000
     And the metric "Br07JoinRecovered" is incremented
 
   @integration @redis-cluster @BR-09
@@ -25,7 +25,7 @@ Feature: If I come back, I get my place back, not a second one
     Given a guest with device id "dev-gggggggggggggggg" joined "E1" earlier with ticket number 32748 and queue_token "qt_G"
     When the guest joins "E1" again from the same device sending queue_token "qt_G" as <carrier> with captcha "cap-ok"
     Then data has ticket_no 32748, queue_token "qt_G", rejoined true, state "QUEUED"
-    And queue:{E1}:issued is still 40000
+    And queue:{E1} issued is still 40000
 
     Examples:
       | carrier                 |
@@ -108,4 +108,4 @@ Feature: If I come back, I get my place back, not a second one
     Given account "acc-1" had booking status "LAPSED" for "E1"
     When account "acc-1" joins "E1" again with captcha "cap-ok"
     Then data has rejoined true and state "LAPSED"
-    And queue:{E1}:issued is still 40000
+    And queue:{E1} issued is still 40000

@@ -67,7 +67,7 @@ func registerConnectSteps(sc *godog.ScenarioContext, W func() *world) {
 		return W().seedToken(tok, "E1", 31700, dev)
 	})
 	sc.Step(`^event "([^"]*)" has no queue state in Redis$`, func(id string) error {
-		return W().rdb.Del(context.Background(), ev(id).QueueState()).Err()
+		return W().rdb.HDel(context.Background(), ev(id).QueueHash(), "state").Err()
 	})
 	sc.Step(`^the hash queue:\{E1\} has no rate_per_min field$`, func() error {
 		return W().rdb.HDel(context.Background(), ev("E1").QueueHash(), "rate_per_min").Err()

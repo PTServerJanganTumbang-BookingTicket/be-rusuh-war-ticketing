@@ -47,8 +47,7 @@ func TestRepairLine_neverReaddsAServedTicket(t *testing.T) {
 func TestSnapshot_failsClosedOnWrongType(t *testing.T) {
 	s, rdb, ev := newStore(t)
 	ctx := context.Background()
-	rdb.Set(ctx, ev.QueueState(), "OPEN", 0)
-	rdb.HSet(ctx, ev.QueueIssued(), "oops", 1) // issued is a hash: WRONGTYPE on GET
+	rdb.Set(ctx, ev.QueueHash(), "oops", 0) // the event hash is a string: WRONGTYPE on HMGET
 	if _, err := s.Snapshot(ctx, ev); err == nil {
 		t.Fatal("Snapshot hid a WRONGTYPE error")
 	}
@@ -108,8 +107,7 @@ func TestEngagement_aGrantOnlyHashIsNotAPlace(t *testing.T) {
 func TestSnapshot_malformedFreeSlotsReadsAsNotWritten(t *testing.T) {
 	s, rdb, ev := newStore(t)
 	ctx := context.Background()
-	rdb.Set(ctx, ev.QueueState(), "OPEN", 0)
-	rdb.HSet(ctx, ev.QueueHash(), FieldFreeSlots, "5.0", FieldFreeSlotsAt, "1800000000")
+	rdb.HSet(ctx, ev.QueueHash(), FieldState, "OPEN", FieldFreeSlots, "5.0", FieldFreeSlotsAt, "1800000000")
 	snap, err := s.Snapshot(ctx, ev)
 	if err != nil || snap.FreeSlots != 0 || snap.FreeSlotsAt != 0 {
 		t.Fatalf("Snapshot = %+v, %v; want free_slots ignored", snap, err)
@@ -117,5 +115,46 @@ func TestSnapshot_malformedFreeSlotsReadsAsNotWritten(t *testing.T) {
 	rdb.HSet(ctx, ev.QueueHash(), FieldFreeSlots, "5")
 	if snap, _ = s.Snapshot(ctx, ev); snap.FreeSlots != 5 || snap.FreeSlotsAt != 1800000000 {
 		t.Fatalf("Snapshot = %+v; want 5 at 1800000000", snap)
+	}
+}
+
+// ADR-006 §8.12: state, issued and full_booked_at are fields of queue:{ev}.
+func TestSnapshot_readsTheMergedHash(t *testing.T) {
+	s, rdb, ev := newStore(t)
+	ctx := context.Background()
+	rdb.HSet(ctx, ev.QueueHash(), FieldState, "FULL_BOOKED", FieldIssued, 120, FieldNowServing, 100,
+		FieldFullBookedAt, 1800000000, FieldName, "Konser", FieldSaleStartsAt, "2026-11-10T02:00:00Z")
+	snap, err := s.Snapshot(ctx, ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.State != "FULL_BOOKED" || snap.Issued != 120 || snap.NowServing != 100 || snap.Name != "Konser" ||
+		snap.FullBookedAt != "2027-01-15T08:00:00Z" {
+		t.Fatalf("Snapshot = %+v", snap)
+	}
+}
+
+func TestSnapshot_anUnseededEventHasNoState(t *testing.T) {
+	s, _, ev := newStore(t)
+	snap, err := s.Snapshot(context.Background(), ev)
+	if err != nil || snap.State != "" || snap.Issued != 0 {
+		t.Fatalf("Snapshot = %+v, %v; want an empty snapshot", snap, err)
+	}
+}
+
+func TestIssueTicket_isHINCRBYOnTheHash(t *testing.T) {
+	s, rdb, ev := newStore(t)
+	ctx := context.Background()
+	for want := int64(1); want <= 3; want++ {
+		got, err := s.IssueTicket(ctx, ev)
+		if err != nil || got != want {
+			t.Fatalf("IssueTicket = %d, %v; want %d", got, err, want)
+		}
+	}
+	if v, _ := rdb.HGet(ctx, ev.QueueHash(), FieldIssued).Int(); v != 3 {
+		t.Fatalf("issued field = %d, want 3", v)
+	}
+	if keys, _ := rdb.Keys(ctx, "*").Result(); len(keys) != 1 || keys[0] != ev.QueueHash() {
+		t.Fatalf("keys after issuing = %v, want only %s", keys, ev.QueueHash())
 	}
 }

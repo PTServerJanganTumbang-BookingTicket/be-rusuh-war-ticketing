@@ -13,6 +13,9 @@ and a test there fails if a builder is missing from this page. Change both toget
   script or transaction (cross-slot in cluster mode).
 - **Never store raw personal data in a key or value.** Device ids are stored as `HMAC(DEVICE_PEPPER, id)`,
   NIKs as `nik_hmac`.
+- **Never delete or overwrite `queue:{ev}`.** It holds the ticket counter (`issued`) and `state`. sale-ops seeds
+  it with `HSETNX` (a second `seed` must not reset `issued`: reissued numbers would collide with `by_ticket`);
+  cleaning up after the event deletes it only once the sale is over.
 - **TTL:** every key without a natural end gets one. Keys of a live event (`queue:{ev}*`, `stock:`) do not
   expire; sale-ops cleans them up after the event.
 
@@ -22,11 +25,11 @@ Status: **built** = used by code on `main` or the current branch · **planned** 
 
 ```mermaid
 flowchart LR
-    J[join] -->|INCR| I["queue:{ev}:issued"]
+    J[join] -->|HINCRBY issued| Q["queue:{ev} hash"]
     J -->|HSET| T["token:&lt;qt&gt;"]
     J -->|ZADD| B["queue:{ev}:by_ticket"]
     J -->|SET NX| A["acct:{ev}:&lt;account&gt;"]
-    CTL[admission-ctl] -->|advance Lua| Q["queue:{ev} now_serving"]
+    CTL[admission-ctl] -->|advance Lua: now_serving, free_slots, state| Q
     CTL -->|ZREM after INSERT| B
     CTL -->|HSET| G["grant:&lt;gt&gt;"]
     CTL -->|PUBLISH| CH(("sse-broadcast / sse-status"))
@@ -35,12 +38,8 @@ flowchart LR
 
 | Key | Builder | Type | TTL | Written by | Read by | What it is | Status |
 |---|---|---|---|---|---|---|---|
-| `queue:{ev}` | `Event.QueueHash` | hash: `now_serving`, `free_slots`, `free_slots_at`, `rate_per_min`, `name`, `sale_starts_at` | none | sale-ops seed (`name`, `sale_starts_at`), advance Lua (`now_serving`; `free_slots` + `free_slots_at` epoch s, also in SCHEDULED), admission-ctl (`rate_per_min`) | all queue services; join (`free_slots*`: who may wait for a grant, ADR-006 §8.11) | The event's counters and the two fields join echoes back (`event.name`, 409 `sale_starts_at`) | built (join reads); `free_slots*` planned |
-| `queue:{ev}:state` | `Event.QueueState` | string: `SCHEDULED` \| `OPEN` \| `FULL_BOOKED` \| `CLOSED` | none | sale-ops seed, opener at `sale_starts_at`, advance Lua (`FULL_BOOKED` ↔ `OPEN`), admission-ctl (`CLOSED`) | all | Sale lifecycle. Missing or unknown → join answers 503 `QUEUE_NOT_READY` | built (join reads) |
-| `queue:{ev}:issued` | `Event.QueueIssued` | counter | none | join (`INCR` after every gate) | join, events (depth), admission-ctl | Last ticket number handed out. `issued − now_serving` = queue depth | built |
+| `queue:{ev}` | `Event.QueueHash` | hash, fields below | none | see the field table | all queue services | The event's one hash: sale state, ticket counter, admission numbers and the fields join echoes back. **ADR-006 §8.12** merged `state`, `issued` and `full_booked_at` into it (one `HMGET` for join's snapshot) | built (join, sse-server read); `free_slots*`, `full_booked_at` writers planned |
 | `queue:{ev}:by_ticket` | `Event.ByTicket` | zset, member `queue_token`, score `ticket_no` | none | join (`ZADD`; rejoin repair `ZADD NX` only while `ticket_no > now_serving`), admission-ctl (`ZREM` last, after the GRANTED row) | advance Lua, admission-ctl RECOVER, `/me` | The line. A score ≤ `now_serving` still present = pending grant (ADR-006 rule 4) | built (join side) |
-| `queue:{ev}:full_booked_at` | `Event.FullBookedAt` | string, RFC 3339 | none | advance Lua / admission-ctl when stock reaches 0 | join (409 `FULL_BOOKED` data), admission-ctl (`CLOSED` at +930 s) | When the event sold out | built (join reads) |
-| `expiries:{ev}` | `Event.Expiries` | zset, member `booking_id`, score deadline | none | admission-ctl (at GRANT) | admission-ctl sweep | Deadlines to check for `GRANTED → LAPSED` and expiries | planned |
 | `stock:{ev}:<category>` | `Event.Stock` | counter | none | booking `hold_booking.lua`, admission-ctl sweeps | advance Lua | Seats left per category | planned |
 | `acct:{ev}:<account_id>` | `Event.Acct` | string → `queue_token` | `SALE_WINDOW_SECONDS` | join (`SET NX`; compare-and-set to replace a stale pointer) | join, `/me` | BR-07: the account's one place for this event | built |
 | `token:<queue_token>` | `Token` | hash: `ticket_no`, `event_id`, `joined_at`, `account_id`?, `device_hash`?, `grant_token`?, `booking_id`?, `booking_expires_at`? | `SALE_WINDOW_SECONDS` | join; admission-ctl adds the `grant_token`, `booking_id`, `booking_expires_at` fields at GRANT (only if the hash exists) | join (rejoin, FR-05 grant wait), `/me`, stream, admission-ctl | The engagement. `queue_token` = `qt_` + ULID | built (grant fields planned) |
@@ -49,8 +48,26 @@ flowchart LR
 | `rl:joinacct:<account_id>` | `JoinAcctLimit` | hash `{tokens, ts}` | refill time (60 s) | join | — | 3 joins / min per account | built |
 | `rl:sse:<ip>` | `SSERateLimit` | token bucket | — | stream | — | Stream connect limit (5 / s) | built |
 
+### Fields of `queue:{ev}`
+
+Field names are constants in `pkg/rediskeys` (`FieldState`, `FieldIssued`, `FieldNowServing`, `FieldFullBookedAt`,
+`FieldFreeSlots`, `FieldFreeSlotsAt`, `FieldRatePerMin`, `FieldName`, `FieldSaleStartsAt`); never type them by hand.
+
+| Field | Type | Written by | Read by | Meaning |
+|---|---|---|---|---|
+| `state` | `SCHEDULED` \| `OPEN` \| `FULL_BOOKED` \| `CLOSED` | sale-ops seed (`SCHEDULED`, NX), sale-ops opener at `sale_starts_at`, advance Lua (`FULL_BOOKED` ↔ `OPEN`), admission-ctl (`CLOSED`) | all | Sale lifecycle. Missing or unknown → join answers 503 `QUEUE_NOT_READY`, the stream 404/503 |
+| `issued` | int | join (`HINCRBY`, after every gate); sale-ops seed sets 0 (NX) | join, events (depth), advance Lua, admission-ctl | Last ticket number handed out. `issued − now_serving` = queue depth |
+| `now_serving` | int | advance Lua | all | Highest ticket number admitted |
+| `free_slots` | int | advance Lua | join | Places the last run could not fill (ADR-006 §8.11) |
+| `free_slots_at` | epoch s | advance Lua | join | When `free_slots` was written; join ignores it when older than 2 s |
+| `full_booked_at` | epoch s | advance Lua (first time stock hits 0; removed when seats return) | join (409 `FULL_BOOKED`, as ISO 8601), admission-ctl (`CLOSED` at +930 s) | Since when the sale is fully booked |
+| `rate_per_min` | int | admission-ctl | stream, `/serving`, `/me` | Ticket numbers `now_serving` passes per minute |
+| `name`, `sale_starts_at` | string | sale-ops seed | join | Echoed in the join response and the 409 `SALE_NOT_OPEN` |
+
 Removed by ADR-006 (a test in `pkg/rediskeys` fails if they come back): `regrant:{ev}`, `slots:open:{ev}`,
-`pause:{ev}`, `pause:{ev}:grace_applied`, channel `sse-grant`.
+`pause:{ev}`, `pause:{ev}:grace_applied`, channel `sse-grant`. **Removed by ADR-006 §8.12:** the keys
+`queue:{ev}:state`, `queue:{ev}:issued`, `queue:{ev}:full_booked_at` (now fields above), `queue:{ev}:resume` (no reader)
+and `expiries:{ev}` (the deadline sweep reads Aurora through a partial index on `booking_expires_at`).
 
 ## Channels
 

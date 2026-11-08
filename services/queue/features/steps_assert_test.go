@@ -26,6 +26,7 @@ import (
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/rediskeys"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/queue/internal/queue/domain"
 	queuehttp "github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/queue/internal/queue/infrastructure/http"
+	queueredis "github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/queue/internal/queue/infrastructure/redis"
 )
 
 func (r *response) json() (map[string]any, error) {
@@ -360,17 +361,17 @@ func registerAssertSteps(sc *godog.ScenarioContext, W func() *world) {
 
 	// ---- Redis state
 	issuedIs := func(id string, n int64) error {
-		v, err := W().rdb.Get(context.Background(), ev(id).QueueIssued()).Int64()
+		v, err := W().rdb.HGet(context.Background(), ev(id).QueueHash(), queueredis.FieldIssued).Int64()
 		if err != nil && !errors.Is(err, goredis.Nil) {
 			return err
 		}
 		if v != n {
-			return fmt.Errorf("queue:{%s}:issued = %d, want %d", id, v, n)
+			return fmt.Errorf("queue:{%s} issued = %d, want %d", id, v, n)
 		}
 		return nil
 	}
-	sc.Step(`^queue:\{([^}]*)\}:issued is (\d+)$`, issuedIs)
-	sc.Step(`^queue:\{([^}]*)\}:issued is still (\d+)$`, issuedIs)
+	sc.Step(`^queue:\{([^}]*)\} issued is (\d+)$`, issuedIs)
+	sc.Step(`^queue:\{([^}]*)\} issued is still (\d+)$`, issuedIs)
 	sc.Step(`^exactly one new ticket number is issued$`, func() error { return issuedIs("E1", 40001) })
 	sc.Step(`^token:<queue_token> is a hash with exactly these fields:$`, func(t *godog.Table) error { return W().tokenHashIs(t) })
 	sc.Step(`^token:<queue_token> expires in (\d+) seconds$`, func(s int) error {

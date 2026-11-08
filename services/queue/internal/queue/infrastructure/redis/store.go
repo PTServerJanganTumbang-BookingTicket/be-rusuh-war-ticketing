@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"time"
 
@@ -27,14 +28,37 @@ const (
 	FieldBookingExpiresAt = "booking_expires_at"
 )
 
-// queue:{ev} hash fields.
+// queue:{ev} hash fields: the names come from pkg/rediskeys.
 const (
-	FieldNowServing   = "now_serving"
-	FieldFreeSlots    = "free_slots"    // places admission-ctl could still fill after its last run
-	FieldFreeSlotsAt  = "free_slots_at" // epoch seconds of that run
-	FieldName         = "name"
-	FieldSaleStartsAt = "sale_starts_at"
+	FieldState        = rediskeys.FieldState
+	FieldIssued       = rediskeys.FieldIssued
+	FieldFullBookedAt = rediskeys.FieldFullBookedAt
+	FieldNowServing   = rediskeys.FieldNowServing
+	FieldFreeSlots    = rediskeys.FieldFreeSlots
+	FieldFreeSlotsAt  = rediskeys.FieldFreeSlotsAt
+	FieldName         = rediskeys.FieldName
+	FieldSaleStartsAt = rediskeys.FieldSaleStartsAt
 )
+
+// Positions in the Snapshot HMGET. The field list is built from this table, so
+// reordering or adding a field cannot shift the others.
+const (
+	snNowServing = iota
+	snName
+	snSaleStartsAt
+	snFreeSlots
+	snFreeSlotsAt
+	snState
+	snIssued
+	snFullBookedAt
+	snCount
+)
+
+var snapshotFields = [snCount]string{
+	snNowServing: FieldNowServing, snName: FieldName, snSaleStartsAt: FieldSaleStartsAt,
+	snFreeSlots: FieldFreeSlots, snFreeSlotsAt: FieldFreeSlotsAt, snState: FieldState,
+	snIssued: FieldIssued, snFullBookedAt: FieldFullBookedAt,
+}
 
 // Store implements outbound.QueueStore.
 type Store struct{ rdb goredis.UniversalClient }
@@ -42,56 +66,45 @@ type Store struct{ rdb goredis.UniversalClient }
 // NewStore wraps a client (*redis.ClusterClient in AWS, *redis.Client locally).
 func NewStore(rdb goredis.UniversalClient) *Store { return &Store{rdb: rdb} }
 
-// Snapshot reads the event's state in one pipelined round trip. All keys share
-// the {ev} slot. A missing key reads as empty; any other per-command error
-// fails the snapshot (fail closed: a hidden error could open the capacity gate).
+// Snapshot reads the event's state with one HMGET of queue:{ev}. A missing
+// field reads as empty; any other error fails the snapshot (fail closed: a
+// hidden error could open the capacity gate).
 func (s *Store) Snapshot(ctx context.Context, ev rediskeys.Event) (domain.EventSnapshot, error) {
-	var state, issued, fullBooked *goredis.StringCmd
-	var meta *goredis.SliceCmd
-	_, err := s.rdb.Pipelined(ctx, func(p goredis.Pipeliner) error {
-		state = p.Get(ctx, ev.QueueState())
-		meta = p.HMGet(ctx, ev.QueueHash(), FieldNowServing, FieldName, FieldSaleStartsAt, FieldFreeSlots, FieldFreeSlotsAt)
-		issued = p.Get(ctx, ev.QueueIssued())
-		fullBooked = p.Get(ctx, ev.FullBookedAt())
-		return nil
-	})
-	if err != nil && !errors.Is(err, goredis.Nil) {
-		return domain.EventSnapshot{}, err
-	}
-	var snap domain.EventSnapshot
-	var stateStr, issuedStr string
-	for _, c := range []struct {
-		cmd *goredis.StringCmd
-		dst *string
-	}{{state, &stateStr}, {issued, &issuedStr}, {fullBooked, &snap.FullBookedAt}} {
-		v, err := c.cmd.Result()
-		if err != nil && !errors.Is(err, goredis.Nil) {
-			return domain.EventSnapshot{}, err
-		}
-		*c.dst = v
-	}
-	snap.State = domain.SaleState(stateStr)
-	if snap.Issued, err = optionalInt(issuedStr); err != nil {
-		return domain.EventSnapshot{}, fmt.Errorf("%s: %w", ev.QueueIssued(), err)
-	}
-	vals, err := meta.Result()
+	// One HMGET: the whole event lives in one hash (ADR-006 §8.12). A missing
+	// field reads as empty; any other error fails the snapshot (fail closed).
+	vals, err := s.rdb.HMGet(ctx, ev.QueueHash(), snapshotFields[:]...).Result()
 	if err != nil {
 		return domain.EventSnapshot{}, err
 	}
+	var snap domain.EventSnapshot
 	str := func(i int) string {
 		if v, ok := vals[i].(string); ok {
 			return v
 		}
 		return ""
 	}
-	if snap.NowServing, err = optionalInt(str(0)); err != nil {
+	if snap.NowServing, err = optionalInt(str(snNowServing)); err != nil {
 		return domain.EventSnapshot{}, fmt.Errorf("%s now_serving: %w", ev.QueueHash(), err)
 	}
-	snap.Name, snap.SaleStartsAt = str(1), str(2)
+	snap.Name, snap.SaleStartsAt = str(snName), str(snSaleStartsAt)
+	snap.State = domain.SaleState(str(snState))
+	if snap.Issued, err = optionalInt(str(snIssued)); err != nil {
+		return domain.EventSnapshot{}, fmt.Errorf("%s issued: %w", ev.QueueHash(), err)
+	}
+	// full_booked_at is epoch seconds in Redis; the 409 shows ISO 8601. An
+	// unreadable value only blanks that field of the error body, but is logged
+	// so a writer using another format (the old key held RFC 3339) is noticed.
+	if raw := str(snFullBookedAt); raw != "" {
+		if at, err := optionalInt(raw); err == nil && at > 0 {
+			snap.FullBookedAt = time.Unix(at, 0).UTC().Format(time.RFC3339)
+		} else {
+			slog.WarnContext(ctx, "queue: full_booked_at is not epoch seconds", slog.String("event_id", ev.ID()), slog.String("value", raw))
+		}
+	}
 	// free_slots only lets join wait for a grant. A value that is not a number
 	// reads as "not written": join then answers queued at once.
-	if free, err := optionalInt(str(3)); err == nil {
-		if at, err := optionalInt(str(4)); err == nil {
+	if free, err := optionalInt(str(snFreeSlots)); err == nil {
+		if at, err := optionalInt(str(snFreeSlotsAt)); err == nil {
 			snap.FreeSlots, snap.FreeSlotsAt = free, at
 		}
 	}
@@ -238,9 +251,9 @@ func (s *Store) ReleaseAccount(ctx context.Context, ev rediskeys.Event, accountI
 	}, key)
 }
 
-// IssueTicket is INCR queue:{ev}:issued.
+// IssueTicket is HINCRBY queue:{ev} issued 1.
 func (s *Store) IssueTicket(ctx context.Context, ev rediskeys.Event) (int64, error) {
-	return s.rdb.Incr(ctx, ev.QueueIssued()).Result()
+	return s.rdb.HIncrBy(ctx, ev.QueueHash(), FieldIssued, 1).Result()
 }
 
 // SaveEngagement writes token:<qt> and its TTL atomically (one key).

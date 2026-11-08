@@ -55,7 +55,7 @@ sequenceDiagram
         Note over Q: fail open + CaptchaFailOpenSeconds
     end
 
-    Q->>R: 5 snapshot: state, now_serving, free_slots, free_slots_at, issued, name, sale_starts_at, full_booked_at (1 pipeline)
+    Q->>R: 5 snapshot: state, now_serving, free_slots, free_slots_at, issued, name, sale_starts_at, full_booked_at (one HMGET of queue:{ev})
     alt SCHEDULED
         Q-->>C: 409 SALE_NOT_OPEN {queue_state NOT_OPEN, sale_starts_at}
     else CLOSED
@@ -77,7 +77,7 @@ sequenceDiagram
         Q-->>C: 503 QUEUE_FULL {queue_state FULL, queue_capacity}
     end
 
-    Q->>R: 9 SET acct NX (logged in) · INCR issued · HSET token · ZADD by_ticket
+    Q->>R: 9 SET acct NX (logged in) · HINCRBY issued · HSET token · ZADD by_ticket
 
     opt 10 I fit: free_slots_at ≤ 2 s old and ticket_no ≤ now_serving + min(free_slots, JOIN_DIRECT_MAX) (FR-05)
         Note over CTL: next tick (≤ 500 ms): INSERT GRANTED · HSET grant · HSET token grant_token
@@ -126,7 +126,7 @@ order wins.
 7. **Fully booked**: new joiners get 409 `FULL_BOOKED`; rejoiners kept their place in step 6
 8. **Capacity**: `issued − now_serving ≥ QUEUE_CAPACITY` → 503 `QUEUE_FULL` (fail fast, no buffering)
 9. **Issue**: `SET acct NX` (logged in; a lost race waits up to 2 s for the winner's token and returns that
-   place) → `INCR issued` → `HSET token` (+ TTL) → `ZADD by_ticket`. Token before `by_ticket`, so
+   place) → `HINCRBY issued` → `HSET token` (+ TTL) → `ZADD by_ticket`. Token before `by_ticket`, so
    admission-ctl never sees a member without its hash. A failure releases `acct` and answers 503
 10. **FR-05**: if the number fits (`free_slots_at` at most `JOIN_FREE_SLOTS_MAX_AGE_SECONDS` old and
     `ticket_no ≤ now_serving + min(free_slots, JOIN_DIRECT_MAX)`), poll `token:{qt}` in Redis for the
@@ -143,7 +143,7 @@ Full catalog: [`../redis-keys.md`](../redis-keys.md).
 | Store | Key / table | Op | Notes |
 |---|---|---|---|
 | Redis | `rl:join:{ip}`, `rl:joinacct:{id}` | token bucket (`pkg/ratelimit` Lua) | 20 / 5 min, 3 / min |
-| Redis | `queue:{ev}:state`, `queue:{ev}` (`now_serving`, `free_slots`, `free_slots_at`, `name`, `sale_starts_at`), `queue:{ev}:issued`, `queue:{ev}:full_booked_at` | one pipelined read | `name` and `sale_starts_at` are seeded by sale-ops; `free_slots*` by the advance Lua |
+| Redis | `queue:{ev}` (`state`, `now_serving`, `free_slots`, `free_slots_at`, `issued`, `full_booked_at`, `name`, `sale_starts_at`) | one `HMGET` (ADR-006 §8.12) | `name` and `sale_starts_at` are seeded by sale-ops; `free_slots*` by the advance Lua |
 | Redis | `token:{queue_token}` | HGETALL (rejoin), HSET + EXPIRE, HMGET `grant_token`, `booking_expires_at` (FR-05 wait, ≤ 11 reads) | `qt_` + ULID. Fields `ticket_no`, `event_id`, `joined_at`, `account_id` (logged in), `device_hash` (`HMAC(DEVICE_PEPPER, device id)`, whenever a device id is sent). TTL `SALE_WINDOW_SECONDS`. admission-ctl adds `grant_token`, `booking_id`, `booking_expires_at` when it grants |
 | Redis | `acct:{ev}:{account_id}` | GET, SET NX EX, WATCH/MULTI replace | logged-in only |
 | Redis | `queue:{ev}:by_ticket` | ZADD on issue; ZADD NX under WATCH on repair | score = `ticket_no` |

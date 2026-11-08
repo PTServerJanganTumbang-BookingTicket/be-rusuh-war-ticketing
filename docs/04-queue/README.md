@@ -23,8 +23,9 @@ The wait-time estimate (FR-09) is not an endpoint: it's fields on join, `/me` an
 
 ## 0. The design in five rules
 
-1. **One writer.** Only admission-ctl grants, on a fixed 500 ms tick. Join never grants; on an empty
-   queue it just waits up to 1 s for the next tick to grant it (S2).
+1. **One writer.** Only admission-ctl grants, on a fixed 500 ms tick. Join never grants; when the
+   caller's number fits in the places still free (`free_slots`, written each tick) it just waits up to 1 s
+   for the next tick to grant it, so the first batch at sale start skips the waiting room (S2, ADR-006 §8.11).
 2. **One broadcast.** Everyone receives the same bytes (`nowServing`, `state`, `ratePerMin`,
    `serverTime`). There is no per-customer push. When `nowServing ≥ ticket_no`, the client calls
    `/me` to collect its `grant_token` (S3). A named `status` event marks each sale-state change.
@@ -98,7 +99,7 @@ sequenceDiagram
         CTL->>DB: COUNT open, browsing
         CTL->>R: EVALSHA advance_now_serving.lua
         CTL->>DB: INSERT bookings GRANTED (idempotent)
-        CTL->>R: HSET grant · ZADD expiries · ZREM by_ticket
+        CTL->>R: HSET grant · HSET token · ZREM by_ticket
         CTL->>R: PUBLISH sse-broadcast (after the INSERTs)
         R-->>SSE: nowServing, state, ratePerMin, serverTime
         SSE-->>C: data (same for everyone)
@@ -113,7 +114,7 @@ sequenceDiagram
 
 ## 3. State machines
 
-### 3.1 Sale state per event (`queue:{ev}:state`)
+### 3.1 Sale state per event (field `state` of `queue:{ev}`)
 
 ```mermaid
 stateDiagram-v2
@@ -178,7 +179,7 @@ kept in step with the code by a test in `pkg/rediskeys`. In short:
 
 | Group | Keys |
 |---|---|
-| Event (slot `{ev}`) | `queue:{ev}` (`now_serving`, `rate_per_min`, `name`, `sale_starts_at`), `queue:{ev}:state`, `queue:{ev}:issued`, `queue:{ev}:by_ticket` (score ≤ `now_serving` = **pending grant**), `queue:{ev}:full_booked_at`, `expiries:{ev}`, `stock:{ev}:{cat}`, `acct:{ev}:{account_id}` |
+| Event (slot `{ev}`) | `queue:{ev}` (hash: `state`, `issued`, `now_serving`, `free_slots`, `free_slots_at`, `full_booked_at`, `rate_per_min`, `name`, `sale_starts_at`), `queue:{ev}:by_ticket` (score ≤ `now_serving` = **pending grant**), `stock:{ev}:{cat}`, `acct:{ev}:{account_id}` |
 | Customer (no tag) | `token:{queue_token}`, `grant:{grant_token}`, `rl:join:{ip}`, `rl:joinacct:{account_id}`, `rl:sse:{ip}` |
 | Channels | `sse-broadcast`, `sse-status` (state changes, incl. CLOSED) |
 

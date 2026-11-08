@@ -30,7 +30,7 @@ sequenceDiagram
             CF-->>C: 200 cached body
         else miss
             CF->>Q: forward
-            Q->>R: HGET queue:{ev} now_serving, rate_per_min · GET queue:{ev}:state
+            Q->>R: HMGET queue:{ev} now_serving, rate_per_min, state
             Q-->>CF: 200 now_serving, rate_per_min, state, server_time, poll_after_ms, poll_tiers
             CF-->>C: 200
         end
@@ -72,8 +72,7 @@ can't do that). Needs a PR to `documentations/api/`.
 
 | Store | Key | Op |
 |---|---|---|
-| Redis | `queue:{ev}` → `now_serving`, `rate_per_min` | HGET |
-| Redis | `queue:{ev}:state` | GET |
+| Redis | `queue:{ev}` → `now_serving`, `rate_per_min`, `state` | HMGET |
 
 ## 5. Responses
 

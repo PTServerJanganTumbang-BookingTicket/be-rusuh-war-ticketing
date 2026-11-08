@@ -71,9 +71,7 @@ func setup(t *testing.T, failOn string) (*usecase.Join, *goredis.Client, string)
 	t.Cleanup(func() { _ = rdb.Close() })
 	ev, _ := rediskeys.NewEvent("E1")
 	ctx := context.Background()
-	rdb.Set(ctx, ev.QueueState(), "OPEN", 0)
-	rdb.HSet(ctx, ev.QueueHash(), "now_serving", 10, "name", "Konser")
-	rdb.Set(ctx, ev.QueueIssued(), 20, 0)
+	rdb.HSet(ctx, ev.QueueHash(), "state", "OPEN", "now_serving", 10, "name", "Konser", "issued", 20)
 
 	issuer, _ := token.NewIssuer("secret", "rusuh-user", time.Hour)
 	bearer, _, _ := issuer.Issue("acc-1", "a@example.com", true)
@@ -197,7 +195,7 @@ func TestJoin_foreignTokenIs401AndMatchesErrForeignToken(t *testing.T) {
 	}
 	issuer, _ := token.NewIssuer("secret", "rusuh-user", time.Hour)
 	other, _, _ := issuer.Issue("acc-2", "b@example.com", true)
-	issued, _ := rdb.Get(ctx, "queue:{E1}:issued").Int()
+	issued, _ := rdb.HGet(ctx, "queue:{E1}", "issued").Int()
 	cases := map[string]struct {
 		in   usecase.JoinInput
 		code string
@@ -221,7 +219,7 @@ func TestJoin_foreignTokenIs401AndMatchesErrForeignToken(t *testing.T) {
 	if !errors.As(err, &ae) || ae.ErrorCode != domain.CodeCaptchaRequired {
 		t.Fatalf("no captcha + foreign token = %v, want 400 CAPTCHA_REQUIRED", err)
 	}
-	if n, _ := rdb.Get(ctx, "queue:{E1}:issued").Int(); n != issued {
+	if n, _ := rdb.HGet(ctx, "queue:{E1}", "issued").Int(); n != issued {
 		t.Fatalf("issued moved from %d to %d", issued, n)
 	}
 }
@@ -240,9 +238,7 @@ func TestJoin_servedTicketWithBookingErrorIs503AndNotReadded(t *testing.T) {
 	rdb := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	ctx := context.Background()
 	ev, _ := rediskeys.NewEvent("E1")
-	rdb.Set(ctx, ev.QueueState(), "OPEN", 0)
-	rdb.HSet(ctx, ev.QueueHash(), "now_serving", 100)
-	rdb.Set(ctx, ev.QueueIssued(), 120, 0)
+	rdb.HSet(ctx, ev.QueueHash(), "state", "OPEN", "now_serving", 100, "issued", 120)
 	store := queueredis.NewStore(rdb)
 	// Bound to the caller's device, so the test reaches the booking lookup.
 	_ = store.SaveEngagement(ctx, domain.Engagement{QueueToken: "qt_SERVED", EventID: "E1", TicketNo: 90,

@@ -14,11 +14,7 @@ Feature: Central Redis key names (pkg/rediskeys)
     Examples:
       | builder    | arg    | key                     |
       | QueueHash  |        | queue:{E1}              |
-      | QueueState |        | queue:{E1}:state        |
-      | QueueIssued|        | queue:{E1}:issued       |
       | ByTicket   |        | queue:{E1}:by_ticket    |
-      | FullBookedAt  |        | queue:{E1}:full_booked_at  |
-      | Expiries   |        | expiries:{E1}           |
       | Stock      | VIP    | stock:{E1}:VIP          |
       | Acct       | acc-42 | acct:{E1}:acc-42        |
 
@@ -47,9 +43,15 @@ Feature: Central Redis key names (pkg/rediskeys)
     And pkg/rediskeys exports no builder named "Pause"
     And pkg/rediskeys exports no builder named "PauseGraceApplied"
     And pkg/rediskeys exports no channel named "sse-grant"
-    # OPEN: impl-plan §3.1 still lists ResumeFlag (queue:{ev}:resume). The ADR-006 Lua
-    # still writes it, but no reader is documented since pause was removed.
-    # Proposal: drop it from the Lua and from pkg/rediskeys. See advance_now_serving.feature.
+
+  @unit @adr-006-8-12
+  Scenario: Keys merged into the queue hash or removed by ADR-006 §8.12 do not exist
+    Then pkg/rediskeys exports no builder named "QueueState"
+    And pkg/rediskeys exports no builder named "QueueIssued"
+    And pkg/rediskeys exports no builder named "FullBookedAt"
+    And pkg/rediskeys exports no builder named "Expiries"
+    And pkg/rediskeys exports no builder named "ResumeFlag"
+    # state, issued and full_booked_at are fields of queue:{ev}; the deadline sweep reads Aurora.
 
   @unit
   Scenario Outline: An event id that would break the hash tag is rejected

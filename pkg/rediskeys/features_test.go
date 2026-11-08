@@ -47,8 +47,7 @@ func initScenario(sc *godog.ScenarioContext) {
 
 // eventKeys lists every key builder on Event, so the slot check cannot miss one.
 func eventKeys(ev rediskeys.Event, cats ...string) []string {
-	keys := []string{ev.QueueHash(), ev.QueueState(), ev.QueueIssued(), ev.ByTicket(),
-		ev.FullBookedAt(), ev.Expiries(), ev.Acct("acc-1")}
+	keys := []string{ev.QueueHash(), ev.ByTicket(), ev.Acct("acc-1")}
 	for _, c := range cats {
 		keys = append(keys, ev.Stock(c))
 	}
@@ -62,14 +61,10 @@ func (w *world) buildEventKey(builder, eventID, arg string) error {
 		return nil
 	}
 	m := map[string]func() string{
-		"QueueHash":    ev.QueueHash,
-		"QueueState":   ev.QueueState,
-		"QueueIssued":  ev.QueueIssued,
-		"ByTicket":     ev.ByTicket,
-		"FullBookedAt": ev.FullBookedAt,
-		"Expiries":     ev.Expiries,
-		"Stock":        func() string { return ev.Stock(arg) },
-		"Acct":         func() string { return ev.Acct(arg) },
+		"QueueHash": ev.QueueHash,
+		"ByTicket":  ev.ByTicket,
+		"Stock":     func() string { return ev.Stock(arg) },
+		"Acct":      func() string { return ev.Acct(arg) },
 	}
 	f, ok := m[builder]
 	if !ok {

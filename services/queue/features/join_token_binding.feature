@@ -22,7 +22,7 @@ Feature: Only the owner can use my queue_token
   Scenario: As a guest on another device I am refused, and the owner keeps the place
     When a guest with device id "dev-laptop-000000002" joins "E1" sending queue_token "qt_G" with captcha "cap-ok"
     Then the response status is 401 with error_code "DEVICE_MISMATCH"
-    And queue:{E1}:issued is still 40000
+    And queue:{E1} issued is still 40000
     And token:qt_G field device_hash is still HMAC-SHA256(DEVICE_PEPPER, "dev-phone-0000000001") hex
     And queue:{E1}:by_ticket scores "qt_G" at 32748
     And the metric "DeviceMismatch" is incremented
@@ -49,7 +49,7 @@ Feature: Only the owner can use my queue_token
   Scenario Outline: Outline: Someone else cannot use an account holder's token
     When <caller> joins "E1" sending queue_token "qt_A" with captcha "cap-ok"
     Then the response status is 401 with error_code "UNAUTHORIZED"
-    And queue:{E1}:issued is still 40000
+    And queue:{E1} issued is still 40000
     And acct:{E1}:acc-1 holds "qt_A"
 
     Examples:

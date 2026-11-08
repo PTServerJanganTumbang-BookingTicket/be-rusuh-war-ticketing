@@ -41,7 +41,7 @@ sequenceDiagram
     C->>ALB: GET /queue/stream (cookie / X-Queue-Token)
     ALB->>S: forward (idle timeout 3600 s)
     S->>R: rate limit rl:sse:{ip}
-    S->>R: GET queue:{ev}:state
+    S->>R: HGET queue:{ev} state
     alt CLOSED
         S-->>C: 410 Gone (EventSource stops retrying)
     else SCHEDULED
@@ -99,7 +99,7 @@ sequenceDiagram
 | Store | Key | Op |
 |---|---|---|
 | Redis | `rl:sse:{ip}` | token bucket |
-| Redis | `queue:{ev}:state`, `queue:{ev}` | GET / HGET |
+| Redis | `queue:{ev}` (`state`, `now_serving`, `rate_per_min`) | HGET / HMGET |
 | Redis | `token:{uuid}` | HGETALL |
 | Redis pub/sub | `sse-broadcast`, `sse-status` | SUBSCRIBE |
 

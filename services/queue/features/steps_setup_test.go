@@ -46,13 +46,18 @@ func registerSetupSteps(sc *godog.ScenarioContext, W func() *world) {
 		if err := w.setState(id, state); err != nil {
 			return err
 		}
-		return w.rdb.Set(context.Background(), ev(id).FullBookedAt(), at, 0).Err()
+		t, err := time.Parse(time.RFC3339, at)
+		if err != nil {
+			return err
+		}
+		// stored as epoch seconds (ADR-006 §8.12); join shows it as ISO 8601
+		return w.rdb.HSet(context.Background(), ev(id).QueueHash(), queueredis.FieldFullBookedAt, t.Unix()).Err()
 	})
 	sc.Step(`^event "([^"]*)" has no state key$`, func(id string) error {
-		return W().rdb.Del(context.Background(), ev(id).QueueState()).Err()
+		return W().rdb.HDel(context.Background(), ev(id).QueueHash(), queueredis.FieldState).Err()
 	})
 	sc.Step(`^event "([^"]*)" has the unknown state "([^"]*)"$`, func(id, state string) error {
-		return W().rdb.Set(context.Background(), ev(id).QueueState(), state, 0).Err()
+		return W().setState(id, state)
 	})
 	sc.Step(`^now_serving is (\d+) and issued is (\d+)$`, func(ns, issued int64) error {
 		return W().setCounters("E1", ns, issued)
@@ -227,7 +232,7 @@ func registerSetupSteps(sc *godog.ScenarioContext, W func() *world) {
 func ptr[T any](v T) *T { return &v }
 
 func (w *world) setState(id, state string) error {
-	return w.rdb.Set(context.Background(), ev(id).QueueState(), state, 0).Err()
+	return w.rdb.HSet(context.Background(), ev(id).QueueHash(), queueredis.FieldState, state).Err()
 }
 
 // setFreeSlots writes what the advance Lua records: free_slots and free_slots_at (epoch s).
@@ -239,10 +244,7 @@ func (w *world) setFreeSlots(id string, n, at int64) error {
 func (w *world) setCounters(id string, ns, issued int64) error {
 	ctx := context.Background()
 	e := ev(id)
-	if err := w.rdb.HSet(ctx, e.QueueHash(), queueredis.FieldNowServing, ns).Err(); err != nil {
-		return err
-	}
-	return w.rdb.Set(ctx, e.QueueIssued(), issued, 0).Err()
+	return w.rdb.HSet(ctx, e.QueueHash(), queueredis.FieldNowServing, ns, queueredis.FieldIssued, issued).Err()
 }
 
 func (w *world) seedEvent(id, state string, ns, issued *int64, name string) error {

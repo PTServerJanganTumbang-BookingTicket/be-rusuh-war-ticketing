@@ -450,7 +450,7 @@ func (w *world) cleanRedis() error {
 	ctx := context.Background()
 	for _, id := range testEvents {
 		e := ev(id)
-		for _, k := range []string{e.QueueHash(), e.QueueState(), e.FullBookedAt()} {
+		for _, k := range []string{e.QueueHash()} {
 			if err := w.rdb.Del(ctx, k).Err(); err != nil {
 				return err
 			}
@@ -564,10 +564,7 @@ func (w *world) publish(channel string, payload []byte) error {
 func (w *world) seedEvent(id, state string, nowServing, rate int64) error {
 	ctx := context.Background()
 	e := ev(id)
-	if err := w.rdb.Set(ctx, e.QueueState(), state, 0).Err(); err != nil {
-		return err
-	}
-	if err := w.rdb.HSet(ctx, e.QueueHash(), "now_serving", nowServing, "rate_per_min", rate).Err(); err != nil {
+	if err := w.rdb.HSet(ctx, e.QueueHash(), "state", state, "now_serving", nowServing, "rate_per_min", rate).Err(); err != nil {
 		return err
 	}
 	return nil
@@ -576,11 +573,8 @@ func (w *world) seedEvent(id, state string, nowServing, rate int64) error {
 func (w *world) setState(id, state string) error {
 	ctx := context.Background()
 	e := ev(id)
-	if err := w.rdb.Set(ctx, e.QueueState(), state, 0).Err(); err != nil {
+	if err := w.rdb.HSet(ctx, e.QueueHash(), "state", state).Err(); err != nil {
 		return err
-	}
-	if state == "FULL_BOOKED" {
-		return w.rdb.Set(ctx, e.FullBookedAt(), w.clock().Now().UTC().Format(time.RFC3339), 0).Err()
 	}
 	return nil
 }
@@ -594,8 +588,8 @@ func (w *world) seedToken(token, eventID string, ticketNo int64, device string) 
 }
 
 func (w *world) ensureEvent(id string) error {
-	n, err := w.rdb.Exists(context.Background(), ev(id).QueueState()).Result()
-	if err != nil || n > 0 {
+	n, err := w.rdb.HExists(context.Background(), ev(id).QueueHash(), "state").Result()
+	if err != nil || n {
 		return err
 	}
 	return w.seedEvent(id, "OPEN", 31600, 318)

@@ -1,68 +1,92 @@
 @draft @step-8 @admission-ctl @FR-10
-Feature: A granted customer who never shows up lapses after the booking TTL
-  The queue-owned part of SWEEP moves GRANTED → LAPSED with a compare-and-set
-  update. LAPSED is final. The freed place is found by the next tick's COUNT.
+Feature: If I don't use my turn within 5 minutes, I lose it
+  As a customer whose turn came, I have 5 minutes to start choosing seats. If I don't, my booking moves
+  GRANTED → LAPSED for good (no second chance) and the next tick gives my place to the next person.
+  The queue part of SWEEP does this with one compare-and-set UPDATE on Aurora (no Redis deadline list: ADR-006 §8.12);
+  SELECTING and later belong to 05-booking.
 
-  Sources: 05 §4 · README §3.2 · requirements §5 (no second chance)
+  Sources: 05-admission-controller.md §4 · README §3.2 · ADR-006 §8.12 · requirements §5 (no second chance)
 
   Background:
     Given event "E1" is "OPEN"
     And customer "c1" was granted booking "B1" with deadline "2026-11-10T19:05:00Z"
-    And expiries:{E1} scores "B1" at that deadline
+
+  # ------------------------------------------------------------ I didn't show up
 
   @integration @postgres @redis-cluster
-  Scenario: A no-show lapses at the deadline
+  Scenario: At the deadline my unused turn lapses
     Given "B1" is still "GRANTED"
     When the clock reaches "2026-11-10T19:05:00Z" and SWEEP runs
     Then "B1" has status "LAPSED"
     And grant:<G1> no longer exists
-    And expiries:{E1} no longer holds "B1"
 
   @integration @postgres
-  Scenario: Not yet due
+  Scenario: One second before the deadline my turn is still mine
     Given "B1" is still "GRANTED"
     When the clock reads "2026-11-10T19:04:59Z" and SWEEP runs
     Then "B1" is still "GRANTED"
-    And expiries:{E1} still holds "B1"
-
-  @integration @postgres
-  Scenario: The customer claimed the booking in time
-    Given "B1" moved to "SELECTING"
-    When the deadline passes and the queue SWEEP runs
-    Then "B1" is still "SELECTING"
-    And the queue SWEEP does not remove "B1" from expiries:{E1}
-    # SELECTING → EXPIRED belongs to 05-booking, which handles the same expiries entry.
-
-  @integration @postgres
-  Scenario: The deadline moved later, so the entry is rescored
-    Given "B1" is "GRANTED" with booking_expires_at moved to "2026-11-10T19:07:00Z"
-    And expiries:{E1} still scores "B1" at "2026-11-10T19:05:00Z"
-    When the clock reaches "2026-11-10T19:05:00Z" and SWEEP runs
-    Then "B1" is still "GRANTED"
-    And expiries:{E1} scores "B1" at "2026-11-10T19:07:00Z"
-
-  @integration @postgres @fault
-  Scenario: Two sweepers on the same row make exactly one transition
-    Given "B1" is "GRANTED" and past its deadline
-    When sweepers A and B update "B1" at the same time
-    Then exactly one of them reports 1 row changed
-    And "B1" has status "LAPSED"
+    And grant:<G1> still exists
 
   @integration @postgres @redis-cluster @rule-3
-  Scenario: A lapse frees a place on the next tick without any counter
+  Scenario: My lapsed place goes to the next person on the next tick
     Given MAX_CONCURRENT_SLOTS is 1 and "B1" is the only active booking
     And customer "c2" is waiting
     When "B1" lapses and the next tick runs
     Then "c2" is granted
 
   @unit
-  Scenario: LAPSED is final
+  Scenario: A lapsed turn stays lapsed
     Given "B1" is "LAPSED"
     When any component tries to move "B1" to another status
     Then the update changes 0 rows
 
+  @integration @postgres @redis-cluster @fault
+  Scenario: If the controller dies right after my turn lapses, my grant is still dead
+    Given the controller will crash right after the UPDATE that lapses "B1", before it deletes any Redis key
+    When the clock reaches "2026-11-10T19:05:00Z" and SWEEP runs and the controller dies
+    Then "B1" has status "LAPSED"
+    And grant:<G1> is gone once its TTL ends, at the deadline
+    # No deadline list to repair: the row is the only record, and the grant hash expires by itself.
+
+  # ------------------------------------------------------------ I did show up
+
+  @integration @postgres
+  Scenario: If I started choosing seats in time, the queue leaves me alone
+    Given "B1" moved to "SELECTING"
+    When the deadline passes and the queue SWEEP runs
+    Then "B1" is still "SELECTING"
+    # SELECTING → EXPIRED belongs to 05-booking, which uses the same kind of query for its own statuses.
+
+  @integration @postgres
+  Scenario: If my deadline moved later, I keep my turn until the new deadline
+    Given "B1" is "GRANTED" with booking_expires_at moved to "2026-11-10T19:07:00Z"
+    When the clock reaches "2026-11-10T19:05:00Z" and SWEEP runs
+    Then "B1" is still "GRANTED"
+    When the clock reaches "2026-11-10T19:07:00Z" and SWEEP runs
+    Then "B1" has status "LAPSED"
+
+  # ------------------------------------------------------------ two sweepers
+
+  @integration @postgres @fault
+  Scenario: Two sweepers on my booking make exactly one change
+    Given "B1" is "GRANTED" and past its deadline
+    When sweepers A and B run SWEEP at the same time
+    Then exactly one of them is given "B1" back by the UPDATE
+    And "B1" has status "LAPSED"
+
+  # ------------------------------------------------------------ cost
+
+  @integration @postgres @NFR-02
+  Scenario: Finding due turns stays cheap with a big table
+    Given 200000 bookings exist, of which 100 are "GRANTED"
+    When I EXPLAIN the sweep query
+    Then the plan uses the partial index on booking_expires_at for GRANTED rows
+    And the plan does not contain a sequential scan on bookings
+
+  # ------------------------------------------------------------ open
+
   @integration @redis-cluster @open-question
-  Scenario: A lapsed customer cannot join the same sale again
+  Scenario: After my turn lapses I cannot rejoin at the back of the line
     # OPEN: 05 §4 deletes acct:{E1}:<account> and token:<uuid> on lapse, and join treats a
     # missing acct as a fresh join, so the customer would get a new ticket at the back.
     # That conflicts with "LAPSED is final, no second chance".

@@ -45,7 +45,7 @@ Feature: I join the queue and get a ticket number
   @integration @redis-cluster
   Scenario: Joining writes exactly these Redis keys
     When a guest with device id "dev-aaaaaaaaaaaaaaaa" joins "E1" with captcha "cap-ok"
-    Then queue:{E1}:issued is 32748
+    Then queue:{E1} issued is 32748
     And token:<queue_token> is a hash with exactly these fields:
       | field       | value                                        |
       | ticket_no   | 32748                                        |

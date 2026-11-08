@@ -63,7 +63,7 @@ type Source interface {
 
 // Store is the Redis side of connect: gates and the snapshot.
 type Store interface {
-	// State reads queue:{ev}:state. found is false when the key does not exist.
+	// State reads the state field of queue:{ev}. found is false when the field (or the hash) does not exist.
 	State(ctx context.Context, ev rediskeys.Event) (state string, found bool, err error)
 	// Numbers reads now_serving and rate_per_min from queue:{ev} (0 when absent).
 	Numbers(ctx context.Context, ev rediskeys.Event) (nowServing, ratePerMin int64, err error)

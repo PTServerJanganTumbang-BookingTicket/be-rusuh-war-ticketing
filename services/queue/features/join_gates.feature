@@ -21,7 +21,7 @@ Feature: Join says no early and in a fixed order, and a refusal never costs me a
     When a guest joins "E1"
     Then the response status is <status> with error_code "<code>"
     And no gate after "<gate>" was called
-    And queue:{E1}:issued is still 149
+    And queue:{E1} issued is still 149
 
     Examples:
       | gate              | status | code               |
@@ -147,7 +147,7 @@ Feature: Join says no early and in a fixed order, and a refusal never costs me a
   Scenario: A failed CAPTCHA costs me no ticket number
     When a guest with device id "dev-aaaaaaaaaaaaaaaa" joins "E1" with captcha "cap-bad"
     Then the response status is 403 with error_code "CAPTCHA_FAILED"
-    And queue:{E1}:issued is still 149
+    And queue:{E1} issued is still 149
 
   @unit @NFR-13
   Scenario Outline: Outline: If the CAPTCHA provider has trouble, I can still join
@@ -194,7 +194,7 @@ Feature: Join says no early and in a fixed order, and a refusal never costs me a
     When a guest with device id "dev-aaaaaaaaaaaaaaaa" joins "E1" with captcha "cap-ok"
     Then the response status is 409 with error_code "FULL_BOOKED"
     And data is {"queue_state": "FULL_BOOKED", "full_booked_at": "2026-11-10T02:40:12Z"}
-    And queue:{E1}:issued is still 149
+    And queue:{E1} issued is still 149
 
   @integration @redis-cluster @FR-18
   Scenario: Joining works again once seats come back
@@ -208,7 +208,7 @@ Feature: Join says no early and in a fixed order, and a refusal never costs me a
     Given event "E1" has <state>
     When a guest with device id "dev-aaaaaaaaaaaaaaaa" joins "E1" with captcha "cap-ok"
     Then the response status is 503 with error_code "QUEUE_NOT_READY"
-    And queue:{E1}:issued is still 149
+    And queue:{E1} issued is still 149
 
     Examples:
       | state                       |
@@ -223,7 +223,7 @@ Feature: Join says no early and in a fixed order, and a refusal never costs me a
     When a guest with device id "dev-aaaaaaaaaaaaaaaa" joins "E1" with captcha "cap-ok"
     Then the response status is 503 with error_code "QUEUE_FULL"
     And data is {"queue_state": "FULL", "queue_capacity": 49}
-    And queue:{E1}:issued is still 149
+    And queue:{E1} issued is still 149
 
   @integration @redis-cluster
   Scenario: The last place is still given out

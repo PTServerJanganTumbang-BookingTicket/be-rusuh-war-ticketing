@@ -15,7 +15,7 @@ import (
 // single {ev} slot; join never runs the admission Lua and never publishes.
 type QueueStore interface {
 	// Snapshot reads state, now_serving, free_slots, free_slots_at, issued,
-	// name, sale_starts_at and full_booked_at in one round trip.
+	// name, sale_starts_at and full_booked_at in one HMGET.
 	Snapshot(ctx context.Context, ev rediskeys.Event) (domain.EventSnapshot, error)
 	// Engagement reads token:<queueToken>. found is false if it does not exist.
 	Engagement(ctx context.Context, queueToken string) (e domain.Engagement, found bool, err error)
@@ -27,7 +27,7 @@ type QueueStore interface {
 	ClaimAccount(ctx context.Context, ev rediskeys.Event, accountID, queueToken, replace string, ttl time.Duration) (claimed bool, current string, err error)
 	// ReleaseAccount deletes acct:{ev}:<accountID> if it still holds queueToken.
 	ReleaseAccount(ctx context.Context, ev rediskeys.Event, accountID, queueToken string) error
-	// IssueTicket is INCR queue:{ev}:issued.
+	// IssueTicket is HINCRBY queue:{ev} issued 1.
 	IssueTicket(ctx context.Context, ev rediskeys.Event) (int64, error)
 	// SaveEngagement writes token:<qt> with a TTL.
 	SaveEngagement(ctx context.Context, e domain.Engagement, ttl time.Duration) error

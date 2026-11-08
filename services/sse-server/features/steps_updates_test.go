@@ -386,7 +386,7 @@ func (w *world) slowToken(id string) string {
 
 func (w *world) publishBroadcast(id string, nowServing int64, state string) error {
 	if state == "" {
-		state, _ = w.rdb.Get(contextBG(), ev(id).QueueState()).Result()
+		state, _ = w.rdb.HGet(contextBG(), ev(id).QueueHash(), "state").Result()
 		if state == "" {
 			state = "OPEN"
 		}

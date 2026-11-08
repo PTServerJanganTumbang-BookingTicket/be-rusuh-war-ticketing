@@ -45,23 +45,14 @@ func (e Event) ID() string { return e.id }
 
 func (e Event) tag() string { return "{" + e.id + "}" }
 
-// QueueHash is queue:{ev}: now_serving, sale metadata.
+// QueueHash is queue:{ev}, the event's one hash (ADR-006 §8.12): state
+// (SCHEDULED | OPEN | FULL_BOOKED | CLOSED), issued (HINCRBY hands out
+// ticket_no), now_serving, full_booked_at (epoch s), free_slots, free_slots_at,
+// rate_per_min, name, sale_starts_at. docs/redis-keys.md lists every field.
 func (e Event) QueueHash() string { return "queue:" + e.tag() }
-
-// QueueState is queue:{ev}:state (SCHEDULED | OPEN | FULL_BOOKED | CLOSED).
-func (e Event) QueueState() string { return "queue:" + e.tag() + ":state" }
-
-// QueueIssued is queue:{ev}:issued, the INCR counter that hands out ticket_no.
-func (e Event) QueueIssued() string { return "queue:" + e.tag() + ":issued" }
 
 // ByTicket is queue:{ev}:by_ticket, a ZSET of queue_token scored by ticket_no.
 func (e Event) ByTicket() string { return "queue:" + e.tag() + ":by_ticket" }
-
-// FullBookedAt is queue:{ev}:full_booked_at (when stock first hit zero).
-func (e Event) FullBookedAt() string { return "queue:" + e.tag() + ":full_booked_at" }
-
-// Expiries is expiries:{ev}, the ZSET of booking expiry times.
-func (e Event) Expiries() string { return "expiries:" + e.tag() }
 
 // Stock is stock:{ev}:<category>.
 func (e Event) Stock(category string) string { return "stock:" + e.tag() + ":" + category }

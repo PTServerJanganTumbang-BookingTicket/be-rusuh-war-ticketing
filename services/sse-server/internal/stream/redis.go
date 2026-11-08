@@ -21,7 +21,7 @@ func NewRedisStore(rdb goredis.UniversalClient) *RedisStore { return &RedisStore
 
 // State implements Store.
 func (s *RedisStore) State(ctx context.Context, ev rediskeys.Event) (string, bool, error) {
-	v, err := s.rdb.Get(ctx, ev.QueueState()).Result()
+	v, err := s.rdb.HGet(ctx, ev.QueueHash(), rediskeys.FieldState).Result()
 	if errors.Is(err, goredis.Nil) {
 		return "", false, nil
 	}
@@ -30,7 +30,7 @@ func (s *RedisStore) State(ctx context.Context, ev rediskeys.Event) (string, boo
 
 // Numbers implements Store.
 func (s *RedisStore) Numbers(ctx context.Context, ev rediskeys.Event) (int64, int64, error) {
-	vals, err := s.rdb.HMGet(ctx, ev.QueueHash(), "now_serving", "rate_per_min").Result()
+	vals, err := s.rdb.HMGet(ctx, ev.QueueHash(), rediskeys.FieldNowServing, rediskeys.FieldRatePerMin).Result()
 	if err != nil {
 		return 0, 0, err
 	}
