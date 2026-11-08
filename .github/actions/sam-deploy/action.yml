@@ -35,7 +35,7 @@ runs:
         go-version: '1.26'
         check-latest: true
 
-    - uses: aws-actions/setup-sam@819220f63fb333a9a394dd0a5cab2d8303fd3ca1 # v2.0.0
+    - uses: aws-actions/setup-sam@f84ec7d548307efafe33230528756de3c5841a17 # v2
       with:
         use-installer: true
 
