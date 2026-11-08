@@ -1,4 +1,4 @@
-@draft @step-2 @admission-ctl @integration @postgres
+@step-2 @admission-ctl @integration @postgres
 Feature: I get one booking per place, and counting who is inside stays fast
   As a customer, my place in line turns into exactly one booking, however often the controller retries.
   As everyone in the line, I need the "who is inside" count to stay fast with 200k bookings in the table.

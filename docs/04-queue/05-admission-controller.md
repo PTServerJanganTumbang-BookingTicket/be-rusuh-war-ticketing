@@ -330,13 +330,13 @@ the next tick's COUNT automatically, with no counter to decrement.
 ## 8. Tasks
 
 - [x] `pkg/redisscript` + `advance_now_serving.lua` (ADR-006 §3.4) + Lua tests
-- [ ] migration: `UNIQUE (event_id, queue_token)` + partial index on active statuses
-- [ ] `services/admission-ctl` scaffold (ECS, `cmd/worker`)
+- [x] migration: `UNIQUE (event_id, queue_token)` (0005) + partial index on active statuses (0006)
+- [ ] `services/admission-ctl` scaffold (ECS, `cmd/worker`) (module + store exist; `cmd/worker` not yet)
 - [ ] tick loop skeleton (500 ms ticker) with step functions and per-step metrics
-- [ ] postgres `AdmissionCounter.Count(ev)` on the writer pool
+- [x] postgres `AdmissionCounter.Count(ev)` on the writer pool (`CountAdmission`, plus idempotent `InsertGranted`)
 - [ ] RECOVER → SNAPSHOT → COUNT → ADVANCE → FINISH, + `PendingGrants` gauge and alert
-- [ ] `free_slots` in the Lua + grant copy into `token:{uuid}` + tick SCHEDULED events (ADR-006 §8.11)
-- [ ] migration `0006`: partial indexes on active statuses (COUNT) and on `booking_expires_at WHERE status = 'GRANTED'` (SWEEP)
+- [ ] `free_slots` in the Lua + grant copy into `token:{uuid}` + tick SCHEDULED events (ADR-006 §8.11) (Lua part done in step 1)
+- [x] migration `0006`: partial indexes on active statuses (COUNT) and on `booking_expires_at WHERE status = 'GRANTED'` (SWEEP)
 - [ ] SWEEP: GRANTED → LAPSED
 - [ ] BROADCAST + heartbeat + `rate_per_min` ([§3.5](#35-rate_per_min), config `ETA_SEED_SLOT_MINUTES`)
 - [ ] FULL_BOOKED → CLOSED + `sse-status` on each state change

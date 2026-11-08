@@ -5,7 +5,7 @@
 --     (FR-05) and a rejoin read it back.
 --   * UNIQUE (event_id, queue_token): one engagement per queue_token per event,
 --     and the index join's lookup uses.
--- The admission count's partial index on active statuses lands with
+-- The admission count's partial index on active statuses landed in 0006 with
 -- admission-ctl (bookings_store.feature, build step 2).
 
 BEGIN;
