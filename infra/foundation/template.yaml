@@ -622,6 +622,26 @@ Resources:
 
   AuroraCluster:
     Type: AWS::RDS::DBCluster
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            # W1011 "use a dynamic reference rather than a parameter for a
+            # secret" is good advice that is wrong here, and expensively so.
+            #
+            # A dynamic reference resolves when the change set is created,
+            # before any resource in it is updated. Using one for
+            # MasterUserPassword means the cluster is set from the password as
+            # it was BEFORE the deploy, so the secret, the connection string
+            # and the cluster each end up a generation apart. The symptom is
+            # "password authentication failed", with every value looking
+            # correct wherever you inspect it.
+            #
+            # The parameter is NoEcho and alphanumeric-constrained, and it is
+            # only used when an operator deliberately sets one. When they do
+            # not, the resolve below still applies - safe there, because a
+            # generated password only changes on create.
+            - W1011
     DeletionPolicy: Snapshot
     UpdateReplacePolicy: Snapshot
     Properties:
@@ -630,7 +650,20 @@ Resources:
       EngineMode: provisioned
       DatabaseName: !Ref DatabaseName
       MasterUsername: !Sub '{{resolve:secretsmanager:${AuroraMasterSecret}:SecretString:username}}'
-      MasterUserPassword: !Sub '{{resolve:secretsmanager:${AuroraMasterSecret}:SecretString:password}}'
+      # From the parameter when one was given, for the same reason as
+      # AppDatabaseSecret: a dynamic reference resolves when the change set is
+      # created, which is BEFORE AuroraMasterSecret is updated in that same
+      # operation. Resolving here would set the cluster to the password from
+      # before the deploy - so the secret, the DSN and the cluster would each
+      # be a different generation, and the symptom is
+      #
+      #   FATAL: password authentication failed for user "rusuh_app"
+      #
+      # with every value looking correct wherever you inspect it.
+      MasterUserPassword: !If
+        - HasDbPassword
+        - !Ref DatabasePassword
+        - !Sub '{{resolve:secretsmanager:${AuroraMasterSecret}:SecretString:password}}'
       DBSubnetGroupName: !Ref DbSubnetGroup
       VpcSecurityGroupIds:
         - !Ref AuroraSecurityGroup

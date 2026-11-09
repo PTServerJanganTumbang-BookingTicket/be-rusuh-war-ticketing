@@ -69,6 +69,12 @@ Standard-tier SSM parameters are free, so this costs nothing.
 
 ## One-time setup
 
+> **[`RUNBOOK.md`](RUNBOOK.md) is the authoritative procedure.** It has the
+> ordered steps, the current commands and the failure table. This section
+> explains the *reasoning* behind each step; where the two disagree about a
+> command, the runbook is newer.
+
+
 **1. The deploy role.** This is the only stack CI cannot deploy, because it
 creates the role CI assumes:
 
