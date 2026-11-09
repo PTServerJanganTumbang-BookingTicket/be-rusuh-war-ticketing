@@ -57,6 +57,20 @@ func (mr *MockIOutboxRepositoryMockRecorder) ClaimUnpublished(ctx, limit any) *g
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ClaimUnpublished", reflect.TypeOf((*MockIOutboxRepository)(nil).ClaimUnpublished), ctx, limit)
 }
 
+// MarkDropped mocks base method.
+func (m *MockIOutboxRepository) MarkDropped(ctx context.Context, ids []string, reason string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "MarkDropped", ctx, ids, reason)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// MarkDropped indicates an expected call of MarkDropped.
+func (mr *MockIOutboxRepositoryMockRecorder) MarkDropped(ctx, ids, reason any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MarkDropped", reflect.TypeOf((*MockIOutboxRepository)(nil).MarkDropped), ctx, ids, reason)
+}
+
 // MarkPublished mocks base method.
 func (m *MockIOutboxRepository) MarkPublished(ctx context.Context, ids []string) error {
 	m.ctrl.T.Helper()

@@ -26,6 +26,7 @@ exist`.
 | `0002_tickets_read_model` | `tickets`, `events` | FK → `accounts` |
 | `0003_outbox_and_refresh` | `outbox`, `refresh_tokens` | FK → `accounts` |
 | `0004_engagement_read_model` | `bookings`, `queue_entries` | FK → `accounts` |
+| `0005_outbox_drop_tracking` | adds `outbox.dropped_at`, `outbox.drop_reason` | needs `outbox` from `0003` |
 
 Every statement uses `IF NOT EXISTS`, so re-running a file is harmless. That
 is the only thing standing in for a migration runner, so keep it true: a
@@ -35,7 +36,7 @@ apply twice, and with no ledger there is no way to know whether it already ran.
 Two consequences of owning this by hand:
 
 - Nothing records what is applied. There is no `schema_migrations` table unless
-  someone creates one, so "does this environment have 0004?" is answered by
+  someone creates one, so "does this environment have 0005?" is answered by
   looking at the database.
 - A service deploy cannot tell. The pipeline reports success whether or not the
   schema matches the code, so a missing table surfaces as a runtime 500 rather

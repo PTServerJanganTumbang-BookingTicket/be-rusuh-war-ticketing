@@ -11,7 +11,10 @@
 // Flagged in the notification README as a contract addition.
 package events
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Type identifies an outbox row's payload shape. Values are the wire format —
 // they appear in the database and on the queue, so they are append-only.
@@ -50,6 +53,43 @@ func (t Type) IsKnown() bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// MaxAge is how long after creation this event is still worth delivering, and
+// whether that limit exists at all.
+//
+// Only events carrying a short-lived token have one. A magic link that has
+// already expired is worse than no email: the recipient clicks it, gets
+// "invalid or expired login link", and now has a support question. Delivering
+// it is a cost with no upside.
+//
+// Everything else returns false and is delivered however late. A ticket, an
+// expiry notice or a payment failure is still worth reading an hour after the
+// fact, and dropping one loses information the recipient needs.
+//
+// The windows mirror the token TTLs they wrap - services/user
+// entity.MagicTokenTTL. If that changes, change this.
+func (t Type) MaxAge() (time.Duration, bool) {
+	switch t {
+	case TypeAuthMagicLink, TypeAccountVerify:
+		// Exactly the token's own lifetime, not more.
+		//
+		// An earlier version added a minute of slack "for clock skew". That
+		// was wrong in a specific way: the writer and the publisher are both
+		// AWS services whose clocks differ by milliseconds, so the slack
+		// guarded against nothing and its only effect was to permit a minute
+		// of links that had already expired - the exact outcome this is here
+		// to prevent.
+		//
+		// Erring shorter would be worse: it would drop links that still
+		// worked, and a customer who never receives a login email is a
+		// harder problem than one who receives a dead link and retries.
+		// Matching the TTL means dropping a row if and only if the token it
+		// carries is certainly dead.
+		return 15 * time.Minute, true
+	default:
+		return 0, false
 	}
 }
 

@@ -6,6 +6,10 @@ import "context"
 type Result struct {
 	Claimed   int
 	Published int
+	// Dropped counts rows deliberately not sent because the event outlived
+	// its usefulness. Distinct from Failed: nothing went wrong, and a retry
+	// would not help.
+	Dropped   int
 	Skipped   int
 	Failed    int
 	Remaining int

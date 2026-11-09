@@ -2,7 +2,9 @@ package usecase
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"time"
 
 	portin "github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/outbox-publisher/internal/outbox/port/inbound"
 )
@@ -28,6 +30,13 @@ import (
 // A failed publish does not fail the pass. One malformed row must not block
 // every row behind it, so failures are counted and the rest proceed. The row
 // stays unpublished and OutboxLag reports it.
+//
+// Stale rows are dropped, not sent. An event carrying a short-lived token is
+// worthless once that token has expired, and delivering it is worse than
+// silence: the recipient clicks a login link, is told it is invalid, and now
+// has a question. Only types that declare a MaxAge are subject to this; a
+// ticket or a payment notice is still worth reading late. See
+// pkg/events.Type.MaxAge.
 func (u *PublisherUsecase) Drain(ctx context.Context) (portin.Result, error) {
 	records, finish, err := u.repo.ClaimUnpublished(ctx, u.batchSize)
 	if err != nil {
@@ -36,8 +45,29 @@ func (u *PublisherUsecase) Drain(ctx context.Context) (portin.Result, error) {
 
 	result := portin.Result{Claimed: len(records)}
 	published := make([]string, 0, len(records))
+	// Grouped by reason so one UPDATE covers each distinct cause, and the
+	// stored reason stays specific enough to be worth reading.
+	dropped := make(map[string][]string)
+	now := time.Now()
 
 	for _, record := range records {
+		// Before the lease: there is no point claiming a row we will not
+		// send, and holding a lease we immediately discard would make a
+		// concurrent worker skip a row for no reason.
+		if maxAge, bounded := record.Type.MaxAge(); bounded {
+			if age := now.Sub(record.CreatedAt); age > maxAge {
+				reason := fmt.Sprintf("stale: %s old, max %s", age.Round(time.Second), maxAge)
+				slog.WarnContext(ctx, "dropping stale outbox row",
+					slog.String("outbox_id", record.ID),
+					slog.String("type", string(record.Type)),
+					slog.Duration("age", age.Round(time.Second)),
+					slog.Duration("max_age", maxAge),
+					slog.String("metric", "OutboxDroppedStale"))
+				dropped[reason] = append(dropped[reason], record.ID)
+				continue
+			}
+		}
+
 		claimed, err := u.lease.Claim(ctx, record.ID)
 		if err != nil {
 			// Without a lease two workers could both send this row. Skipping
@@ -81,6 +111,19 @@ func (u *PublisherUsecase) Drain(ctx context.Context) (portin.Result, error) {
 			}
 			return result, err
 		}
+	}
+
+	for reason, ids := range dropped {
+		if err := u.repo.MarkDropped(ctx, ids, reason); err != nil {
+			// Same reasoning as a failed MarkPublished: roll back rather than
+			// leave the transaction's view of these rows ambiguous. Nothing
+			// was sent for them, so a retry costs one more evaluation.
+			if finishErr := finish(ctx, false); finishErr != nil {
+				slog.ErrorContext(ctx, "rollback failed", slog.Any("err", finishErr))
+			}
+			return result, err
+		}
+		result.Dropped += len(ids)
 	}
 
 	if err := finish(ctx, true); err != nil {

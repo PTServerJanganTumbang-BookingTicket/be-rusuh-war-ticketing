@@ -58,6 +58,7 @@ func main() {
 			if result.Claimed > 0 || result.Failed > 0 {
 				slog.Info("drained",
 					slog.Int("published", result.Published),
+					slog.Int("dropped", result.Dropped),
 					slog.Int("skipped", result.Skipped),
 					slog.Int("failed", result.Failed),
 					slog.Int("remaining", result.Remaining),

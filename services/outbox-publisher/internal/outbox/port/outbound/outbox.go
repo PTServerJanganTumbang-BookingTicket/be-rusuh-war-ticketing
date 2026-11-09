@@ -20,6 +20,11 @@ type IOutboxRepository interface {
 	// so a row is only retired if the whole pass commits.
 	MarkPublished(ctx context.Context, ids []string) error
 
+	// MarkDropped retires rows that were deliberately not sent, recording
+	// why. It sets dropped_at and leaves published_at NULL: the row was never
+	// published, and saying otherwise would make the audit trail lie.
+	MarkDropped(ctx context.Context, ids []string, reason string) error
+
 	// CountUnpublished is the OutboxLag metric (ADR-005 §observability).
 	CountUnpublished(ctx context.Context) (int, error)
 }

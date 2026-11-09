@@ -255,3 +255,111 @@ func TestDrain_LagCountFailureDoesNotFailThePass(t *testing.T) {
 	require.NoError(t, err, "the lag metric is observability, not correctness")
 	assert.Equal(t, 0, result.Remaining)
 }
+
+// ── stale rows ────────────────────────────────────────────────────────────────
+//
+// An event carrying a short-lived token is worthless once the token has
+// expired. Sending it is worse than silence: the recipient clicks a login
+// link, is told it is invalid, and now has a question. These tests pin the
+// boundary and the blast radius.
+
+func staleRecord(id string, t events.Type, age time.Duration) entity.Record {
+	r := record(id)
+	r.Type = t
+	r.CreatedAt = time.Now().UTC().Add(-age)
+	return r
+}
+
+func TestDrain_DropsStaleMagicLink(t *testing.T) {
+	uc, d := newTestUsecase(t)
+	fin := &finisher{}
+	d.repo.EXPECT().ClaimUnpublished(gomock.Any(), gomock.Any()).
+		Return([]entity.Record{staleRecord("evt-old", events.TypeAuthMagicLink, 30*time.Minute)}, fin.fn(), nil)
+	// No lease, no publish: there is no point claiming a row we will not send.
+	d.repo.EXPECT().MarkDropped(gomock.Any(), []string{"evt-old"}, gomock.Any()).Return(nil)
+	d.repo.EXPECT().CountUnpublished(gomock.Any()).Return(0, nil)
+
+	res, err := uc.Drain(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, res.Dropped)
+	assert.Equal(t, 0, res.Published)
+	assert.Equal(t, 0, res.Failed, "a drop is not a failure: nothing went wrong and a retry would not help")
+	assert.True(t, fin.committed)
+}
+
+func TestDrain_KeepsFreshMagicLink(t *testing.T) {
+	uc, d := newTestUsecase(t)
+	fin := &finisher{}
+	d.repo.EXPECT().ClaimUnpublished(gomock.Any(), gomock.Any()).
+		Return([]entity.Record{staleRecord("evt-new", events.TypeAuthMagicLink, 2*time.Minute)}, fin.fn(), nil)
+	d.lease.EXPECT().Claim(gomock.Any(), "evt-new").Return(true, nil)
+	d.publisher.EXPECT().Publish(gomock.Any(), gomock.Any()).Return(nil)
+	d.repo.EXPECT().MarkPublished(gomock.Any(), []string{"evt-new"}).Return(nil)
+	d.lease.EXPECT().Complete(gomock.Any(), "evt-new").Return(nil)
+	d.repo.EXPECT().CountUnpublished(gomock.Any()).Return(0, nil)
+
+	res, err := uc.Drain(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, res.Published)
+	assert.Equal(t, 0, res.Dropped)
+}
+
+func TestDrain_NeverDropsUnboundedTypes(t *testing.T) {
+	// A ticket is still worth reading a day late. Only token-bearing types
+	// declare a MaxAge; everything else must be delivered however old.
+	for _, typ := range []events.Type{
+		events.TypeTicketIssue, events.TypeBookingExpired, events.TypePaymentFailedNotice,
+	} {
+		t.Run(string(typ), func(t *testing.T) {
+			uc, d := newTestUsecase(t)
+			fin := &finisher{}
+			d.repo.EXPECT().ClaimUnpublished(gomock.Any(), gomock.Any()).
+				Return([]entity.Record{staleRecord("evt-1", typ, 72*time.Hour)}, fin.fn(), nil)
+			d.lease.EXPECT().Claim(gomock.Any(), "evt-1").Return(true, nil)
+			d.publisher.EXPECT().Publish(gomock.Any(), gomock.Any()).Return(nil)
+			d.repo.EXPECT().MarkPublished(gomock.Any(), []string{"evt-1"}).Return(nil)
+			d.lease.EXPECT().Complete(gomock.Any(), "evt-1").Return(nil)
+			d.repo.EXPECT().CountUnpublished(gomock.Any()).Return(0, nil)
+
+			res, err := uc.Drain(context.Background())
+			require.NoError(t, err)
+			assert.Equal(t, 1, res.Published)
+			assert.Equal(t, 0, res.Dropped)
+		})
+	}
+}
+
+func TestDrain_StaleAndFreshInOneBatch(t *testing.T) {
+	// The case that produced this change: a backlog where old rows sit in
+	// front of new ones. The stale row must not take the fresh one with it.
+	uc, d := newTestUsecase(t)
+	fin := &finisher{}
+	d.repo.EXPECT().ClaimUnpublished(gomock.Any(), gomock.Any()).Return([]entity.Record{
+		staleRecord("evt-old", events.TypeAuthMagicLink, 26*time.Minute),
+		staleRecord("evt-new", events.TypeAuthMagicLink, 1*time.Minute),
+	}, fin.fn(), nil)
+	d.lease.EXPECT().Claim(gomock.Any(), "evt-new").Return(true, nil)
+	d.publisher.EXPECT().Publish(gomock.Any(), gomock.Any()).Return(nil)
+	d.repo.EXPECT().MarkPublished(gomock.Any(), []string{"evt-new"}).Return(nil)
+	d.repo.EXPECT().MarkDropped(gomock.Any(), []string{"evt-old"}, gomock.Any()).Return(nil)
+	d.lease.EXPECT().Complete(gomock.Any(), "evt-new").Return(nil)
+	d.repo.EXPECT().CountUnpublished(gomock.Any()).Return(0, nil)
+
+	res, err := uc.Drain(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, res.Published)
+	assert.Equal(t, 1, res.Dropped)
+	assert.True(t, fin.committed)
+}
+
+func TestDrain_MarkDroppedFailureRollsBack(t *testing.T) {
+	uc, d := newTestUsecase(t)
+	fin := &finisher{}
+	d.repo.EXPECT().ClaimUnpublished(gomock.Any(), gomock.Any()).
+		Return([]entity.Record{staleRecord("evt-old", events.TypeAuthMagicLink, 30*time.Minute)}, fin.fn(), nil)
+	d.repo.EXPECT().MarkDropped(gomock.Any(), gomock.Any(), gomock.Any()).Return(errors.New("db down"))
+
+	_, err := uc.Drain(context.Background())
+	require.Error(t, err)
+	assert.False(t, fin.committed, "a failed MarkDropped must roll back, not commit")
+}
