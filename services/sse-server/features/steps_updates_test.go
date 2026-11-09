@@ -416,6 +416,8 @@ var retryValue = regexp.MustCompile(`retry: \d+`)
 // expectNew compares what arrived since the last assertion with a docstring.
 // With prefix set, only as many frames as the docstring has are consumed, so
 // "I receive exactly: <this frame>" can be followed by "then <the next one>".
+var serverTimeValue = regexp.MustCompile(`"serverTime":"[^"]*"`)
+
 func (w *world) expectNew(c *client, want string, prefix bool) error {
 	w.settle()
 	var got string
@@ -426,6 +428,9 @@ func (w *world) expectNew(c *client, want string, prefix bool) error {
 	}
 	if strings.Contains(want, "event: reconnect") { // the retry value is random; the docstring shows an example
 		got = retryValue.ReplaceAllString(got, "retry: 7300")
+	}
+	if strings.Contains(want, `"serverTime":"<any>"`) { // the moment depends on when the fake clock moved
+		got = serverTimeValue.ReplaceAllString(got, `"serverTime":"<any>"`)
 	}
 	if norm(got) != norm(want) {
 		return fmt.Errorf("received:\n%s\nwant:\n%s", norm(got), norm(want))

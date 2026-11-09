@@ -103,7 +103,7 @@ Feature: Following the queue while I wait
       data: {"state":"CLOSED","fullBookedAt":null,"serverTime":"2026-10-24T13:10:01.004Z"}
 
       event: sold-out
-      data: {"message":"Tiket sudah habis"}
+      data: {"state":"CLOSED","message":"Tiket sudah habis","serverTime":"2026-10-24T13:10:01.004Z"}
 
       """
     And my response ends and I am no longer registered

@@ -80,11 +80,11 @@ func registerReliabilitySteps(sc *godog.ScenarioContext, W func() *world) {
 		}
 		return nil
 	})
-	sc.Step(`^they receive their snapshot followed by "stale" with reason "([^"]*)"$`, func(reason string) error {
+	sc.Step(`^they receive their snapshot followed by "stale" with message "([^"]*)"$`, func(message string) error {
 		w := W()
 		w.settle()
 		fs := nonComment(w.captured["new"].(*client).frames())
-		if len(fs) < 2 || fs[0].event != "" || fs[1].event != "stale" || !strings.Contains(fs[1].data, reason) {
+		if len(fs) < 2 || fs[0].event != "" || fs[1].event != "stale" || !strings.Contains(fs[1].data, message) {
 			return fmt.Errorf("frames: %v", fs)
 		}
 		return nil
@@ -105,16 +105,16 @@ func registerReliabilitySteps(sc *godog.ScenarioContext, W func() *world) {
 		}
 		return nil
 	})
-	sc.Step(`^I received "stale" with reason "([^"]*)"$`, func(reason string) error {
+	sc.Step(`^I received "stale" with message "([^"]*)"$`, func(message string) error {
 		w := W()
-		switch reason {
-		case "no_admission_updates":
+		switch message {
+		case "Data antrian belum diperbarui":
 			w.pass(31 * time.Second)
-		case "redis_disconnected":
+		case "Koneksi server terputus, mencoba menyambung kembali":
 			w.dropRedis()
 		}
-		if countStale(w.me, "true") != 1 || !strings.Contains(w.me.w.body(), reason) {
-			return fmt.Errorf("no stale with reason %s in %q", reason, truncate(w.me.w.body()))
+		if countStale(w.me, "true") != 1 || !strings.Contains(w.me.w.body(), message) {
+			return fmt.Errorf("no stale with message %s in %q", message, truncate(w.me.w.body()))
 		}
 		w.me.takeNew()
 		return nil

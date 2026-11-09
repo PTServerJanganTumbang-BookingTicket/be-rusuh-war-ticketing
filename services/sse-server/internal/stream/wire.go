@@ -17,6 +17,9 @@ const (
 // closedMessage is what a customer reads when the sale is over.
 const closedMessage = "Tiket sudah habis"
 
+// reconnectMessage is shown (if at all) while the server hands the customer to another task.
+const reconnectMessage = "Server sedang diperbarui, menyambung ulang otomatis"
+
 func validState(s string) bool {
 	return s == StateScheduled || s == StateOpen || s == StateFullBooked || s == StateClosed
 }
@@ -37,9 +40,18 @@ type statusMsg struct {
 	ServerTime   string  `json:"serverTime"`
 }
 
+// Every named event carries state and serverTime; message is the human text (stale true, sold-out, reconnect).
 type staleMsg struct {
-	Stale  bool   `json:"stale"`
-	Reason string `json:"reason,omitempty"`
+	Stale      bool   `json:"stale"`
+	State      string `json:"state"`
+	Message    string `json:"message,omitempty"`
+	ServerTime string `json:"serverTime"`
+}
+
+type endMsg struct {
+	State      string `json:"state"`
+	Message    string `json:"message"`
+	ServerTime string `json:"serverTime"`
 }
 
 func must(v any) []byte {
@@ -66,21 +78,23 @@ func statusFrame(state string, fullBookedAt int64, now time.Time) []byte {
 	return []byte(fmt.Sprintf("event: status\ndata: %s\n\n", must(statusMsg{State: state, FullBookedAt: at, ServerTime: iso(now)})))
 }
 
-func soldOutFrame() []byte {
-	return []byte(fmt.Sprintf("event: sold-out\ndata: %s\n\n", must(map[string]string{"message": closedMessage})))
+func soldOutFrame(now time.Time) []byte {
+	return []byte(fmt.Sprintf("event: sold-out\ndata: %s\n\n", must(endMsg{State: StateClosed, Message: closedMessage, ServerTime: iso(now)})))
 }
 
 // closedFrames is status CLOSED followed by sold-out; the response ends after it.
 func closedFrames(now time.Time) []byte {
-	return append(statusFrame(StateClosed, 0, now), soldOutFrame()...)
+	return append(statusFrame(StateClosed, 0, now), soldOutFrame(now)...)
 }
 
-func staleFrame(stale bool, reason string) []byte {
-	return []byte(fmt.Sprintf("event: stale\ndata: %s\n\n", must(staleMsg{Stale: stale, Reason: reason})))
+// staleFrame says the numbers are (or are no longer) frozen; message is empty when they are fresh again.
+func staleFrame(stale bool, state, message string, now time.Time) []byte {
+	return []byte(fmt.Sprintf("event: stale\ndata: %s\n\n", must(staleMsg{Stale: stale, State: state, Message: message, ServerTime: iso(now)})))
 }
 
-func reconnectFrame(retryMS int64) []byte {
-	return []byte(fmt.Sprintf("event: reconnect\nretry: %d\ndata: {}\n\n", retryMS))
+func reconnectFrame(retryMS int64, state string, now time.Time) []byte {
+	return []byte(fmt.Sprintf("event: reconnect\nretry: %d\ndata: %s\n\n", retryMS,
+		must(endMsg{State: state, Message: reconnectMessage, ServerTime: iso(now)})))
 }
 
 var keepaliveFrame = []byte(": keepalive\n\n")

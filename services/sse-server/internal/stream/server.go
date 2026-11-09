@@ -104,8 +104,8 @@ const (
 )
 
 const (
-	staleNoUpdates = "no_admission_updates"
-	staleRedisDown = "redis_disconnected"
+	staleNoUpdates = "Data antrian belum diperbarui"
+	staleRedisDown = "Koneksi server terputus, mencoba menyambung kembali"
 )
 
 // conn is one customer's stream. The fan-out never blocks on it: a full
@@ -135,7 +135,7 @@ type room struct {
 	lastNS    int64
 	lastFresh time.Time
 	stale     bool
-	reason    string
+	message   string
 }
 
 // Server is the stream server.
@@ -370,7 +370,7 @@ func (s *Server) register(c *conn, evID, state string, nowServing, rate int64) b
 	state = r.state
 	c.send(updateFrame(nowServing, state, rate, now))
 	if r.stale {
-		c.send(staleFrame(true, r.reason))
+		c.send(staleFrame(true, r.state, r.message, now))
 	}
 	r.conns[c] = struct{}{}
 	s.d.Metrics.Gauge(MetricConnections, evID, float64(len(r.conns)))
@@ -478,8 +478,8 @@ func (s *Server) handleBroadcast(payload []byte) {
 	}
 	r.lastFresh = now
 	if r.stale {
-		r.stale, r.reason = false, ""
-		s.broadcast(r, staleFrame(false, ""))
+		r.stale, r.message = false, ""
+		s.broadcast(r, staleFrame(false, r.state, "", now))
 	}
 	if m.State == StateClosed {
 		s.closeRoom(r, now)
@@ -577,12 +577,13 @@ func (s *Server) consume(ctx context.Context, sub Subscription) {
 func (s *Server) lost() {
 	s.connected.Store(false)
 	s.hadDisconnect.Store(true)
+	now := s.d.Clock.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, r := range s.rooms {
 		if !r.stale {
-			r.stale, r.reason = true, staleRedisDown
-			s.broadcast(r, staleFrame(true, staleRedisDown))
+			r.stale, r.message = true, staleRedisDown
+			s.broadcast(r, staleFrame(true, r.state, staleRedisDown, now))
 		}
 	}
 }
@@ -670,12 +671,12 @@ func (s *Server) checkFreshness(ctx context.Context) {
 		state, found, err := s.d.Store.State(readCtx, ev)
 		cancel()
 		if err != nil || !found || (state != StateOpen && state != StateFullBooked) {
-			continue // Redis trouble is reported as redis_disconnected, not as a silent controller
+			continue // Redis trouble is reported as a stale message of its own, not as a silent controller
 		}
 		s.mu.Lock()
 		if r := s.rooms[id]; r != nil && !r.stale && now.Sub(r.lastFresh) > s.cfg.StaleAfter {
-			r.stale, r.reason = true, staleNoUpdates
-			s.broadcast(r, staleFrame(true, staleNoUpdates))
+			r.stale, r.message = true, staleNoUpdates
+			s.broadcast(r, staleFrame(true, r.state, staleNoUpdates, now))
 		}
 		s.mu.Unlock()
 	}
@@ -689,11 +690,12 @@ func (s *Server) checkFreshness(ctx context.Context) {
 func (s *Server) Drain(ctx context.Context) error {
 	s.mu.Lock()
 	s.draining = true
+	now := s.d.Clock.Now()
 	spread := int64(s.cfg.RetryMax-s.cfg.RetryMin) / int64(time.Millisecond)
 	for _, r := range s.rooms {
 		for c := range r.conns {
 			retry := int64(s.cfg.RetryMin/time.Millisecond) + s.d.Rand(spread+1)
-			c.send(reconnectFrame(retry))
+			c.send(reconnectFrame(retry, r.state, now))
 		}
 	}
 	s.mu.Unlock()

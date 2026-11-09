@@ -26,19 +26,19 @@ Feature: When something goes wrong, the stream tells me the truth
     Then I receive:
       """
       event: stale
-      data: {"stale":true,"reason":"no_admission_updates"}
+      data: {"stale":true,"state":"OPEN","message":"Data antrian belum diperbarui","serverTime":"2026-10-24T13:10:31.000Z"}
 
       """
     And 90 more seconds pass without a second "stale" message
 
   @unit
   Scenario: When updates return, I am told the numbers are fresh again
-    Given I received "stale" with reason "no_admission_updates"
+    Given I received "stale" with message "Data antrian belum diperbarui"
     When a broadcast with nowServing 31650 is published
     Then I receive exactly:
       """
       event: stale
-      data: {"stale":false}
+      data: {"stale":false,"state":"OPEN","serverTime":"2026-10-24T13:10:31.000Z"}
 
       """
     And then a normal message with nowServing 31650
@@ -65,7 +65,7 @@ Feature: When something goes wrong, the stream tells me the truth
   Scenario: Joining an event that is already stale shows it straight away
     Given no broadcast arrived for 40 seconds
     When a second customer connects
-    Then they receive their snapshot followed by "stale" with reason "no_admission_updates"
+    Then they receive their snapshot followed by "stale" with message "Data antrian belum diperbarui"
 
   @unit
   Scenario: A server that just started does not call a quiet event stale
@@ -81,7 +81,7 @@ Feature: When something goes wrong, the stream tells me the truth
     Then I receive:
       """
       event: stale
-      data: {"stale":true,"reason":"redis_disconnected"}
+      data: {"stale":true,"state":"OPEN","message":"Koneksi server terputus, mencoba menyambung kembali","serverTime":"<any>"}
 
       """
     And my connection stays open and keepalives continue
@@ -95,7 +95,7 @@ Feature: When something goes wrong, the stream tells me the truth
 
   @unit @NFR-14
   Scenario: I am only told "fresh" after a real broadcast
-    Given I received "stale" with reason "redis_disconnected"
+    Given I received "stale" with message "Koneksi server terputus, mencoba menyambung kembali"
     When the subscription is restored
     Then I have not yet received "stale" false
     When the next broadcast arrives
@@ -109,7 +109,7 @@ Feature: When something goes wrong, the stream tells me the truth
 
   @unit
   Scenario: A second cause while already stale does not send a second "stale"
-    Given I received "stale" with reason "no_admission_updates"
+    Given I received "stale" with message "Data antrian belum diperbarui"
     When the Redis pub/sub connection drops
     Then I received exactly 1 "stale" true
 
@@ -136,11 +136,11 @@ Feature: When something goes wrong, the stream tells me the truth
       """
       event: reconnect
       retry: 7300
-      data: {}
+      data: {"state":"OPEN","message":"Server sedang diperbarui, menyambung ulang otomatis","serverTime":"2026-10-24T13:10:00.000Z"}
 
       """
     # 7300 is an example; the real value is random in [1000, 15000].
-    # Apidog needs a 5th itemSchema branch "QueueStreamReconnect" = {} (documentations, ask first).
+    # Every named event carries state and serverTime; stale, sold-out and reconnect also carry message.
 
   @unit
   Scenario: A server that is shutting down refuses new customers and fails its health check
@@ -172,7 +172,7 @@ Feature: When something goes wrong, the stream tells me the truth
   Scenario: A real Redis restart: stale, then fresh numbers, nobody disconnected
     Given 20 customers are connected on a real Redis cluster
     When the Redis node is restarted
-    Then all 20 receive "stale" redis_disconnected exactly once and stay connected
+    Then all 20 receive "stale" with the Redis message exactly once and stay connected
     When admission-ctl publishes a broadcast after Redis is back
     Then all 20 receive "stale" false, then the broadcast
 

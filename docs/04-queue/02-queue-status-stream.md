@@ -71,9 +71,9 @@ sequenceDiagram
     Note over C: on every payload: nowServing ≥ ticket_no → GET /queue/me<br/>(also on the first snapshot after a reconnect)
 
     alt no sse-broadcast for 30 s
-        S-->>C: event stale true, reason no_admission_updates
+        S-->>C: event stale true, message "Data antrian belum diperbarui"
     else Redis disconnected
-        S-->>C: event stale true, reason redis_disconnected
+        S-->>C: event stale true, message "Koneksi server terputus…"
     end
 
     CTL->>R: PUBLISH sse-status (state CLOSED)
@@ -109,9 +109,11 @@ sequenceDiagram
 |---|---|---|
 | (default `data`) | `nowServing, state, ratePerMin, serverTime` + `id` | compute position and minutes (README §8.4), sync clock. **If `nowServing ≥ ticket_no` → `GET /queue/me`** |
 | `status` | `state, fullBookedAt, serverTime` | `FULL_BOOKED`: fully-booked message, hide the estimate, stay connected · `OPEN`: resume · `CLOSED`: `sold-out` follows |
-| `stale` | `stale, reason` | dim the numbers, show "Memperbarui…". Never reconnect on it (was named `status` until v2.6) |
-| `sold-out` | `{message}` | right after `status CLOSED`: terminal screen, `es.close()` |
-| `reconnect` | retry hint | let EventSource reconnect |
+| `stale` | `stale, state, message?, serverTime` (message only when `stale` is true) | dim the numbers, show "Memperbarui…". Never reconnect on it (was named `status` until v2.6) |
+| `sold-out` | `state: CLOSED, message, serverTime` | right after `status CLOSED`: terminal screen, `es.close()` |
+| `reconnect` | `retry:` hint + `state, message, serverTime` | let EventSource reconnect |
+
+**One shape (contract v2.12):** every event carries `state` and `serverTime`; `message` (ready-to-show Indonesian text) is on `stale` true, `sold-out` and `reconnect`. The app branches on the event name, `stale` and `state`, never on `message`.
 
 Full JSON schemas per event: the Apidog stream response `itemSchema` (`QueueStreamUpdate`,
 `QueueStreamStatus`, `QueueStreamStale`, `QueueStreamSoldOut`), one example per event.

@@ -87,7 +87,7 @@ func registerScaleSteps(sc *godog.ScenarioContext, W func() *world) {
 		time.Sleep(time.Second)
 		return err
 	})
-	sc.Step(`^all (\d+) receive "stale" redis_disconnected exactly once and stay connected$`, func(n int) error {
+	sc.Step(`^all (\d+) receive "stale" with the Redis message exactly once and stay connected$`, func(n int) error {
 		for _, c := range W().captured["all"].([]*client) {
 			if countStale(c, "true") != 1 || !c.open() {
 				return fmt.Errorf("stale=%d open=%v", countStale(c, "true"), c.open())
