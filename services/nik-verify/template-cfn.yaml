@@ -23,15 +23,12 @@ Parameters:
     Type: String
     Default: "false"
     AllowedValues: ["true", "false"]
-    Description: >
-      Create a public per-service API Gateway endpoint for external access.
-      The internal API Gateway (for service-to-service calls) is always created.
+    Description: Unused — kept for pipeline parameter compatibility.
 
   UnifiedApiUrl:
     Type: String
     Default: ""
-    Description: >
-      URL of the unified API Gateway. Unused — kept for compatibility.
+    Description: Unused — kept for pipeline parameter compatibility.
 
   VpcSubnetIds:
     Type: AWS::SSM::Parameter::Value<List<AWS::EC2::Subnet::Id>>
@@ -89,7 +86,6 @@ Rules:
 Conditions:
   IsDukcapilStub: !Equals [!Ref DukcapilMode, stub]
   HasDukcapilExtraHeader: !Not [!Equals [!Ref DukcapilExtraHeaderName, ""]]
-  CreateDirectApi: !Equals [!Ref EnableDirectApiAccess, "true"]
 
 Resources:
   # ============================================================================
@@ -187,53 +183,25 @@ Resources:
       RetentionInDays: 14
 
   # ============================================================================
-  # Lambda Function URL — internal HTTPS endpoint for service-to-service calls.
-  #
-  # AuthType NONE + resource policy restricted to VPC: the URL is reachable
-  # over HTTPS without AWS credentials, but only from within this VPC.
-  # This replaces the API Gateway for the internal user→nik-verify call and
-  # avoids the $15/month VPC interface endpoint that a private REST API needs.
-  # ============================================================================
-  NikVerifyFunctionUrl:
-    Type: AWS::Lambda::Url
-    Properties:
-      AuthType: NONE
-      TargetFunctionArn: !Ref NikVerifyFunction
-
-  # Allows unauthenticated invocation via the Function URL.
-  # Network-level restriction: the Lambda is in a private VPC subnet with no
-  # inbound route from the internet, so only other resources in the same VPC
-  # (i.e. the user Lambda) can reach it. AuthType NONE avoids SigV4 signing
-  # in the plain HTTP client used by the user service.
-  NikVerifyFunctionUrlVpcPolicy:
-    Type: AWS::Lambda::Permission
-    Properties:
-      FunctionName: !Ref NikVerifyFunction
-      FunctionUrlAuthType: NONE
-      Action: lambda:InvokeFunctionUrl
-      Principal: "*"
-
-  # ============================================================================
-  # HTTP API (API Gateway v2) — ONLY if EnableDirectApiAccess is true
-  # Public-facing endpoint for direct testing/debugging from outside the VPC.
+  # HTTP API (API Gateway v2) — always created as the internal endpoint.
+  # This is how the user service calls nik-verify (service-to-service).
+  # When EnableDirectApiAccess=false this is still created but not advertised
+  # publicly — the unified API Gateway routes /nik/* here too.
   # ============================================================================
   NikVerifyApi:
     Type: AWS::ApiGatewayV2::Api
-    Condition: CreateDirectApi
     Properties:
       Name: !Sub rusuh-${Environment}-nik-verify-api
       ProtocolType: HTTP
 
   NikVerifyApiLogGroup:
     Type: AWS::Logs::LogGroup
-    Condition: CreateDirectApi
     Properties:
       LogGroupName: !Sub /aws/apigateway/rusuh-${Environment}-nik-verify-api
       RetentionInDays: 14
 
   NikVerifyApiStage:
     Type: AWS::ApiGatewayV2::Stage
-    Condition: CreateDirectApi
     Properties:
       ApiId: !Ref NikVerifyApi
       StageName: $default
@@ -244,7 +212,6 @@ Resources:
 
   NikVerifyLambdaIntegration:
     Type: AWS::ApiGatewayV2::Integration
-    Condition: CreateDirectApi
     Properties:
       ApiId: !Ref NikVerifyApi
       IntegrationType: AWS_PROXY
@@ -253,7 +220,6 @@ Resources:
 
   RouteValidateNik:
     Type: AWS::ApiGatewayV2::Route
-    Condition: CreateDirectApi
     Properties:
       ApiId: !Ref NikVerifyApi
       RouteKey: POST /nik/validate
@@ -261,15 +227,13 @@ Resources:
 
   RouteHealthCheck:
     Type: AWS::ApiGatewayV2::Route
-    Condition: CreateDirectApi
     Properties:
       ApiId: !Ref NikVerifyApi
       RouteKey: GET /sys/ping
       Target: !Sub integrations/${NikVerifyLambdaIntegration}
 
-  NikVerifyFunctionDirectApiPermission:
+  NikVerifyFunctionApiPermission:
     Type: AWS::Lambda::Permission
-    Condition: CreateDirectApi
     Properties:
       FunctionName: !Ref NikVerifyFunction
       Action: lambda:InvokeFunction
@@ -278,24 +242,18 @@ Resources:
 
   # ============================================================================
   # SSM Parameter — always published so user service can discover nik-verify.
-  # Points to the internal Lambda Function URL (VPC-only).
   # ============================================================================
   SsmBaseUrl:
     Type: AWS::SSM::Parameter
     Properties:
       Name: !Sub /rusuh/${Environment}/nik-verify/base-url
       Type: String
-      Value: !GetAtt NikVerifyFunctionUrl.FunctionUrl
-      Description: Internal Lambda Function URL for nik-verify (VPC-only)
+      Value: !Sub "https://${NikVerifyApi}.execute-api.${AWS::Region}.amazonaws.com"
+      Description: Base URL of the nik-verify HTTP API (used by user service)
 
 Outputs:
-  InternalUrl:
-    Description: Lambda Function URL for nik-verify (VPC-only, used by user service)
-    Value: !GetAtt NikVerifyFunctionUrl.FunctionUrl
-
   ApiUrl:
-    Condition: CreateDirectApi
-    Description: Public API Gateway URL (direct access for debugging)
+    Description: Base URL of the nik-verify HTTP API
     Value: !Sub "https://${NikVerifyApi}.execute-api.${AWS::Region}.amazonaws.com"
 
   FunctionArn:
