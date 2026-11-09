@@ -218,9 +218,9 @@ Made in the `documentations` repo (shared: changes are reviewed before they are 
 ## 7. Tasks
 
 - [x] plans `01` and `03` reviewed
-- [x] B1 shared packages + migrations + scaffold replacement (built, awaiting commit)
-- [x] B2 ticket page + SELECTING sweep (committed)
-- [x] B3 booking detail + `pkg/eticket` (built, awaiting commit)
-- [ ] Contract/Apidog changes C1–C6 (documentations, after approval)
+- [x] B1 shared packages + migrations + scaffold replacement (`a51f8bf`)
+- [x] B2 ticket page + SELECTING sweep (`4bcdc26`)
+- [x] B3 booking detail + `pkg/eticket` (`ab32140`)
+- [x] Contract/Apidog changes C1–C6, plus §3.3 credentials on EXPIRED/LAPSED: api-contracts v2.13.0 (`documentations` `392ab5a`)
 - [ ] `02-create-booking.md` plan (B4)
-- [ ] Later, when queue code is touched again: queue's `caller.deviceHash` reuses `pkg/grantauth.DeviceHash` (one HMAC definition)
+- [x] queue's `caller.deviceHash` reuses `pkg/grantauth.DeviceHash` (one HMAC definition, B1)
