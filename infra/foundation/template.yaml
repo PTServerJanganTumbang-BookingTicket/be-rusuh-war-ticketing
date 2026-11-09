@@ -744,10 +744,27 @@ Resources:
       Description: Postgres connection string via the RDS Proxy. This is what services read.
       # Host is the proxy when there is one and the cluster writer otherwise,
       # so no service template changes between the two modes.
+      # Pass comes from the PARAMETER when one was given, not from resolving
+      # the master secret.
+      #
+      # Dynamic references are resolved when the change set is CREATED, which
+      # is before AuroraMasterSecret is updated in that same operation. So
+      # resolving the secret here reads the value from before the deploy: set
+      # a new password and this URL is written with the old one, every time,
+      # however often you redeploy. That is exactly how rusuh-prod/database-url
+      # kept a stale password while rusuh-prod/aurora-master had the new one.
+      #
+      # !Ref on a parameter has no such lag - the value is known while the
+      # template is processed. The resolve below still applies when the
+      # password is generated, where it is safe: a generated password only
+      # ever changes on create, so there is nothing stale to read.
       SecretString: !Sub
         - '{"url":"postgres://${User}:${Pass}@${Host}:5432/${DatabaseName}?sslmode=require","host":"${Host}","port":"5432","dbname":"${DatabaseName}","username":"${User}"}'
         - User: !Sub '{{resolve:secretsmanager:${AuroraMasterSecret}:SecretString:username}}'
-          Pass: !Sub '{{resolve:secretsmanager:${AuroraMasterSecret}:SecretString:password}}'
+          Pass: !If
+            - HasDbPassword
+            - !Ref DatabasePassword
+            - !Sub '{{resolve:secretsmanager:${AuroraMasterSecret}:SecretString:password}}'
           Host: !If
             - EnableProxy
             - !GetAtt RdsProxy.Endpoint
