@@ -82,12 +82,21 @@ Resources:
       ProtocolType: HTTP
       Description: HTTP API for booking service
 
+  BookingApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/apigateway/rusuh-${Environment}-booking-api
+      RetentionInDays: 14
+
   BookingApiStage:
     Type: AWS::ApiGatewayV2::Stage
     Properties:
       ApiId: !Ref BookingApi
       StageName: $default
       AutoDeploy: true
+      AccessLogSettings:
+        DestinationArn: !GetAtt BookingApiLogGroup.Arn
+        Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","routeKey":"$context.routeKey","status":"$context.status","protocol":"$context.protocol","responseLength":"$context.responseLength","integrationErrorMessage":"$context.integrationErrorMessage"}'
 
   # ============================================================================
   # Lambda Integration

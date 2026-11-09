@@ -138,12 +138,21 @@ Resources:
       Name: !Sub rusuh-${Environment}-user-api
       ProtocolType: HTTP
 
+  UserApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/apigateway/rusuh-${Environment}-user-api
+      RetentionInDays: 14
+
   UserApiStage:
     Type: AWS::ApiGatewayV2::Stage
     Properties:
       ApiId: !Ref UserApi
       StageName: $default
       AutoDeploy: true
+      AccessLogSettings:
+        DestinationArn: !GetAtt UserApiLogGroup.Arn
+        Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","routeKey":"$context.routeKey","status":"$context.status","protocol":"$context.protocol","responseLength":"$context.responseLength","integrationErrorMessage":"$context.integrationErrorMessage"}'
 
   # ============================================================================
   # Lambda Integration

@@ -213,6 +213,59 @@ Two consequences, both of which cost real debugging time to find:
 
 ---
 
+## SCP restriction and the workaround
+
+This AWS account (699475956139) has a Service Control Policy (SCP) that blocks
+`cloudformation:CreateChangeSet` on the SAM Serverless transform
+(`arn:aws:cloudformation:*:aws:transform/Serverless-2016-10-31`). This means
+`sam deploy` fails with:
+
+```
+User: arn:aws:sts::699475956139:assumed-role/... is not authorized to perform:
+cloudformation:CreateChangeSet on resource: arn:aws:cloudformation:*:aws:transform/Serverless-2016-10-31
+```
+
+**The workaround:** All service deployments use raw CloudFormation templates
+(`template-cfn.yaml`) instead of SAM templates. The pipeline:
+
+1. Builds the Go binary (`GOOS=linux GOARCH=arm64`)
+2. Creates `bootstrap.zip`
+3. Uploads to S3 (the artifact bucket from foundation)
+4. Deploys with `aws cloudformation deploy` — no SAM transform
+
+**What this means for you:**
+
+- The foundation (`infra/foundation/template.yaml`) is unaffected — it never
+  used the SAM transform.
+- Service templates now have two files:
+  - `template.yaml` — the original SAM template (kept for reference)
+  - `template-cfn.yaml` — raw CloudFormation (used by the pipeline)
+- The `.github/actions/cfn-deploy/` action handles the build and deploy.
+- Manual deployments follow the same pattern:
+
+```bash
+cd services/booking
+GOWORK=off GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o bootstrap ./cmd/lambda/
+zip -j bootstrap.zip bootstrap
+
+BUCKET=$(aws ssm get-parameter --name /rusuh/prod/sam/artifact-bucket --query Parameter.Value --output text)
+aws s3 cp bootstrap.zip "s3://$BUCKET/booking/bootstrap.zip"
+
+aws cloudformation deploy \
+  --template-file template-cfn.yaml \
+  --stack-name rusuh-prod-booking \
+  --capabilities CAPABILITY_IAM \
+  --parameter-overrides \
+    Environment=prod \
+    LambdaS3Bucket="$BUCKET" \
+    LambdaS3Key=booking/bootstrap.zip
+```
+
+**If you need to modify a template:** Edit `template-cfn.yaml`, not
+`template.yaml`. The SAM templates are now reference only.
+
+---
+
 ## When something fails
 
 | Symptom | Do this |

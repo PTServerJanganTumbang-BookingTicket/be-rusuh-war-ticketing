@@ -180,12 +180,21 @@ Resources:
       Name: !Sub rusuh-${Environment}-nik-verify-api
       ProtocolType: HTTP
 
+  NikVerifyApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/apigateway/rusuh-${Environment}-nik-verify-api
+      RetentionInDays: 14
+
   NikVerifyApiStage:
     Type: AWS::ApiGatewayV2::Stage
     Properties:
       ApiId: !Ref NikVerifyApi
       StageName: $default
       AutoDeploy: true
+      AccessLogSettings:
+        DestinationArn: !GetAtt NikVerifyApiLogGroup.Arn
+        Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","routeKey":"$context.routeKey","status":"$context.status","protocol":"$context.protocol","responseLength":"$context.responseLength","integrationErrorMessage":"$context.integrationErrorMessage"}'
 
   # ============================================================================
   # Lambda Integration
