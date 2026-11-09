@@ -660,6 +660,7 @@ jobs:
           # arguments.
           parameter-overrides: >-
             Environment=${{ needs.resolve-env.outputs.environment }}
+            DeployRevision=${{ github.sha }}
             DukcapilMode=${{ vars.DUKCAPIL_MODE || 'stub' }}
             DukcapilBaseUrl=${{ vars.DUKCAPIL_BASE_URL }}
             DukcapilExtraHeaderName=${{ vars.DUKCAPIL_EXTRA_HEADER_NAME }}
@@ -685,6 +686,7 @@ jobs:
           environment: ${{ needs.resolve-env.outputs.environment }}
           parameter-overrides: >-
             Environment=${{ needs.resolve-env.outputs.environment }}
+            DeployRevision=${{ github.sha }}
             AppBaseUrl=${{ vars.APP_BASE_URL }}
 
   # ══════════════════════════════════════════════════════════════════════════
@@ -725,6 +727,7 @@ jobs:
           # which is why this job waits on that deploy.
           parameter-overrides: >-
             Environment=${{ needs.resolve-env.outputs.environment }}
+            DeployRevision=${{ github.sha }}
             CookieDomain=${{ vars.COOKIE_DOMAIN }}
 
   deploy-outbox-publisher:
@@ -750,7 +753,9 @@ jobs:
           environment: ${{ needs.resolve-env.outputs.environment }}
           # The queue URL and ARN come from the SSM parameters notification
           # writes, which is why this job waits on that deploy.
-          parameter-overrides: Environment=${{ needs.resolve-env.outputs.environment }}
+          parameter-overrides: >-
+            Environment=${{ needs.resolve-env.outputs.environment }}
+            DeployRevision=${{ github.sha }}
 
   # ══════════════════════════════════════════════════════════════════════════
   #  SMOKE

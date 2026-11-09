@@ -3,6 +3,24 @@ Transform: AWS::Serverless-2016-10-31
 Description: rusuh-notification — SQS to SES. Owns the notification queue and its DLQ.
 
 Parameters:
+  DeployRevision:
+    Type: String
+    Default: unset
+    Description: >
+      Commit SHA of the deploy that last touched this stack. Nothing reads it;
+      it exists to force an update.
+
+      CloudFormation does NOT detect changes behind a
+      {{resolve:secretsmanager:...}} dynamic reference. If the template text is
+      unchanged, the resource is not updated and the reference is never
+      re-resolved - so rotating a secret leaves every Lambda running the value
+      baked in at its last deploy, with no error anywhere and nothing in the
+      console to suggest it is stale.
+
+      Threading the commit SHA through makes every deploy a real change, so
+      the secrets are re-read each time. The cost is that no service deploy is
+      ever a no-op; that is the intended trade.
+
   Environment:
     Type: String
     Default: prod
@@ -88,6 +106,7 @@ Resources:
         SecurityGroupIds: !Ref SecurityGroupIds
       Environment:
         Variables:
+          DEPLOY_REVISION: !Ref DeployRevision
           APP_ENV: production
           APP_BASE_URL: !Ref AppBaseUrl
           REDIS_ADDR: !Ref RedisAddr
