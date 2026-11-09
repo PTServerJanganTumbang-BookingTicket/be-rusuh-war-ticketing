@@ -23,6 +23,13 @@ on:
           POC cost mode. Aurora scales to 0 ACU and auto-pauses.
         type: boolean
         default: true
+      force_deploy:
+        description: >
+          Force deploy specific services regardless of changed files.
+          Comma-separated: booking,nik-verify,user,notification,outbox-publisher,all
+          Use "all" to redeploy everything. Useful for reruns.
+        type: string
+        default: ""
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -84,14 +91,23 @@ jobs:
               - 'infra/migrator/**'
       - id: set
         run: |
+          FORCE="${{ inputs.force_deploy }}"
           mods=()
-          if [ "${{ steps.filter.outputs.pkg }}" = "true" ]; then mods+=("pkg"); fi
-          if [ "${{ steps.filter.outputs.booking }}" = "true" ]; then mods+=("services/booking"); fi
-          if [ "${{ steps.filter.outputs.user }}" = "true" ]; then mods+=("services/user"); fi
-          if [ "${{ steps.filter.outputs.nik_verify }}" = "true" ]; then mods+=("services/nik-verify"); fi
-          if [ "${{ steps.filter.outputs.notification }}" = "true" ]; then mods+=("services/notification"); fi
-          if [ "${{ steps.filter.outputs.outbox_publisher }}" = "true" ]; then mods+=("services/outbox-publisher"); fi
-          if [ ${#mods[@]} -eq 0 ]; then mods+=("pkg" "services/booking" "services/user" "services/nik-verify" "services/notification" "services/outbox-publisher"); fi
+
+          # force_deploy=all overrides path detection entirely
+          if [ "$FORCE" = "all" ]; then
+            mods=("pkg" "services/booking" "services/user" "services/nik-verify" "services/notification" "services/outbox-publisher")
+          else
+            if [ "${{ steps.filter.outputs.pkg }}" = "true" ]; then mods+=("pkg"); fi
+            if [ "${{ steps.filter.outputs.booking }}" = "true" ] || echo "$FORCE" | grep -q "booking"; then mods+=("services/booking"); fi
+            if [ "${{ steps.filter.outputs.user }}" = "true" ] || echo "$FORCE" | grep -q "user"; then mods+=("services/user"); fi
+            if [ "${{ steps.filter.outputs.nik_verify }}" = "true" ] || echo "$FORCE" | grep -q "nik-verify"; then mods+=("services/nik-verify"); fi
+            if [ "${{ steps.filter.outputs.notification }}" = "true" ] || echo "$FORCE" | grep -q "notification"; then mods+=("services/notification"); fi
+            if [ "${{ steps.filter.outputs.outbox_publisher }}" = "true" ] || echo "$FORCE" | grep -q "outbox-publisher"; then mods+=("services/outbox-publisher"); fi
+          fi
+
+          # Matrix must have at least one entry — fall back to pkg (fastest)
+          if [ ${#mods[@]} -eq 0 ]; then mods+=("pkg"); fi
           json=$(printf '%s\n' "${mods[@]}" | jq -R . | jq -cs .)
           echo "modules=$json" >> "$GITHUB_OUTPUT"
           echo "matrix: $json"
@@ -108,11 +124,11 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       environment: ${{ steps.env.outputs.environment }}
-      booking: ${{ needs.detect-changes.outputs.booking }}
-      user: ${{ needs.detect-changes.outputs.user }}
-      nik_verify: ${{ needs.detect-changes.outputs.nik_verify }}
-      notification: ${{ needs.detect-changes.outputs.notification }}
-      outbox_publisher: ${{ needs.detect-changes.outputs.outbox_publisher }}
+      booking: ${{ steps.env.outputs.booking }}
+      user: ${{ steps.env.outputs.user }}
+      nik_verify: ${{ steps.env.outputs.nik_verify }}
+      notification: ${{ steps.env.outputs.notification }}
+      outbox_publisher: ${{ steps.env.outputs.outbox_publisher }}
       foundation_changed: ${{ needs.detect-changes.outputs.infra }}
       api_gateway_changed: ${{ needs.detect-changes.outputs.api_gateway }}
       any_service_changed: ${{ steps.env.outputs.any_service_changed }}
@@ -124,18 +140,45 @@ jobs:
           N: ${{ needs.detect-changes.outputs.nik_verify }}
           T: ${{ needs.detect-changes.outputs.notification }}
           O: ${{ needs.detect-changes.outputs.outbox_publisher }}
+          FORCE: ${{ inputs.force_deploy }}
         run: |
           set -eu
           environment="${{ inputs.environment || 'prod' }}"
           echo "environment=$environment" >> "$GITHUB_OUTPUT"
 
+          # A service is "changed" if paths-filter detected it OR force_deploy includes it
+          is_changed() {
+            local flag="$1" name="$2"
+            [ "$flag" = "true" ] && { echo "true"; return; }
+            [ "$FORCE" = "all" ] && { echo "true"; return; }
+            echo "$FORCE" | grep -q "$name" && { echo "true"; return; }
+            echo "false"
+          }
+
+          b=$(is_changed "$B" "booking")
+          u=$(is_changed "$U" "user")
+          n=$(is_changed "$N" "nik-verify")
+          t=$(is_changed "$T" "notification")
+          o=$(is_changed "$O" "outbox-publisher")
+
+          echo "booking=$b"           >> "$GITHUB_OUTPUT"
+          echo "user=$u"              >> "$GITHUB_OUTPUT"
+          echo "nik_verify=$n"        >> "$GITHUB_OUTPUT"
+          echo "notification=$t"      >> "$GITHUB_OUTPUT"
+          echo "outbox_publisher=$o"  >> "$GITHUB_OUTPUT"
+
           any=false
-          for f in "$B" "$U" "$N" "$T" "$O"; do
+          for f in "$b" "$u" "$n" "$t" "$o"; do
             [ "$f" = "true" ] && any=true
           done
           echo "any_service_changed=$any" >> "$GITHUB_OUTPUT"
 
           echo "environment        : $environment"
+          echo "booking            : $b"
+          echo "user               : $u"
+          echo "nik_verify         : $n"
+          echo "notification       : $t"
+          echo "outbox_publisher   : $o"
           echo "any service changed: $any"
 
   golangci-lint:
@@ -677,7 +720,6 @@ jobs:
             --output text 2>/dev/null || true)
           
           if [ -n "$url" ] && [ "$url" != "None" ]; then
-            echo "Testing unified API: $url"
             code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "${url}/sys/ping" || echo 000)
             if [ "$code" = "200" ]; then
               echo "✓ unified-api /sys/ping -> 200"
