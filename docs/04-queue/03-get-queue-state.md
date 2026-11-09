@@ -6,7 +6,7 @@
 | **Auth** | **one of** cookie `queue_token` · `X-Queue-Token` · `Authorization: Bearer` (cross-device recovery). Guests also send `X-Device-Id` |
 | **Contract** | Apidog `GET /events/{event_id}/queue/me` · api-contracts §3.3 |
 | **Requirements** | FR-08, FR-10, BR-09, NFR-02 |
-| **Detail** | impl-plan §7.3 · ADR-005 §12 (queue recovery) · ADR-006 §8.9 (token ownership), §8.11, §8.13 |
+| **Detail** | impl-plan §7.3 · ADR-005 §12 (queue recovery) · ADR-006 §8.9 (token ownership), §8.11 (grant copy; the straight-in part was removed by §8.14), §8.13 |
 | **Status** | **built 2026-11-09** (OPEN items 1, 2, 4, 5 accepted; item 3: one Aurora connection for now); mounted by `internal/delivery` |
 
 ## 1. Purpose

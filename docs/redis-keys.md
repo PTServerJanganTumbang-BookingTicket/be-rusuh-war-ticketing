@@ -29,7 +29,7 @@ flowchart LR
     J -->|HSET| T["token:&lt;qt&gt;"]
     J -->|ZADD| B["queue:{ev}:by_ticket"]
     J -->|SET NX| A["acct:{ev}:&lt;account&gt;"]
-    CTL[admission-ctl] -->|advance Lua: now_serving, free_slots, state| Q
+    CTL[admission-ctl] -->|advance Lua: now_serving, state| Q
     CTL -->|ZREM after INSERT| B
     CTL -->|HSET| G["grant:&lt;gt&gt;"]
     CTL -->|PUBLISH| CH(("sse-broadcast / sse-status"))
@@ -38,7 +38,7 @@ flowchart LR
 
 | Key | Builder | Type | TTL | Written by | Read by | What it is | Status |
 |---|---|---|---|---|---|---|---|
-| `queue:{ev}` | `Event.QueueHash` | hash, fields below | none | see the field table | all queue services | The event's one hash: sale state, ticket counter, admission numbers and the fields join echoes back. **ADR-006 §8.12** merged `state`, `issued` and `full_booked_at` into it (one `HMGET` for join's snapshot) | built (join, sse-server read); `free_slots*`, `full_booked_at` writers planned |
+| `queue:{ev}` | `Event.QueueHash` | hash, fields below | none | see the field table | all queue services | The event's one hash: sale state, ticket counter, admission numbers and the fields join echoes back. **ADR-006 §8.12** merged `state`, `issued` and `full_booked_at` into it (one `HMGET` for join's snapshot) | built (join, sse-server read); `full_booked_at` writer planned (`free_slots*` removed, ADR-006 §8.14) |
 | `queue:{ev}:by_ticket` | `Event.ByTicket` | zset, member `queue_token`, score `ticket_no` | none | join (`ZADD`; rejoin repair `ZADD NX` only while `ticket_no > now_serving`), admission-ctl (`ZREM` last, after the GRANTED row) | advance Lua, admission-ctl RECOVER, `/me` | The line. A score ≤ `now_serving` still present = pending grant (ADR-006 rule 4) | built (join side) |
 | `stock:{ev}:<category>` | `Event.Stock` | counter | none | booking `hold_booking.lua`, admission-ctl sweeps | advance Lua | Seats left per category | planned |
 | `acct:{ev}:<account_id>` | `Event.Acct` | string → `queue_token` | `SALE_WINDOW_SECONDS` | join (`SET NX`; compare-and-set to replace a stale pointer) | join, `/me` | BR-07: the account's one place for this event | built |
@@ -59,8 +59,6 @@ Field names are constants in `pkg/rediskeys` (`FieldState`, `FieldIssued`, `Fiel
 | `state` | `SCHEDULED` \| `OPEN` \| `FULL_BOOKED` \| `CLOSED` | sale-ops seed (`SCHEDULED`, NX), sale-ops opener at `sale_starts_at`, advance Lua (`FULL_BOOKED` ↔ `OPEN`), admission-ctl (`CLOSED`) | all | Sale lifecycle. Missing or unknown → join answers 503 `QUEUE_NOT_READY`, the stream 404/503 |
 | `issued` | int | join (`HINCRBY`, after every gate); sale-ops seed sets 0 (NX) | join, events (depth), advance Lua, admission-ctl | Last ticket number handed out. `issued − now_serving` = queue depth |
 | `now_serving` | int | advance Lua | all | Highest ticket number admitted |
-| `free_slots` | int | advance Lua | join | Places the last run could not fill (ADR-006 §8.11) |
-| `free_slots_at` | epoch s | advance Lua | join | When `free_slots` was written; join ignores it when older than 2 s |
 | `full_booked_at` | epoch s | advance Lua (first time stock hits 0; removed when seats return) | join (409 `FULL_BOOKED`, as ISO 8601), admission-ctl (`CLOSED` at +930 s) | Since when the sale is fully booked |
 | `rate_per_min` | int | admission-ctl | stream, `/serving`, `/me` | Ticket numbers `now_serving` passes per minute |
 | `name`, `sale_starts_at` | string | sale-ops seed | join | Echoed in the join response and the 409 `SALE_NOT_OPEN` |
@@ -80,7 +78,7 @@ grant fields, and only if the hash still exists (`hset_if_exists.lua`), because 
 |---|---|---|---|
 | `ticket_no` | join | join, admission-ctl (to tell a live token from a gone one) | The customer's number in line |
 | `account_id` / `device_hash` | join | admission-ctl (copied into `grant:<token>`) | Who owns the place (logged-in vs guest) |
-| `grant_token`, `booking_id` | admission-ctl (FINISH) | join (the straight-in wait), `/me` | The grant once the customer is let in |
+| `grant_token`, `booking_id` | admission-ctl (FINISH) | `/me` (join no longer reads it, ADR-006 §8.14) | The grant once the customer is let in |
 | `booking_expires_at` | admission-ctl (FINISH) | join, `/me` | RFC 3339 UTC deadline to start choosing seats |
 
 Removed by ADR-006 (a test in `pkg/rediskeys` fails if they come back): `regrant:{ev}`, `slots:open:{ev}`,

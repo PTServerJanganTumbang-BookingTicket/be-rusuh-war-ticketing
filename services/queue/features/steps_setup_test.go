@@ -3,8 +3,6 @@ package features
 import (
 	"context"
 	"fmt"
-	"strconv"
-	"sync"
 	"time"
 
 	"github.com/cucumber/godog"
@@ -79,15 +77,6 @@ func registerSetupSteps(sc *godog.ScenarioContext, W func() *world) {
 		w.cfg.Capacity = n
 		w.cfg.SaleWindow = time.Duration(s) * time.Second
 		w.opt.CookieMaxAge = w.cfg.SaleWindow
-		return nil
-	})
-	sc.Step(`^JOIN_GRANT_WAIT_MS is (\d+)$`, func(ms int) error {
-		W().cfg.GrantWait = time.Duration(ms) * time.Millisecond
-		return nil
-	})
-	sc.Step(`^JOIN_DIRECT_MAX is (\d+)$`, func(n int64) error { W().cfg.DirectMax = n; return nil })
-	sc.Step(`^JOIN_FREE_SLOTS_MAX_AGE_SECONDS is (\d+)$`, func(s int) error {
-		W().cfg.FreeSlotsAge = time.Duration(s) * time.Second
 		return nil
 	})
 	sc.Step(`^COOKIE_DOMAIN is "([^"]*)"$`, func(d string) error { W().opt.CookieDomain = d; return nil })
@@ -208,37 +197,12 @@ func registerSetupSteps(sc *godog.ScenarioContext, W func() *world) {
 		}
 		return w.insertBooking(id, "qt_B", status)
 	})
-
-	// ---- stand-in admission controller (until step 3 lands)
-	sc.Step(`^admission-ctl wrote free_slots (\d+) for "([^"]*)" (\d+) seconds ago$`, func(n int64, id string, age int64) error {
-		w := W()
-		// Freeze the clock so "N seconds ago" is exactly N when join compares.
-		w.freeze(time.Now())
-		return w.setFreeSlots(id, n, w.clock().Unix()-age)
-	})
-	sc.Step(`^queue:\{([^}]*)\} has no free_slots field$`, func(id string) error {
-		return W().rdb.HDel(context.Background(), ev(id).QueueHash(), queueredis.FieldFreeSlots, queueredis.FieldFreeSlotsAt).Err()
-	})
-	sc.Step(`^the stand-in controller grants every joiner that fits after (\d+) ms$`, func(ms int) error {
-		return W().startStandIn(time.Duration(ms) * time.Millisecond)
-	})
-	sc.Step(`^reads of token hashes fail after the join wrote my place$`, func() error {
-		W().hook.failGrantReads.Store(true)
-		return nil
-	})
-	sc.Step(`^the stand-in controller does not grant$`, func() error { return nil })
 }
 
 func ptr[T any](v T) *T { return &v }
 
 func (w *world) setState(id, state string) error {
 	return w.rdb.HSet(context.Background(), ev(id).QueueHash(), queueredis.FieldState, state).Err()
-}
-
-// setFreeSlots writes what the advance Lua records: free_slots and free_slots_at (epoch s).
-func (w *world) setFreeSlots(id string, n, at int64) error {
-	return w.rdb.HSet(context.Background(), ev(id).QueueHash(),
-		queueredis.FieldFreeSlots, n, queueredis.FieldFreeSlotsAt, at).Err()
 }
 
 func (w *world) setCounters(id string, ns, issued int64) error {
@@ -379,86 +343,4 @@ func (w *world) failGatesFrom(g string) error {
 	}
 	w.captured["gatereq"] = r
 	return nil
-}
-
-// standIn plays admission-ctl until step 3 exists: for every waiter whose
-// ticket fits in the free places it copies a grant into token:<qt> after a
-// delay, as the real controller's FINISH does. It writes nothing else.
-type standIn struct {
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
-	mu     sync.Mutex
-	grants map[string]grantRow // by queue_token
-}
-
-type grantRow struct {
-	grantToken string
-	expiresAt  time.Time
-}
-
-func (w *world) startStandIn(delay time.Duration) error {
-	ctx, cancel := context.WithCancel(context.Background())
-	s := &standIn{cancel: cancel, grants: map[string]grantRow{}}
-	w.stand = s
-	e := ev("E1")
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
-		seen := map[string]bool{}
-		for {
-			// Read the fields directly: the stand-in must not depend on the code under test.
-			vals, err := w.rdb.HMGet(ctx, e.QueueHash(), "now_serving", "free_slots").Result()
-			if err == nil {
-				ns, _ := strconv.ParseInt(fmt.Sprint(vals[0]), 10, 64)
-				free, _ := strconv.ParseInt(fmt.Sprint(vals[1]), 10, 64)
-				members, _ := w.rdb.ZRangeByScore(ctx, e.ByTicket(), &goredis.ZRangeBy{
-					Min: strconv.FormatInt(ns+1, 10),
-					Max: strconv.FormatInt(ns+free, 10),
-				}).Result()
-				for _, qt := range members {
-					if seen[qt] {
-						continue
-					}
-					seen[qt] = true
-					s.wg.Add(1)
-					go func() {
-						defer s.wg.Done()
-						select {
-						case <-ctx.Done():
-							return
-						case <-time.After(delay):
-						}
-						g := grantRow{grantToken: idgen.NewPrefixed("gt_"), expiresAt: time.Now().Add(5 * time.Minute).UTC().Truncate(time.Second)}
-						err := w.rdb.HSet(ctx, rediskeys.Token(qt), map[string]any{
-							"grant_token": g.grantToken, "booking_id": idgen.NewPrefixed("RB-"),
-							"booking_expires_at": g.expiresAt.Format(time.RFC3339),
-						}).Err()
-						if err == nil {
-							s.mu.Lock()
-							s.grants[qt] = g
-							s.mu.Unlock()
-						}
-					}()
-				}
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(10 * time.Millisecond):
-			}
-		}
-	}()
-	return nil
-}
-
-func (s *standIn) stop() {
-	s.cancel()
-	s.wg.Wait()
-}
-
-func (s *standIn) grant(qt string) (grantRow, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	g, ok := s.grants[qt]
-	return g, ok
 }

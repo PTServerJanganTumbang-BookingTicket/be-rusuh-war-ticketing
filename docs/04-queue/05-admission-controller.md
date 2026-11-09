@@ -46,14 +46,9 @@ is harmless (clients treat a repeated state as a no-op).
 **No early ticks.** A place freed by a payment, an expiry or a cancel is picked up by the next
 regular tick through the Aurora COUNT (≤ 500 ms). No other service signals the ctl.
 
-**Telling join who fits (ADR-006 §8.11, 2026-11-08).** The advance Lua writes `free_slots = max(0, deficit −
-(to − ns0))` and `free_slots_at = now` into `queue:{ev}`, atomically with `now_serving`, on every run that
-reads the counts. It does this **in SCHEDULED too** (nothing else is written then), so the ctl ticks events
-that have not opened yet, and at T0 `free_slots` is already `min(MAX, ceil(stock / 3))`. STALE, CLOSED,
-MISSING and STOCK_UNINITIALIZED write nothing, and neither does a tick whose COUNT failed, so `free_slots_at`
-ages and join stops waiting after 2 s. Join waits for a grant only when `ticket_no ≤ now_serving +
-min(free_slots, JOIN_DIRECT_MAX)` ([01 §6](01-join-queue.md#6-edge-cases-and-decisions)) and polls
-`token:{uuid}` for the `grant_token` FINISH copies there.
+**Nobody tells join who fits.** Since ADR-006 §8.14 (2026-11-09) there is no straight-in: the advance Lua no longer
+writes `free_slots` / `free_slots_at`, and join never waits for a grant. FINISH still copies `grant_token`,
+`booking_id`, `booking_expires_at` into `token:{uuid}` (only if it exists) for `/me`.
 
 ## 3. ADVANCE, in detail
 
@@ -173,7 +168,7 @@ sequenceDiagram
 
     Note over CTL,R: 2d. ADVANCE
     CTL->>R: EVALSHA advance_now_serving.lua (MAX, open+pending, browsing+pending, ns0, now)
-    Note over R: atomic: now_serving ≠ ns0 → STALE<br/>state gate (OPEN / FULL_BOOKED)<br/>stock = SUM stock:{ev}:{cat}<br/>deficit = min(room, demand)<br/>to = min(ns0 + deficit, issued)<br/>tokens = ZRANGEBYSCORE ns0+1 .. to (no ZREM)<br/>HSET now_serving to, free_slots, free_slots_at
+    Note over R: atomic: now_serving ≠ ns0 → STALE<br/>state gate (OPEN / FULL_BOOKED)<br/>stock = SUM stock:{ev}:{cat}<br/>deficit = min(room, demand)<br/>to = min(ns0 + deficit, issued)<br/>tokens = ZRANGEBYSCORE ns0+1 .. to (no ZREM)<br/>HSET now_serving to
     R-->>CTL: from, to, state, tokens
 
     Note over CTL,DB: 2e. FINISH each token (batched)
@@ -254,7 +249,7 @@ the next tick's COUNT automatically, with no counter to decrement.
 | Store | Key / table | Op |
 |---|---|---|
 | Redis | `breaker:dukcapil:state`, `breaker:payment-gateway:state` | GET |
-| Redis | `queue:{ev}` (`state`, `issued`, `now_serving`, `free_slots`, `free_slots_at`, `full_booked_at`), `queue:{ev}:by_ticket`, `stock:{ev}:{cat}` | advance Lua (stock read only) |
+| Redis | `queue:{ev}` (`state`, `issued`, `now_serving`, `full_booked_at`), `queue:{ev}:by_ticket`, `stock:{ev}:{cat}` | advance Lua (stock read only) |
 | Redis | `token:{uuid}` | HMGET `account_id`, `device_hash` · HSET `grant_token`, `booking_id`, `booking_expires_at` if it exists (FINISH) |
 | Redis | `queue:{ev}:by_ticket` | ZRANGEBYSCORE / ZCOUNT `-inf now_serving` · ZREM (last step of grant) |
 | Redis | `grant:{token}` | HSET (FINISH) / DEL (LAPSED) |
@@ -323,14 +318,14 @@ the next tick's COUNT automatically, with no counter to decrement.
 - [ ] gaps in `by_ticket` (LAPSED / removed tokens) → fewer tokens than deficit, `now_serving` still moves to `to`
 - [ ] **`now_serving` never passes `issued`:** deficit 1000, 10 waiting → `now_serving` += 10, the next joiner gets `ticket_no = now_serving + 1`
 - [x] FULL_BOOKED ↔ OPEN transitions, CLOSED no-op
-- [ ] `free_slots` = what the run could not fill; written in SCHEDULED; not written on STALE / CLOSED / MISSING / STOCK_UNINITIALIZED
+- [x] SCHEDULED: the script returns `SCHEDULED` and writes nothing; no run writes `free_slots` / `free_slots_at` any more (ADR-006 §8.14)
 
 **Tick**
 - [ ] Dukcapil / payment breaker OPEN → tick still COUNTs and ADVANCEs (no pause)
 - [ ] `sse-status` published exactly once per state change; not on unchanged ticks
 - [x] BROADCAST is published **after** every INSERT of the tick (order assertion)
 - [ ] FINISH copies the grant into `token:{uuid}` after `HSET grant`, never recreating an expired token
-- [ ] SCHEDULED events are ticked (COUNT + ADVANCE, no INSERT)
+- [x] SCHEDULED events are still ticked (COUNT + ADVANCE, no INSERT): discovery runs every 30 s, so the event must already be known when it opens (ADR-006 §8.14)
 - [ ] INSERT fails → token still in `by_ticket`, broadcast still sent, next tick with DB healthy → granted
 - [ ] **crash test:** stop after EVALSHA, before INSERT → next tick RECOVER grants, exactly one row
 - [ ] crash test: stop after INSERT, before ZREM → RECOVER reuses the same `booking_id` / `grant_token`
@@ -345,7 +340,8 @@ the next tick's COUNT automatically, with no counter to decrement.
 - [x] tick loop skeleton (500 ms ticker) with step functions and per-step metrics (metrics are log lines until the EMF adapter lands)
 - [x] postgres `AdmissionCounter.Count(ev)` on the writer pool (`CountAdmission`, plus idempotent `InsertGranted`)
 - [x] RECOVER → SNAPSHOT → COUNT → ADVANCE → FINISH, + `PendingGrants` gauge and alert
-- [x] `free_slots` in the Lua + grant copy into `token:{uuid}` + tick SCHEDULED events (ADR-006 §8.11)
+- [x] grant copy into `token:{uuid}` (`/me` reads it) · ~~`free_slots` in the Lua + tick SCHEDULED events (§8.11)~~ **removed by §8.14**
+- [x] remove `free_slots*` from the Lua, its features and `pkg/rediskeys/fields.go`; update `admission_tick.feature` (SCHEDULED events stay ticked)
 - [x] migration `0006`: partial indexes on active statuses (COUNT) and on `booking_expires_at WHERE status = 'GRANTED'` (SWEEP)
 - [x] SWEEP: GRANTED → LAPSED
 - [x] BROADCAST + heartbeat + `rate_per_min` ([§3.5](#35-rate_per_min), config `ETA_SEED_SLOT_MINUTES`)

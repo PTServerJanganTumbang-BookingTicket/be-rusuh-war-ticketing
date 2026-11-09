@@ -209,9 +209,6 @@ func registerAssertSteps(sc *godog.ScenarioContext, W func() *world) {
 	})
 
 	// ---- data
-	sc.Step(`^data is exactly granted true, grant_token, queue_token and booking_expires_at from token:<queue_token>$`, func() error {
-		return lastDo(func(r *response) error { return W().grantedFromRow(r) })
-	})
 	sc.Step(`^data is (\{.*\})$`, func(want string) error {
 		return lastDo(func(r *response) error {
 			var exp any
@@ -472,14 +469,6 @@ func registerAssertSteps(sc *godog.ScenarioContext, W func() *world) {
 	})
 	sc.Step(`^there are (\d+) token:\* hashes for "([^"]*)"$`, func(n int, id string) error { return W().tokenHashes(n, id) })
 	sc.Step(`^every by_ticket score equals the ticket_no in its token hash$`, func() error { return W().scoresMatchTokens("E1") })
-	sc.Step(`^the place is kept in by_ticket$`, func() error {
-		w := W()
-		_, err := w.rdb.ZScore(context.Background(), ev("E1").ByTicket(), w.resp.queueToken()).Result()
-		if err != nil {
-			return fmt.Errorf("queue_token %q not in by_ticket: %w", w.resp.queueToken(), err)
-		}
-		return nil
-	})
 	sc.Step(`^admission-ctl later skips number 1 as a gap$`, func() error {
 		// admission-ctl only ever grants by_ticket members; number 1 has none.
 		ms, err := W().rdb.ZRangeByScore(context.Background(), ev("E1").ByTicket(), &goredis.ZRangeBy{Min: "1", Max: "1"}).Result()
@@ -499,139 +488,8 @@ func registerAssertSteps(sc *godog.ScenarioContext, W func() *world) {
 		}
 		return W().needDB()
 	})
-	sc.Step(`^every SQL statement the join sent was a SELECT on the writer pool$`, func() error {
-		s := tracer.statements()
-		if len(s) == 0 {
-			return errors.New("no SQL statement was traced")
-		}
-		for _, q := range s {
-			if !isSelect(q) {
-				return fmt.Errorf("non-SELECT statement: %s", q)
-			}
-		}
-		return nil
-	})
-	sc.Step(`^the join sent no INSERT, UPDATE or DELETE$`, func() error {
-		for _, q := range tracer.statements() {
-			if !isSelect(q) {
-				return fmt.Errorf("join wrote: %s", q)
-			}
-		}
-		return nil
-	})
-	sc.Step(`^the join read token:<queue_token> at most (\d+) times while waiting$`, func(n int) error {
-		got := len(W().hook.grantReadTimes())
-		if got == 0 || got > n {
-			return fmt.Errorf("%d grant reads, want 1 to %d", got, n)
-		}
-		return nil
-	})
-	sc.Step(`^join (waits|does not wait) for the grant$`, func(how string) error {
-		got := len(W().hook.grantReadTimes())
-		if (how == "waits") != (got > 0) {
-			return fmt.Errorf("join %s: %d grant reads", how, got)
-		}
-		return nil
-	})
-	sc.Step(`^join wrote nothing to Redis after ZADD by_ticket$`, func() error {
-		names, _ := W().hook.snapshot()
-		last := -1
-		for i, n := range names {
-			if n == "zadd" {
-				last = i
-			}
-		}
-		if last < 0 {
-			return errors.New("join never ran ZADD by_ticket")
-		}
-		for _, n := range names[last+1:] {
-			switch n {
-			case "set", "setnx", "hset", "hsetnx", "hdel", "zadd", "zrem", "incr", "del", "expire", "eval", "evalsha", "publish":
-				return fmt.Errorf("join sent %s after ZADD by_ticket", n)
-			}
-		}
-		return nil
-	})
-	sc.Step(`^the guests with ticket_no (\d+) to (\d+) got "([^"]*)"$`, func(from, to int, msg string) error {
-		// One after another from an empty queue: the i-th response holds ticket i.
-		for t := from; t <= to; t++ {
-			if err := W().messageOf(t, msg); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	sc.Step(`^the guest with ticket_no (\d+) got "([^"]*)" in less than (\d+) ms$`, func(t int, msg string, ms int) error {
-		w := W()
-		if err := w.messageOf(t, msg); err != nil {
-			return err
-		}
-		if took := w.resps[t-1].took; took >= time.Duration(ms)*time.Millisecond {
-			return fmt.Errorf("ticket %d took %v, want < %d ms", t, took, ms)
-		}
-		return nil
-	})
-	sc.Step(`^both responses say "([^"]*)"$`, func(msg string) error {
-		for i, r := range W().resps {
-			m, err := r.meta()
-			if err != nil || m["message"] != msg {
-				return fmt.Errorf("response %d: message %v (%v), want %q", i, m["message"], err, msg)
-			}
-		}
-		return nil
-	})
-	sc.Step(`^they hold ticket_no (\d+) and (\d+)$`, func(a, b int) error {
-		w := W()
-		got := map[int]bool{}
-		for _, r := range w.resps {
-			v, err := w.rdb.HGet(context.Background(), rediskeys.Token(r.queueToken()), "ticket_no").Int()
-			if err != nil {
-				return err
-			}
-			got[v] = true
-		}
-		if len(got) != 2 || !got[a] || !got[b] {
-			return fmt.Errorf("tickets %v, want %d and %d", got, a, b)
-		}
-		return nil
-	})
 
 	// ---- timing
-	sc.Step(`^the response took between (\d+) ms and (\d+) ms$`, func(lo, hi int) error {
-		return lastDo(func(r *response) error {
-			if r.took < time.Duration(lo)*time.Millisecond || r.took > time.Duration(hi)*time.Millisecond {
-				return fmt.Errorf("response took %v, want %d–%d ms", r.took, lo, hi)
-			}
-			return nil
-		})
-	})
-	sc.Step(`^the response took less than (\d+) ms$`, func(ms int) error {
-		return lastDo(func(r *response) error {
-			if r.took >= time.Duration(ms)*time.Millisecond {
-				return fmt.Errorf("response took %v, want < %d ms", r.took, ms)
-			}
-			return nil
-		})
-	})
-	sc.Step(`^the join stops polling within (\d+) ms$`, func(ms int) error {
-		w := W()
-		cancelAt, _ := w.captured["cancelAt"].(time.Time)
-		returned, _ := w.captured["returnedAt"].(time.Time)
-		limit := cancelAt.Add(time.Duration(ms) * time.Millisecond)
-		reads := w.hook.grantReadTimes()
-		if len(reads) == 0 {
-			return errors.New("join never polled: the wait for the grant did not start")
-		}
-		if last := reads[len(reads)-1]; last.After(limit) {
-			return fmt.Errorf("last grant read %v after cancel", last.Sub(cancelAt))
-		}
-		if returned.After(limit) {
-			return fmt.Errorf("join returned %v after cancel", returned.Sub(cancelAt))
-		}
-		return nil
-	})
-	sc.Step(`^one of them got ticket (\d+) and waited$`, func(n int64) error { return W().gotTicket(n, true) })
-	sc.Step(`^the other got ticket (\d+) and did not wait$`, func(n int64) error { return W().gotTicket(n, false) })
 
 	// ---- tickets
 	sc.Step(`^the ticket numbers are (\d+) and (\d+)$`, func(a, b int64) error {
@@ -769,7 +627,7 @@ func registerAssertSteps(sc *godog.ScenarioContext, W func() *world) {
 
 	// ---- misc
 	sc.Step(`^both return the same status, body shape and Set-Cookie header$`, func() error { return W().sameShape() })
-	sc.Step(`^each documented join response is produced \(200, 200 rejoined, 200 granted, 400, 403, 409, 429, 503\)$`, func() error {
+	sc.Step(`^each documented join response is produced \(200, 200 rejoined, 400, 403, 409, 429, 503\)$`, func() error {
 		return W().produceDocumented()
 	})
 	sc.Step(`^each body validates against its schema in documentations/api/rusuh-booking-apidog\.json$`, func() error {
@@ -786,26 +644,6 @@ func registerAssertSteps(sc *godog.ScenarioContext, W func() *world) {
 			if s != "" && strings.Contains(logs, s) {
 				return fmt.Errorf("a log line contains a secret (%d chars)", len(s))
 			}
-		}
-		return nil
-	})
-	sc.Step(`^the configured function timeout is at least (\d+) times JOIN_GRANT_WAIT_MS$`, func(k int) error {
-		b, err := os.ReadFile(filepath.Join("..", "template.yaml"))
-		if err != nil {
-			return err
-		}
-		m := regexp.MustCompile(`(?m)^\s+Timeout:\s*(\d+)`).FindSubmatch(b)
-		if m == nil {
-			return errors.New("template.yaml has no Timeout")
-		}
-		sec, _ := strconv.Atoi(string(m[1]))
-		wait := regexp.MustCompile(`JOIN_GRANT_WAIT_MS:\s*"(\d+)"`).FindSubmatch(b)
-		if wait == nil {
-			return errors.New("template.yaml does not set JOIN_GRANT_WAIT_MS")
-		}
-		ms, _ := strconv.Atoi(string(wait[1]))
-		if time.Duration(sec)*time.Second < time.Duration(k*ms)*time.Millisecond {
-			return fmt.Errorf("timeout %ds < %d × %dms", sec, k, ms)
 		}
 		return nil
 	})
@@ -1118,44 +956,6 @@ func (w *world) tickets() ([]int64, error) {
 	return out, nil
 }
 
-func (w *world) gotTicket(n int64, waited bool) error {
-	for _, r := range w.resps {
-		t, err := w.ticketOf(r)
-		if err != nil || t != n {
-			continue
-		}
-		if waited && r.took < 250*time.Millisecond {
-			return fmt.Errorf("ticket %d answered in %v: it did not wait", n, r.took)
-		}
-		if !waited && r.took >= 150*time.Millisecond {
-			return fmt.Errorf("ticket %d took %v: it waited", n, r.took)
-		}
-		return nil
-	}
-	return fmt.Errorf("no response with ticket %d", n)
-}
-
-func (w *world) grantedFromRow(r *response) error {
-	d, err := r.data()
-	if err != nil {
-		return err
-	}
-	if !reflect.DeepEqual(keys(d), []string{"booking_expires_at", "grant_token", "granted", "queue_token"}) {
-		return fmt.Errorf("data keys %v", keys(d))
-	}
-	if w.stand == nil {
-		return errors.New("no stand-in controller")
-	}
-	g, ok := w.stand.grant(r.queueToken())
-	if !ok {
-		return fmt.Errorf("the stand-in did not grant %q", r.queueToken())
-	}
-	if d["granted"] != true || d["grant_token"] != g.grantToken || d["booking_expires_at"] != g.expiresAt.Format(time.RFC3339) {
-		return fmt.Errorf("data %v does not match the row %+v", d, g)
-	}
-	return nil
-}
-
 func (w *world) noGateAfter(g string) error {
 	order := []string{"request shape", "identity", "rate limit", "CAPTCHA required", "CAPTCHA", "sale state", "fully booked", "capacity"}
 	probe := map[string]func() int64{
@@ -1228,21 +1028,6 @@ func (w *world) sameShape() error {
 	return nil
 }
 
-// messageOf checks the message of the n-th recorded response (1-based).
-func (w *world) messageOf(n int, want string) error {
-	if n < 1 || n > len(w.resps) {
-		return fmt.Errorf("no response %d (have %d)", n, len(w.resps))
-	}
-	m, err := w.resps[n-1].meta()
-	if err != nil {
-		return err
-	}
-	if m["message"] != want {
-		return fmt.Errorf("ticket %d: message %q, want %q", n, m["message"], want)
-	}
-	return nil
-}
-
 // produceDocumented produces one response per documented case.
 func (w *world) produceDocumented() error {
 	w.limiter = &countingLimiter{}
@@ -1255,13 +1040,6 @@ func (w *world) produceDocumented() error {
 	if err := w.setCounters("E1", 21, 21); err != nil {
 		return err
 	}
-	if err := w.setFreeSlots("E1", 5, w.clock().Unix()); err != nil {
-		return err
-	}
-	if err := w.startStandIn(50 * time.Millisecond); err != nil {
-		return err
-	}
-	out["200 granted"] = w.do(joinReq{eventID: "E1", deviceID: "dev-contract-0000002"})
 	out["400"] = w.do(joinReq{eventID: "E1", captcha: ptr("")})
 	out["403"] = w.do(joinReq{eventID: "E1", captcha: ptr("cap-bad")})
 	w.limiter.refuse = true
@@ -1286,9 +1064,6 @@ func (w *world) produceDocumented() error {
 		if r.status != want {
 			return fmt.Errorf("%s: status %d; body %s", name, r.status, truncate(string(r.body)))
 		}
-	}
-	if d, _ := out["200 granted"].data(); d["granted"] != true {
-		return fmt.Errorf("granted case was not granted: %s", out["200 granted"].body)
 	}
 	w.captured["documented"] = out
 	return nil

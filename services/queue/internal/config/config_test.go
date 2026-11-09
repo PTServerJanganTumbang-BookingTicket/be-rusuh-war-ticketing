@@ -11,15 +11,11 @@ func TestLoad_localDefaults(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://x")
 	t.Setenv("JWT_SECRET", "s")
 	t.Setenv("CAPTCHA_PROVIDER", "")
-	t.Setenv("JOIN_GRANT_WAIT_MS", "750")
-	t.Setenv("JOIN_DIRECT_MAX", "200")
-	t.Setenv("JOIN_FREE_SLOTS_MAX_AGE_SECONDS", "3")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load() = %v", err)
 	}
-	if cfg.Captcha != CaptchaTurnstile || cfg.Join.Capacity != 300000 || cfg.Join.GrantWait != 750*time.Millisecond ||
-		cfg.Join.DirectMax != 200 || cfg.Join.FreeSlotsAge != 3*time.Second {
+	if cfg.Captcha != CaptchaTurnstile || cfg.Join.Capacity != 300000 {
 		t.Errorf("unexpected defaults: %+v", cfg)
 	}
 }
@@ -27,7 +23,6 @@ func TestLoad_localDefaults(t *testing.T) {
 func valid() Config {
 	c := Config{Env: "production", DatabaseURL: "postgres://x", JWTSecret: "s", Captcha: CaptchaTurnstile, TurnstileSecret: "t"}
 	c.Join.Capacity, c.Join.SaleWindow, c.Join.RateLimits, c.Join.DevicePepper = 1, time.Hour, true, []byte("p")
-	c.Join.DirectMax, c.Join.FreeSlotsAge = 500, 2*time.Second
 	return c
 }
 
@@ -60,18 +55,5 @@ func TestValidate_mockAllowedOutsideProduction(t *testing.T) {
 	c.Env, c.Captcha, c.TurnstileSecret = "preprod", CaptchaMock, ""
 	if err := c.Validate(); err != nil {
 		t.Fatalf("mock in preprod rejected: %v", err)
-	}
-}
-
-func TestValidate_straightInSettings(t *testing.T) {
-	for name, mut := range map[string]func(*Config){
-		"JOIN_DIRECT_MAX 0":                 func(c *Config) { c.Join.DirectMax = 0 },
-		"JOIN_FREE_SLOTS_MAX_AGE_SECONDS 0": func(c *Config) { c.Join.FreeSlotsAge = 0 },
-	} {
-		c := valid()
-		mut(&c)
-		if c.Validate() == nil {
-			t.Errorf("%s was accepted", name)
-		}
 	}
 }

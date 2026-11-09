@@ -68,9 +68,6 @@ func initScenario(sc *godog.ScenarioContext) {
 	sc.Step(`^event "[^"]*" is "FULL_BOOKED" since (\d+) with now_serving (\d+) and issued (\d+)$`, func(since, ns, is int64) error {
 		return w.seed("FULL_BOOKED", &ns, &is, since)
 	})
-	sc.Step(`^queue:\{E1\} has free_slots (\d+) and free_slots_at (\d+)$`, func(f, at int64) error {
-		return w.rdb.HSet(w.ctx, w.ev.QueueHash(), rediskeys.FieldFreeSlots, f, rediskeys.FieldFreeSlotsAt, at).Err()
-	})
 
 	// by_ticket and stock
 	sc.Step(`^customers hold ticket numbers (.+) in by_ticket$`, func(spec string) error {
@@ -131,13 +128,6 @@ func initScenario(sc *godog.ScenarioContext) {
 		return eq("result", w.res.Code, code)
 	})
 	sc.Step(`^now_serving is (\d+)$`, func(n int64) error { return w.field("now_serving", n) })
-	sc.Step(`^free_slots is (\d+) and free_slots_at is (\d+)$`, func(f, at int64) error {
-		if err := w.field(rediskeys.FieldFreeSlots, f); err != nil {
-			return err
-		}
-		return w.field(rediskeys.FieldFreeSlotsAt, at)
-	})
-	sc.Step(`^free_slots is (\d+)$`, func(f int64) error { return w.field(rediskeys.FieldFreeSlots, f) })
 	sc.Step(`^from is (\d+) and to is (\d+)$`, func(from, to int64) error {
 		if w.res.From != from || w.res.To != to {
 			return fmt.Errorf("from/to = %d/%d, want %d/%d", w.res.From, w.res.To, from, to)
@@ -204,8 +194,13 @@ func initScenario(sc *godog.ScenarioContext) {
 		return eq("ZCOUNT", got, n)
 	})
 	sc.Step(`^no key of event "[^"]*" changed$`, func() error { return w.unchanged(nil) })
-	sc.Step(`^no key of event "[^"]*" changed except free_slots and free_slots_at$`, func() error {
-		return w.unchanged([]string{rediskeys.FieldFreeSlots, rediskeys.FieldFreeSlotsAt})
+	sc.Step(`^queue:\{E1\} has no free_slots or free_slots_at field$`, func() error {
+		for _, f := range []string{"free_slots", "free_slots_at"} {
+			if ok, err := w.rdb.HExists(w.ctx, w.ev.QueueHash(), f).Result(); err != nil || ok {
+				return fmt.Errorf("%s present=%v err=%v", f, ok, err)
+			}
+		}
+		return nil
 	})
 
 	// input safety, loading, cluster

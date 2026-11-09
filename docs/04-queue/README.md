@@ -23,9 +23,8 @@ The wait-time estimate (FR-09) is not an endpoint: it's fields on join, `/me` an
 
 ## 0. The design in five rules
 
-1. **One writer.** Only admission-ctl grants, on a fixed 500 ms tick. Join never grants; when the
-   caller's number fits in the places still free (`free_slots`, written each tick) it just waits up to 1 s
-   for the next tick to grant it, so the first batch at sale start skips the waiting room (S2, ADR-006 §8.11).
+1. **One writer.** Only admission-ctl grants, on a fixed 500 ms tick. Join never grants and never waits for
+   a grant: even with free places the caller joins, and the next tick admits them (no straight-in, S2, ADR-006 §8.14).
 2. **One broadcast.** Everyone receives the same bytes (`nowServing`, `state`, `ratePerMin`,
    `serverTime`). There is no per-customer push. When `nowServing ≥ ticket_no`, the client calls
    `/me` to collect its `grant_token` (S3). A named `status` event marks each sale-state change.
@@ -179,7 +178,7 @@ kept in step with the code by a test in `pkg/rediskeys`. In short:
 
 | Group | Keys |
 |---|---|
-| Event (slot `{ev}`) | `queue:{ev}` (hash: `state`, `issued`, `now_serving`, `free_slots`, `free_slots_at`, `full_booked_at`, `rate_per_min`, `name`, `sale_starts_at`), `queue:{ev}:by_ticket` (score ≤ `now_serving` = **pending grant**), `stock:{ev}:{cat}`, `acct:{ev}:{account_id}` |
+| Event (slot `{ev}`) | `queue:{ev}` (hash: `state`, `issued`, `now_serving`, `full_booked_at`, `rate_per_min`, `name`, `sale_starts_at`), `queue:{ev}:by_ticket` (score ≤ `now_serving` = **pending grant**), `stock:{ev}:{cat}`, `acct:{ev}:{account_id}` |
 | Customer (no tag) | `token:{queue_token}`, `grant:{grant_token}`, `rl:join:{ip}`, `rl:joinacct:{account_id}`, `rl:sse:{ip}` |
 | Channels | `sse-broadcast`, `sse-status` (state changes, incl. CLOSED) |
 
@@ -225,7 +224,7 @@ folder for anything local.
 | 10 | POC lease | **Deferred** (§7). One task; ECS restarts it; deploy min 0 % / max 100 % | [05 §6](05-admission-controller.md#6-edge-cases-and-decisions) |
 | 11 | SSE connections per task · sharded pub/sub | Connections per task: **load-test output**. Classic `PUBLISH` behind an interface; sharded pub/sub **deferred** (§7) | [02 §6](02-queue-status-stream.md#6-edge-cases-and-decisions) |
 | S1 | Where admission counts come from | **Aurora COUNT each tick** (writer, partial index). Redis `slots:open` / `slots:browsing` removed, so booking, payment and webhook no longer touch queue counters | [05 §3.3](05-admission-controller.md#33-why-a-non-atomic-count-is-safe) |
-| S2 | Who grants | **admission-ctl only.** Empty-queue join waits ≤ 1 s for the next tick's grant, so FR-05 `granted: true` is kept. Webhook, outbox and cancel do nothing queue-related; the next tick uses the freed place | [01 §2](01-join-queue.md#2-flow) |
+| S2 | Who grants | **admission-ctl only.** Join answers at once, with no wait and no `granted` answer (no straight-in, ADR-006 §8.14; FR-05 is met by a waiting room of about one tick). Webhook, outbox and cancel do nothing queue-related; the next tick uses the freed place | [01 §2](01-join-queue.md#2-flow) |
 | S3 | How a customer learns it's their turn | **From the broadcast:** `nowServing ≥ ticket_no` → `GET /me`. The `grant` SSE event is removed | [02 §1](02-queue-status-stream.md#1-purpose) |
 | 12 | Wait-time estimate (FR-09) | **Frontend computes it** from `ratePerMin` (ctl: 60 s window while OPEN, seeded at T0): `ceil(position / ratePerMin)`, rounded **up**, shown as "± N menit". No estimate field in any API | [§8](#8-wait-time-estimate-fr-09) |
 | 13 | Admission pause (BR-13a, BR-22) | **Removed.** Breakers fail fast; the queue keeps moving; deadlines never shift | ADR-006 §4.3 |

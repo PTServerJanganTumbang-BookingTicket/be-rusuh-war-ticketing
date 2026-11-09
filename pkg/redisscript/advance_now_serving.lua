@@ -1,6 +1,6 @@
--- advance_now_serving.lua (ADR-006 §3.4, §8.11, §8.12). Rules: features/advance_now_serving.feature.
+-- advance_now_serving.lua (ADR-006 §3.4, §8.12, §8.14). Rules: features/advance_now_serving.feature.
 --
--- KEYS[1]    = queue:{ev}            hash: state, issued, now_serving, full_booked_at, free_slots, free_slots_at
+-- KEYS[1]    = queue:{ev}            hash: state, issued, now_serving, full_booked_at
 -- KEYS[2]    = queue:{ev}:by_ticket  sorted set: queue token -> ticket number
 -- KEYS[3..n] = stock:{ev}:{category}
 -- ARGV[1] MAX_CONCURRENT_SLOTS · ARGV[2] open (incl. pending) · ARGV[3] browsing (incl. pending)
@@ -57,20 +57,12 @@ for i = FIRST_STOCK_KEY, #KEYS do
   total_stock = total_stock + tonumber(category_stock)
 end
 
--- Tells join how many more customers could be let in right now (ADR-006 §8.11).
-local function record_free_slots(free_slots)
-  redis.call('HSET', QUEUE_HASH,
-    'free_slots', math.max(0, free_slots),
-    'free_slots_at', now_epoch_seconds)
-end
-
 -- ADR-006 §3.3: limited by free places inside, and by a third of the stock minus people still browsing.
 local places_left_inside = max_concurrent_slots - open_count
 local places_left_by_stock = math.ceil(total_stock / 3) - browsing_count
 local places_to_fill = math.min(places_left_inside, places_left_by_stock)
 
-if event_state == 'SCHEDULED' then  -- before the sale opens: only record what would fit
-  record_free_slots(total_stock > 0 and places_to_fill or 0)
+if event_state == 'SCHEDULED' then  -- before the sale opens: write nothing
   return {current_now_serving, current_now_serving, 'SCHEDULED', {}}
 end
 
@@ -78,7 +70,6 @@ if total_stock <= 0 then
   if event_state == 'OPEN' then  -- temporary, not terminal: stock can come back
     redis.call('HSET', QUEUE_HASH, 'state', 'FULL_BOOKED', 'full_booked_at', now_epoch_seconds)
   end
-  record_free_slots(0)
   return {current_now_serving, current_now_serving, 'FULL_BOOKED', {}}
 end
 if event_state == 'FULL_BOOKED' then  -- stock is back: reopen and admit in this same run
@@ -87,14 +78,12 @@ if event_state == 'FULL_BOOKED' then  -- stock is back: reopen and admit in this
 end
 
 if places_to_fill <= 0 then
-  record_free_slots(0)
   return {current_now_serving, current_now_serving, 'NOOP', {}}
 end
 
 -- now_serving never passes the last ticket handed out.
 local new_now_serving = math.min(current_now_serving + places_to_fill, last_issued_ticket)
 if new_now_serving <= current_now_serving then
-  record_free_slots(places_to_fill)
   return {current_now_serving, current_now_serving, 'EMPTY', {}}
 end
 
@@ -102,6 +91,4 @@ local first_admitted_ticket = current_now_serving + 1
 local admitted_tokens = redis.call('ZRANGEBYSCORE', BY_TICKET, first_admitted_ticket, new_now_serving)  -- read only, no ZREM
 redis.call('HSET', QUEUE_HASH, 'now_serving', new_now_serving)
 
-local tickets_admitted = new_now_serving - current_now_serving
-record_free_slots(places_to_fill - tickets_admitted)
 return {first_admitted_ticket, new_now_serving, 'ADMITTED', admitted_tokens}

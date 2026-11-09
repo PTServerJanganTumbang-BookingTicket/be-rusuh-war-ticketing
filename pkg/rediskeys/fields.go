@@ -7,8 +7,6 @@ const (
 	FieldIssued       = "issued"         // last ticket number handed out (HINCRBY)
 	FieldNowServing   = "now_serving"    // highest ticket number admitted
 	FieldFullBookedAt = "full_booked_at" // epoch seconds since stock first hit zero
-	FieldFreeSlots    = "free_slots"     // places the last advance could not fill
-	FieldFreeSlotsAt  = "free_slots_at"  // epoch seconds of that advance
 	FieldRatePerMin   = "rate_per_min"   // ticket numbers now_serving passes per minute
 	FieldName         = "name"           // event name, seeded by sale-ops
 	FieldSaleStartsAt = "sale_starts_at" // RFC 3339, seeded by sale-ops

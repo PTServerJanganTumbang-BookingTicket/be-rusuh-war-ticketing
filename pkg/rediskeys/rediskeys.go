@@ -47,7 +47,7 @@ func (e Event) tag() string { return "{" + e.id + "}" }
 
 // QueueHash is queue:{ev}, the event's one hash (ADR-006 §8.12): state
 // (SCHEDULED | OPEN | FULL_BOOKED | CLOSED), issued (HINCRBY hands out
-// ticket_no), now_serving, full_booked_at (epoch s), free_slots, free_slots_at,
+// ticket_no), now_serving, full_booked_at (epoch s),
 // rate_per_min, name, sale_starts_at. docs/redis-keys.md lists every field.
 func (e Event) QueueHash() string { return "queue:" + e.tag() }
 

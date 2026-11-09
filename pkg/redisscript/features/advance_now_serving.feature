@@ -3,15 +3,14 @@ Feature: advance_now_serving.lua moves the queue forward atomically
   The script decides how many ticket numbers to admit in one tick and raises
   now_serving. It never removes tokens from by_ticket: a member whose score is
   <= now_serving is a *pending grant* that admission-ctl finishes and ZREMs later.
-  It also records, in the same atomic step, how many places are still free (free_slots,
-  free_slots_at in queue:{ev}), so join can send a customer who fits straight in (ADR-006 §8.11).
+  It writes nothing else: no free-places hint for join (ADR-006 §8.14, no straight-in).
 
   Script contract (ADR-006 §3.4):
-    KEYS  queue:{ev} (hash: state, issued, now_serving, full_booked_at, free_slots, free_slots_at)
+    KEYS  queue:{ev} (hash: state, issued, now_serving, full_booked_at)
           · queue:{ev}:by_ticket · stock:{ev}:<cat>...
     ARGV  MAX · open (incl. pending) · browsing (incl. pending) · now_serving seen by ctl · now (epoch s)
     RET   {from, to, result, tokens}
-    WRITES queue:{ev} fields now_serving, free_slots, free_slots_at, state, full_booked_at (epoch s)
+    WRITES queue:{ev} fields now_serving, state, full_booked_at (epoch s)
           (ADR-006 §8.12: state, issued and full_booked_at are fields of the hash; there is no resume key)
 
   In this file "open" and "browsing" are the values PASSED to the script.
@@ -97,8 +96,7 @@ Feature: advance_now_serving.lua moves the queue forward atomically
       When the script runs with MAX 1000, open 10, browsing 10, seen now_serving 10
       Then the result is "EMPTY"
       And now_serving is 10
-      And free_slots is 990
-      And no key of event "E1" changed except free_slots and free_slots_at
+      And no key of event "E1" changed
 
     Scenario: issued has never been set
       Given event "E1" is "OPEN" with now_serving 0 and no issued key
@@ -147,7 +145,6 @@ Feature: advance_now_serving.lua moves the queue forward atomically
       And from is 1 and to is 5
       And the returned tokens are tickets 1, 2, 4 and 5
       And now_serving is 5
-      And free_slots is 995
 
     Scenario: The returned range is reported as from..to
       Given event "E1" is "OPEN" with now_serving 40 and issued 100
@@ -207,15 +204,14 @@ Feature: advance_now_serving.lua moves the queue forward atomically
         | "CLOSED"      | CLOSED    |
         | missing       | MISSING   |
 
-    Scenario: Before the sale opens, the script only records free places
+    Scenario: Before the sale opens, the script writes nothing
       Given event "E1" has state "SCHEDULED" with now_serving 0 and issued 100
       And total stock is 9000
       When the script runs with MAX 1000, open 0, browsing 0, seen now_serving 0
       Then the result is "SCHEDULED"
       And the state is still "SCHEDULED"
       And now_serving is 0
-      And free_slots is 1000 and free_slots_at is 1800000000
-      And no key of event "E1" changed except free_slots and free_slots_at
+      And no key of event "E1" changed
 
   # ---------------------------------------------------------------- stock & fully booked
 
@@ -272,55 +268,31 @@ Feature: advance_now_serving.lua moves the queue forward atomically
       And full_booked_at is not set
       # The controller detects the OPEN change by reading state, not from the result code.
 
-  # ---------------------------------------------------------------- free places for join
+  # ---------------------------------------------------------------- no free-places hint
 
-  @adr-006-8-11 @FR-05
-  Rule: Every run that reads the counts records the places still free: free_slots = max(0, deficit − (to − seen now_serving))
+  @adr-006-8-14
+  Rule: The script never records free places (no straight-in, ADR-006 §8.14)
 
-    Scenario Outline: free_slots is what this run could not fill
+    Scenario Outline: No run writes free_slots or free_slots_at
       Given event "E1" is "OPEN" with now_serving 0 and issued <issued>
       And customers hold ticket numbers 1 to <issued> in by_ticket
       And total stock is <stock>
       When the script runs with MAX 100, open <open>, browsing 0, seen now_serving 0
       Then the result is "<result>"
-      And now_serving is <to>
-      And free_slots is <free> and free_slots_at is 1800000000
+      And queue:{E1} has no free_slots or free_slots_at field
 
       Examples:
-        | issued | stock | open | result   | to  | free |
-        | 10     | 9000  | 0    | ADMITTED | 10  | 90   |
-        | 10     | 9000  | 40   | ADMITTED | 10  | 50   |
-        | 100    | 9000  | 0    | ADMITTED | 100 | 0    |
-        | 2000   | 9000  | 0    | ADMITTED | 100 | 0    |
-        | 10     | 60    | 0    | ADMITTED | 10  | 10   |
-        | 10     | 9000  | 100  | NOOP     | 0   | 0    |
-        | 10     | 9000  | 120  | NOOP     | 0   | 0    |
+        | issued | stock | open | result   |
+        | 10     | 9000  | 0    | ADMITTED |
+        | 100    | 9000  | 0    | ADMITTED |
+        | 10     | 9000  | 100  | NOOP     |
 
-    Scenario: Before the sale opens with little stock, free_slots follows the stock
-      Given event "E1" has state "SCHEDULED" with now_serving 0 and issued 0
-      And total stock is 600
-      When the script runs with MAX 1000, open 0, browsing 0, seen now_serving 0
-      Then free_slots is 200
-
-    Scenario: Fully booked leaves no free places
+    Scenario: Fully booked records no free places either
       Given event "E1" is "OPEN" with now_serving 300 and issued 300
       And total stock is 0
       When the script runs with MAX 1000, open 50, browsing 0, seen now_serving 300
       Then the result is "FULL_BOOKED"
-      And free_slots is 0 and free_slots_at is 1800000000
-
-    Scenario Outline: A run that changes nothing leaves free_slots_at old, so join stops waiting
-      Given event "E1" is "OPEN" with now_serving 7 and issued 100
-      And queue:{E1} has free_slots 40 and free_slots_at 1799999990
-      And <setup>
-      When the script runs with MAX 1000, open 0, browsing 0, seen now_serving <seen>
-      Then the result is "<result>"
-      And free_slots is 40 and free_slots_at is 1799999990
-
-      Examples:
-        | setup                                         | seen | result              |
-        | total stock is 9000                           | 5    | STALE               |
-        | stock VIP is 50 and stock CAT1 key is missing | 7    | STOCK_UNINITIALIZED |
+      And queue:{E1} has no free_slots or free_slots_at field
 
   # ---------------------------------------------------------------- input safety
 

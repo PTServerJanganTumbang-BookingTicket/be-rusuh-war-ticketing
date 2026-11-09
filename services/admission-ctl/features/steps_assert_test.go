@@ -402,12 +402,6 @@ func registerTickThen(sc *godog.ScenarioContext, w *tickWorld) {
 		}
 		return nil
 	})
-	sc.Step(`^free_slots_at is not refreshed, so joiners stop waiting after 2 s$`, func() error {
-		if v, _ := w.field("E1", rediskeys.FieldFreeSlotsAt); v != "" {
-			return fmt.Errorf("free_slots_at = %q, want it untouched", v)
-		}
-		return nil
-	})
 	sc.Step(`^the heartbeat broadcast still goes out on schedule$`, func() error { return w.broadcastCount(1) })
 	sc.Step(`^"E1" admits as usual$`, func() error {
 		for _, c := range w.log.snapshot() {

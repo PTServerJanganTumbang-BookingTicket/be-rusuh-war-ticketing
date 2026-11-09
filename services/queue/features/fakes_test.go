@@ -3,7 +3,6 @@ package features
 import (
 	"context"
 	"errors"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -176,8 +175,4 @@ func (t *sqlTracer) statements() []string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return append([]string(nil), t.sqls...)
-}
-
-func isSelect(sql string) bool {
-	return strings.HasPrefix(strings.ToUpper(strings.TrimSpace(sql)), "SELECT")
 }

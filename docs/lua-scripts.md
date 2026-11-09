@@ -3,13 +3,13 @@
 One place to see every Redis Lua script: what it is for, who calls it, and when.
 Redis keys are in [`redis-keys.md`](redis-keys.md). Rules for each script live in its Gherkin feature, not here.
 
-Sources: ADR-006 §3.4, §4.1, §8.11, §8.12 · HLD §8 · implementation-plan §14 (queue sections stale, see the note at the end).
+Sources: ADR-006 §3.4, §4.1, §8.12 (§8.11 `free_slots` removed by §8.14) · HLD §8 · implementation-plan §14 (queue sections stale, see the note at the end).
 
 ## 1. At a glance
 
 | Script | Status | Caller | When | What for |
 |---|---|---|---|---|
-| `advance_now_serving.lua` | **built** (`pkg/redisscript`) | admission-ctl only | every 500 ms tick, per event | decide how many people to let in, raise `now_serving`, record `free_slots` |
+| `advance_now_serving.lua` | **built** (`pkg/redisscript`) | admission-ctl only | every 500 ms tick, per event | decide how many people to let in, raise `now_serving` |
 | `hset_if_exists.lua` | **built** (`pkg/redisscript`) | admission-ctl (FINISH) | after a customer's booking row exists | copy the grant into `token:<queue_token>` only if that hash still exists, so an expired token is never recreated without a TTL |
 | token-bucket rate limiter | **built** (Lua embedded in `pkg/ratelimit/ratelimit.go`) | join (per IP and per account), sse-server (per IP); user and nik-verify have their own limiters | on every request that passes a limiter | refill the bucket by elapsed time and take one token, atomically |
 | `hold_booking.lua` | planned (booking plan) | booking service | when a customer picks seats | reserve stock across categories, all or nothing |
@@ -40,7 +40,7 @@ flowchart LR
 
 **What for.** It is the only place that moves `now_serving`. Admission-ctl calls it after counting who is inside in Aurora.
 
-**When.** Once per tick (every 500 ms) for each event that is `SCHEDULED`, `OPEN` or `FULL_BOOKED`. Nothing else calls it: join, payment and cancel never grant and never wake the controller.
+**When.** Once per tick (every 500 ms) for each event that is `SCHEDULED`, `OPEN` or `FULL_BOOKED` (an unopened event must already be known when it opens, because discovery runs every 30 s). Nothing else calls it: join, payment and cancel never grant and never wake the controller.
 
 **In and out**
 
@@ -49,7 +49,7 @@ flowchart LR
 | KEYS | `queue:{ev}` (hash), `queue:{ev}:by_ticket`, `stock:{ev}:<category>`... |
 | ARGV | `MAX_CONCURRENT_SLOTS`, `open` (incl. pending), `browsing` (incl. pending), `now_serving` the controller read, `now` (epoch s) |
 | Returns | `{first_admitted, last_admitted, result_code, admitted_tokens}` |
-| Writes | `queue:{ev}` fields `now_serving`, `free_slots`, `free_slots_at`, `state`, `full_booked_at` |
+| Writes | `queue:{ev}` fields `now_serving`, `state`, `full_booked_at` |
 
 **What it decides, in order**
 
@@ -57,10 +57,9 @@ flowchart LR
 2. If `now_serving` is no longer what the controller read, return `STALE` and write nothing (another writer got there first).
 3. If the event is `CLOSED` or not seeded, return that and write nothing.
 4. Sum the stock keys. A missing key, or no stock keys at all, returns `STOCK_UNINITIALIZED`.
-5. `SCHEDULED`: only record `free_slots`, so join can send the first batch straight in at sale start.
+5. `SCHEDULED`: return `SCHEDULED`, write nothing (the first tick after the state turns `OPEN` admits at once).
 6. Stock is zero: flip `OPEN` → `FULL_BOOKED` and stamp `full_booked_at`. Stock back: flip to `OPEN`.
 7. Admit `min(MAX − open, ceil(stock / 3) − browsing)` ticket numbers, never past `issued`.
-8. Record `free_slots` (places this run could not fill) and `free_slots_at`.
 
 It never removes tokens from `by_ticket`. A member whose score is ≤ `now_serving` is a *pending grant*; admission-ctl writes its GRANTED row, then ZREMs it.
 

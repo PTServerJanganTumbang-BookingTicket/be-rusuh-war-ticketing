@@ -256,3 +256,29 @@ func TestJoin_servedTicketWithBookingErrorIs503AndNotReadded(t *testing.T) {
 		t.Fatal("served token was put back into by_ticket")
 	}
 }
+
+// ADR-006 §8.14: there is no straight-in. Even with free places and a controller that
+// grants at once, join answers "queued" without waiting for the grant.
+func TestJoin_withFreePlacesStillAnswersQueuedAtOnce(t *testing.T) {
+	j, rdb, bearer := setup(t, "")
+	ctx := context.Background()
+	ev, _ := rediskeys.NewEvent("E1")
+	rdb.HSet(ctx, ev.QueueHash(), "free_slots", 20, "free_slots_at", time.Now().Unix()) // what the old straight-in rule read
+	go func() {                                                                         // a stand-in controller that grants the first token it sees
+		for i := 0; i < 200; i++ {
+			if keys, _ := rdb.Keys(ctx, "token:*").Result(); len(keys) > 0 {
+				rdb.HSet(ctx, keys[0], "grant_token", "gt_1", "booking_expires_at", time.Now().Add(5*time.Minute).UTC().Format(time.RFC3339))
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+	start := time.Now()
+	res, err := j.Join(ctx, usecase.JoinInput{EventID: "E1", CaptchaToken: "c", Bearer: bearer, ClientIP: "1.2.3.4"})
+	if err != nil || res.Outcome != usecase.Queued {
+		t.Fatalf("Join() = %+v, %v; want Queued", res, err)
+	}
+	if took := time.Since(start); took > 500*time.Millisecond {
+		t.Errorf("Join took %v; it must not wait for a grant", took)
+	}
+}

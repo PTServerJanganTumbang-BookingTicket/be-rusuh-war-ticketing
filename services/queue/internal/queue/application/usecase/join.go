@@ -21,10 +21,6 @@ import (
 type Config struct {
 	Capacity     int64           // QUEUE_CAPACITY
 	SaleWindow   time.Duration   // SALE_WINDOW_SECONDS: TTL of token and acct keys, cookie Max-Age
-	GrantWait    time.Duration   // JOIN_GRANT_WAIT_MS: how long a caller that fits waits for admission-ctl (FR-05)
-	GrantPoll    time.Duration   // poll interval during that wait
-	DirectMax    int64           // JOIN_DIRECT_MAX: most places past now_serving that may wait for a grant
-	FreeSlotsAge time.Duration   // JOIN_FREE_SLOTS_MAX_AGE_SECONDS: oldest free_slots join still trusts
 	ClaimWait    time.Duration   // rejoin: how long an acct pointer without a token may be in flight before it is stale
 	RaceWait     time.Duration   // lost acct claim: how long to wait for the winning join's token
 	RateLimits   bool            // off only in load tests
@@ -38,10 +34,6 @@ func DefaultConfig() Config {
 	return Config{
 		Capacity:     300000,
 		SaleWindow:   21600 * time.Second,
-		GrantWait:    time.Second,
-		GrantPoll:    100 * time.Millisecond,
-		DirectMax:    500,
-		FreeSlotsAge: 2 * time.Second,
 		ClaimWait:    300 * time.Millisecond,
 		RaceWait:     2 * time.Second,
 		RateLimits:   true,
@@ -73,25 +65,22 @@ type JoinInput struct {
 	ClientIP     string // from the gateway, never from X-Forwarded-For
 }
 
-// Outcome says which of the three 200 responses to send.
+// Outcome says which of the two 200 responses to send.
 type Outcome int
 
 // Join outcomes.
 const (
 	Queued Outcome = iota
 	Rejoined
-	Granted
 )
 
 // JoinResult is a successful join.
 type JoinResult struct {
-	Outcome          Outcome
-	Engagement       domain.Engagement
-	NowServing       int64
-	EventName        string
-	State            string // Rejoined only
-	GrantToken       string // Granted only
-	BookingExpiresAt time.Time
+	Outcome    Outcome
+	Engagement domain.Engagement
+	NowServing int64
+	EventName  string
+	State      string // Rejoined only
 }
 
 // Position is ticket_no − now_serving.
@@ -407,54 +396,7 @@ func (j *Join) issue(ctx context.Context, ev rediskeys.Event, snap domain.EventS
 	}
 
 	res := JoinResult{Outcome: Queued, Engagement: e, NowServing: snap.NowServing, EventName: snap.Name}
-	if j.fits(snap, ticketNo) {
-		if g, ok := j.waitForGrant(ctx, qt); ok {
-			res.Outcome, res.GrantToken, res.BookingExpiresAt = Granted, g.GrantToken, g.BookingExpiresAt
-		}
-	}
 	return res, nil
-}
-
-// fits says whether the next admission-ctl tick will admit this ticket
-// (FR-05, ADR-006 §8.11): admission-ctl's last free_slots is fresh and the
-// number is within it. free_slots > 0 means nobody was waiting at that tick,
-// so the next free_slots numbers are exactly the ones the next tick admits.
-// A stale or missing value (controller down, COUNT failing) means no wait.
-func (j *Join) fits(snap domain.EventSnapshot, ticketNo int64) bool {
-	if j.cfg.GrantWait <= 0 || snap.FreeSlots <= 0 || snap.FreeSlotsAt <= 0 {
-		return false
-	}
-	age := j.d.Clock().Unix() - snap.FreeSlotsAt
-	if age < 0 || time.Duration(age)*time.Second > j.cfg.FreeSlotsAge {
-		return false
-	}
-	return ticketNo <= snap.NowServing+min(snap.FreeSlots, j.cfg.DirectMax)
-}
-
-// waitForGrant polls token:<qt> in Redis for the grant admission-ctl copies
-// there on its next tick (FR-05). Join itself never grants (ADR-006 rule 1).
-// Any error or a cancelled request falls back to the queued answer.
-func (j *Join) waitForGrant(ctx context.Context, qt string) (domain.Grant, bool) {
-	start := time.Now()
-	for {
-		g, found, err := j.d.Store.Grant(ctx, qt)
-		if err != nil {
-			slog.WarnContext(ctx, "join: grant wait read failed, answering queued", slog.Any("err", err))
-			return domain.Grant{}, false
-		}
-		if found {
-			return g, true
-		}
-		remaining := j.cfg.GrantWait - time.Since(start)
-		if remaining <= 0 {
-			return domain.Grant{}, false
-		}
-		select {
-		case <-ctx.Done():
-			return domain.Grant{}, false
-		case <-time.After(min(j.cfg.GrantPoll, remaining)):
-		}
-	}
 }
 
 func (j *Join) deviceHash(deviceID string) string { return j.caller().deviceHash(deviceID) }

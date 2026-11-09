@@ -48,9 +48,6 @@ func Load() (Config, error) {
 	join := usecase.DefaultConfig()
 	join.Capacity = int64(envutil.EnvInt("QUEUE_CAPACITY", int(join.Capacity)))
 	join.SaleWindow = envutil.EnvDuration("SALE_WINDOW_SECONDS", join.SaleWindow)
-	join.GrantWait = envutil.EnvDuration("JOIN_GRANT_WAIT_MS", join.GrantWait)
-	join.DirectMax = int64(envutil.EnvInt("JOIN_DIRECT_MAX", int(join.DirectMax)))
-	join.FreeSlotsAge = envutil.EnvDuration("JOIN_FREE_SLOTS_MAX_AGE_SECONDS", join.FreeSlotsAge)
 	join.RateLimits = envutil.EnvBool("JOIN_RATE_LIMITS_ENABLED", true)
 	join.DevicePepper = []byte(os.Getenv("DEVICE_PEPPER"))
 
@@ -101,12 +98,6 @@ func (c Config) Validate() error {
 		}
 	default:
 		errs = append(errs, fmt.Errorf("CAPTCHA_PROVIDER %q: want %q or %q", c.Captcha, CaptchaTurnstile, CaptchaMock))
-	}
-	if c.Join.DirectMax < 1 {
-		errs = append(errs, errors.New("JOIN_DIRECT_MAX must be at least 1 (0 would switch straight-in off)"))
-	}
-	if c.Join.FreeSlotsAge < time.Second {
-		errs = append(errs, errors.New("JOIN_FREE_SLOTS_MAX_AGE_SECONDS must be at least 1"))
 	}
 	if c.Env == "production" && !c.Join.RateLimits {
 		errs = append(errs, errors.New("JOIN_RATE_LIMITS_ENABLED=false is not allowed in production"))

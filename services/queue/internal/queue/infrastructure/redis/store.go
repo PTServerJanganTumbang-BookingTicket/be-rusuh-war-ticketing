@@ -34,8 +34,6 @@ const (
 	FieldIssued       = rediskeys.FieldIssued
 	FieldFullBookedAt = rediskeys.FieldFullBookedAt
 	FieldNowServing   = rediskeys.FieldNowServing
-	FieldFreeSlots    = rediskeys.FieldFreeSlots
-	FieldFreeSlotsAt  = rediskeys.FieldFreeSlotsAt
 	FieldName         = rediskeys.FieldName
 	FieldSaleStartsAt = rediskeys.FieldSaleStartsAt
 )
@@ -46,8 +44,6 @@ const (
 	snNowServing = iota
 	snName
 	snSaleStartsAt
-	snFreeSlots
-	snFreeSlotsAt
 	snState
 	snIssued
 	snFullBookedAt
@@ -56,7 +52,7 @@ const (
 
 var snapshotFields = [snCount]string{
 	snNowServing: FieldNowServing, snName: FieldName, snSaleStartsAt: FieldSaleStartsAt,
-	snFreeSlots: FieldFreeSlots, snFreeSlotsAt: FieldFreeSlotsAt, snState: FieldState,
+	snState:  FieldState,
 	snIssued: FieldIssued, snFullBookedAt: FieldFullBookedAt,
 }
 
@@ -101,35 +97,7 @@ func (s *Store) Snapshot(ctx context.Context, ev rediskeys.Event) (domain.EventS
 			slog.WarnContext(ctx, "queue: full_booked_at is not epoch seconds", slog.String("event_id", ev.ID()), slog.String("value", raw))
 		}
 	}
-	// free_slots only lets join wait for a grant. A value that is not a number
-	// reads as "not written": join then answers queued at once.
-	if free, err := optionalInt(str(snFreeSlots)); err == nil {
-		if at, err := optionalInt(str(snFreeSlotsAt)); err == nil {
-			snap.FreeSlots, snap.FreeSlotsAt = free, at
-		}
-	}
 	return snap, nil
-}
-
-// Grant reads the grant admission-ctl copied into token:<queueToken>.
-func (s *Store) Grant(ctx context.Context, queueToken string) (domain.Grant, bool, error) {
-	vals, err := s.rdb.HMGet(ctx, rediskeys.Token(queueToken), FieldGrantToken, FieldBookingExpiresAt).Result()
-	if err != nil {
-		return domain.Grant{}, false, err
-	}
-	gt, _ := vals[0].(string)
-	if gt == "" {
-		return domain.Grant{}, false, nil
-	}
-	exp, _ := vals[1].(string)
-	if exp == "" {
-		return domain.Grant{}, false, nil // not fully written yet: keep polling
-	}
-	at, err := time.Parse(time.RFC3339, exp)
-	if err != nil {
-		return domain.Grant{}, false, fmt.Errorf("%s booking_expires_at %q: %w", rediskeys.Token(queueToken), exp, err)
-	}
-	return domain.Grant{GrantToken: gt, BookingExpiresAt: at}, true, nil
 }
 
 func optionalInt(v string) (int64, error) {

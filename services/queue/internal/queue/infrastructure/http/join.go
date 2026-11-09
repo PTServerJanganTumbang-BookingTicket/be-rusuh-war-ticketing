@@ -105,13 +105,6 @@ func (h *Handler) Join(w http.ResponseWriter, r *http.Request) {
 	}
 	http.SetCookie(w, h.cookie(in.EventID, res.Engagement.QueueToken))
 	switch res.Outcome {
-	case usecase.Granted:
-		apinizer.WriteEnvelope(w, http.StatusOK, "No queue — access granted", grantedData{
-			Granted:          true,
-			GrantToken:       res.GrantToken,
-			QueueToken:       res.Engagement.QueueToken,
-			BookingExpiresAt: res.BookingExpiresAt.UTC().Format(time.RFC3339),
-		})
 	case usecase.Rejoined:
 		apinizer.WriteEnvelope(w, http.StatusOK, "Rejoined existing queue position", rejoinedData{
 			placeData: h.place(in.EventID, res),
@@ -148,13 +141,6 @@ type rejoinedData struct {
 	placeData
 	Rejoined bool   `json:"rejoined"`
 	State    string `json:"state"`
-}
-
-type grantedData struct {
-	Granted          bool   `json:"granted"`
-	GrantToken       string `json:"grant_token"`
-	QueueToken       string `json:"queue_token"`
-	BookingExpiresAt string `json:"booking_expires_at"`
 }
 
 func (h *Handler) place(eventID string, res usecase.JoinResult) placeData {

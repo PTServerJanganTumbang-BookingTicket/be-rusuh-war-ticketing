@@ -27,8 +27,6 @@ func (s SaleState) Known() bool {
 type EventSnapshot struct {
 	State        SaleState // "" when the state field of queue:{ev} is missing
 	NowServing   int64
-	FreeSlots    int64 // queue:{ev} free_slots: places admission-ctl could still fill at FreeSlotsAt
-	FreeSlotsAt  int64 // queue:{ev} free_slots_at, epoch seconds; 0 when never written
 	Issued       int64
 	Name         string // queue:{ev} field "name", seeded by sale-ops
 	SaleStartsAt string // queue:{ev} field "sale_starts_at" (RFC 3339)
@@ -58,13 +56,6 @@ const (
 // came. The grant itself is never taken from here: see Grant.
 type Booking struct {
 	Status string
-}
-
-// Grant is what admission-ctl copies into token:<queue_token> when it grants a
-// place (FR-05): join hands it to a caller that waited for it.
-type Grant struct {
-	GrantToken       string
-	BookingExpiresAt time.Time
 }
 
 // BookingDetail is the part of a bookings row /queue/me needs to describe where the customer is.

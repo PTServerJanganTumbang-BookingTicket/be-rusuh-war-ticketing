@@ -4,8 +4,8 @@ Feature: Being let in from the queue
   within half a second of a place freeing up.
   admission-ctl is the only thing that lets people in. Every 500 ms it counts who is inside (Aurora), moves
   now_serving forward (advance_now_serving.lua), writes my GRANTED booking, and only then tells everyone the new number.
-  The Lua also records free_slots, and the grant is copied into my token hash, so join can send a customer who fits
-  straight to the ticket page without the waiting room (ADR-006 §8.11).
+  The grant is also copied into my token hash, so /me answers from Redis while I wait. There is no straight-in:
+  join never waits for a grant (ADR-006 §8.14).
 
   Sources: 05-admission-controller.md §2, §3 · ADR-006 §2–§4 · README §0 rules 1–5
 
@@ -72,17 +72,18 @@ Feature: Being let in from the queue
       | FINISH    | ZREM by_ticket                               |
       | BROADCAST | PUBLISH sse-broadcast                        |
     # The app calls GET /queue/me when the broadcast shows nowServing >= its ticket_no, so the row must already be there.
-    # Join polls token:<queue_token> for grant_token, so the grant hash must exist before that field appears.
+    # /me reads grant_token from the token hash, so the grant hash must exist before that field appears.
 
-  # ------------------------------------------------------------ straight in, without the waiting room
+  # ------------------------------------------------------------ before the sale opens
 
-  @unit @adr-006-8-11 @FR-05
-  Scenario: An event that has not opened yet is ticked too, so the first batch can go straight in at sale start
+  @unit @adr-006-8-14
+  Scenario: An event that has not opened yet is ticked too, so the first batch is admitted on the first tick after it opens
     Given event "E2" is "SCHEDULED" and opens at "2026-11-10T19:00:01Z"
     When one tick runs
     Then COUNT and ADVANCE run for "E2" with open 0 and browsing 0
     And no INSERT is attempted for "E2"
-    # The Lua answers SCHEDULED and writes only free_slots (advance_now_serving.feature).
+    # The Lua answers SCHEDULED and writes nothing (advance_now_serving.feature). Discovery runs every 30 s,
+    # so the event must already be known when it opens.
 
   @integration @postgres @redis-cluster @adr-006-8-11
   Scenario: My grant never creates a token hash that would live forever
@@ -143,7 +144,6 @@ Feature: Being let in from the queue
     Then ADVANCE is not called
     And now_serving is unchanged
     And the metric "CountFailures" is incremented
-    And free_slots_at is not refreshed, so joiners stop waiting after 2 s
     And the heartbeat broadcast still goes out on schedule
     # OPEN: 05 §7 says "no broadcast change". Proposal: keep the 10 s heartbeat so
     # waiting customers don't see the stale indicator just because Aurora blipped.

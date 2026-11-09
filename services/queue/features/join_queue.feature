@@ -96,7 +96,7 @@ Feature: I join the queue and get a ticket number
 
   @integration @contract
   Scenario: Every response I can get matches the Apidog contract
-    When each documented join response is produced (200, 200 rejoined, 200 granted, 400, 403, 409, 429, 503)
+    When each documented join response is produced (200, 200 rejoined, 400, 403, 409, 429, 503)
     Then each body validates against its schema in documentations/api/rusuh-booking-apidog.json
     # OPEN: Apidog has no responses for 400 DEVICE_ID_REQUIRED, 400 VALIDATION_ERROR, 401,
     # 410 SALE_CLOSED and 503 not-seeded. Proposal: add them to Apidog (shared repo, ask first).

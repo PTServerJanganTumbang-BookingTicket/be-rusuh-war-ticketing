@@ -181,24 +181,6 @@ func registerJoinSteps(sc *godog.ScenarioContext, W func() *world) {
 	sc.Step(`^another guest joins "([^"]*)"$`, func(id string) error { return join(joinReq{eventID: id, deviceID: "dev-another-0000000"}) })
 
 	// ---- cancellation
-	sc.Step(`^the client cancels the request after (\d+) ms$`, func(ms int) error {
-		w := W()
-		ctx, cancel := context.WithCancel(context.Background())
-		after := time.Duration(ms) * time.Millisecond
-		w.captured["cancelAt"] = time.Now().Add(after)
-		time.AfterFunc(after, cancel)
-		// The Background wrote free_slots and the next ticket fits, so join waits.
-		snap, err := w.snapshot("E1")
-		if err != nil {
-			return err
-		}
-		if err := w.setCounters("E1", snap.Issued, snap.Issued); err != nil {
-			return err
-		}
-		w.record(w.do(joinReq{eventID: "E1", ctx: ctx}))
-		w.captured["returnedAt"] = time.Now()
-		return nil
-	})
 
 	// ---- Lambda vs local server
 	sc.Step(`^the join request goes through the API Gateway Lambda proxy adapter$`, func() error { return W().lambdaAndServer(true) })
