@@ -240,10 +240,15 @@ jobs:
           path: ${{ steps.cov.outputs.name }}.out
       - name: Check code coverage (80% gate)
         working-directory: ${{ matrix.module }}
+        # Gate on testable code only. Excluded from the denominator:
+        #   cmd/    — func main() + process wiring, not unit-testable
+        #   _mock/  — generated gomock code, never counts toward coverage
+        #   pgtest/ — test-only Postgres helper (same exclusion as `make verify`)
+        # The full profile is still uploaded above for Sonar; only the gate drops these.
         run: |
-          grep -vE '/(cmd|_mock)/' coverage.out > coverage.gate.out || cp coverage.out coverage.gate.out
+          grep -vE '/(cmd|_mock|pgtest)/' coverage.out > coverage.gate.out || cp coverage.out coverage.gate.out
           coverage=$(go tool cover -func=coverage.gate.out | awk '/^total:/ {sub(/%/,"",$3); print $3}')
-          echo "Gate coverage ($(basename ${{ matrix.module }}), excl. cmd/ _mock/): $coverage%"
+          echo "Gate coverage ($(basename ${{ matrix.module }}), excl. cmd/ _mock/ pgtest/): $coverage%"
           awk -v c="$coverage" 'BEGIN { if (c+0 < 80) { print "Code coverage below threshold!"; exit 1 } }'
 
   govulncheck:
