@@ -327,7 +327,7 @@ jobs:
           ENABLE_NAT: ${{ vars.ENABLE_NAT_GATEWAY || 'true' }}
           SINGLE_AZ: ${{ vars.SINGLE_AZ || 'true' }}
           DB_PUBLIC: ${{ vars.DB_PUBLICLY_ACCESSIBLE || 'true' }}
-          DB_ALLOWED_CIDR: ${{ vars.DB_ALLOWED_CIDR }}
+          DB_ALLOWED_CIDR: ${{ secrets.DB_ALLOWED_CIDR }}
           DB_MASTER_PASSWORD: ${{ secrets.DB_MASTER_PASSWORD }}
         run: |
           set -euo pipefail

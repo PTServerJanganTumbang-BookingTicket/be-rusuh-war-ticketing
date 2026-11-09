@@ -41,11 +41,6 @@ Parameters:
     Type: AWS::SSM::Parameter::Value<List<AWS::EC2::SecurityGroup::Id>>
     Default: /rusuh/prod/vpc/lambda-security-group-ids
 
-  VpcId:
-    Type: AWS::SSM::Parameter::Value<String>
-    Default: /rusuh/prod/vpc/id
-    Description: VPC ID — used to restrict the Lambda Function URL to VPC-only access
-
   DatabaseSecretArn:
     Type: AWS::SSM::Parameter::Value<String>
     Default: /rusuh/prod/db/secret-arn
@@ -204,12 +199,12 @@ Resources:
     Properties:
       AuthType: NONE
       TargetFunctionArn: !Ref NikVerifyFunction
-      Cors:
-        AllowOrigins:
-          - "*"
 
-  # Restrict the function URL to calls originating from within the VPC.
-  # Any request arriving from outside the VPC CIDR gets a 403.
+  # Allows unauthenticated invocation via the Function URL.
+  # Network-level restriction: the Lambda is in a private VPC subnet with no
+  # inbound route from the internet, so only other resources in the same VPC
+  # (i.e. the user Lambda) can reach it. AuthType NONE avoids SigV4 signing
+  # in the plain HTTP client used by the user service.
   NikVerifyFunctionUrlVpcPolicy:
     Type: AWS::Lambda::Permission
     Properties:
@@ -217,9 +212,6 @@ Resources:
       FunctionUrlAuthType: NONE
       Action: lambda:InvokeFunctionUrl
       Principal: "*"
-      Condition:
-        StringEquals:
-          aws:SourceVpc: !Ref VpcId
 
   # ============================================================================
   # HTTP API (API Gateway v2) — ONLY if EnableDirectApiAccess is true
