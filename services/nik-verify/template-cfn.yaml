@@ -305,3 +305,4 @@ Outputs:
   FunctionName:
     Description: Name of the nik-verify Lambda function
     Value: !Ref NikVerifyFunction
+
