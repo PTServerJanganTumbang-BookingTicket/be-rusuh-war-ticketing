@@ -1,4 +1,4 @@
-module gitlab-cicd-ee.telkomsel.co.id/my-telkomsel/be-rusuh-war-ticketing/tools/speccheck
+module github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/tools/speccheck
 
 go 1.25.0
 
