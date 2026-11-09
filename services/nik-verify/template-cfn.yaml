@@ -19,6 +19,14 @@ Parameters:
     Type: String
     Description: S3 key of the Lambda deployment package (bootstrap.zip)
 
+  EnableDirectApiAccess:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: >
+      Create a per-service API Gateway endpoint. Set to false when using the
+      unified API Gateway (rusuh-prod-api) as the single entry point.
+
   VpcSubnetIds:
     Type: AWS::SSM::Parameter::Value<List<AWS::EC2::Subnet::Id>>
     Default: /rusuh/prod/vpc/private-subnet-ids
@@ -75,6 +83,7 @@ Rules:
 Conditions:
   IsDukcapilStub: !Equals [!Ref DukcapilMode, stub]
   HasDukcapilExtraHeader: !Not [!Equals [!Ref DukcapilExtraHeaderName, ""]]
+  CreateDirectApi: !Equals [!Ref EnableDirectApiAccess, "true"]
 
 Resources:
   # ============================================================================
@@ -172,22 +181,25 @@ Resources:
       RetentionInDays: 14
 
   # ============================================================================
-  # HTTP API (API Gateway v2)
+  # HTTP API (API Gateway v2) — ONLY if EnableDirectApiAccess is true
   # ============================================================================
   NikVerifyApi:
     Type: AWS::ApiGatewayV2::Api
+    Condition: CreateDirectApi
     Properties:
       Name: !Sub rusuh-${Environment}-nik-verify-api
       ProtocolType: HTTP
 
   NikVerifyApiLogGroup:
     Type: AWS::Logs::LogGroup
+    Condition: CreateDirectApi
     Properties:
       LogGroupName: !Sub /aws/apigateway/rusuh-${Environment}-nik-verify-api
       RetentionInDays: 14
 
   NikVerifyApiStage:
     Type: AWS::ApiGatewayV2::Stage
+    Condition: CreateDirectApi
     Properties:
       ApiId: !Ref NikVerifyApi
       StageName: $default
@@ -201,6 +213,7 @@ Resources:
   # ============================================================================
   NikVerifyLambdaIntegration:
     Type: AWS::ApiGatewayV2::Integration
+    Condition: CreateDirectApi
     Properties:
       ApiId: !Ref NikVerifyApi
       IntegrationType: AWS_PROXY
@@ -212,6 +225,7 @@ Resources:
   # ============================================================================
   RouteValidateNik:
     Type: AWS::ApiGatewayV2::Route
+    Condition: CreateDirectApi
     Properties:
       ApiId: !Ref NikVerifyApi
       RouteKey: POST /nik/validate
@@ -219,16 +233,18 @@ Resources:
 
   RouteHealthCheck:
     Type: AWS::ApiGatewayV2::Route
+    Condition: CreateDirectApi
     Properties:
       ApiId: !Ref NikVerifyApi
       RouteKey: GET /sys/ping
       Target: !Sub integrations/${NikVerifyLambdaIntegration}
 
   # ============================================================================
-  # Lambda Permission
+  # Lambda Permission (for direct API access)
   # ============================================================================
-  NikVerifyFunctionApiPermission:
+  NikVerifyFunctionDirectApiPermission:
     Type: AWS::Lambda::Permission
+    Condition: CreateDirectApi
     Properties:
       FunctionName: !Ref NikVerifyFunction
       Action: lambda:InvokeFunction
@@ -240,6 +256,7 @@ Resources:
   # ============================================================================
   SsmBaseUrl:
     Type: AWS::SSM::Parameter
+    Condition: CreateDirectApi
     Properties:
       Name: !Sub /rusuh/${Environment}/nik-verify/base-url
       Type: String
@@ -248,9 +265,14 @@ Resources:
 
 Outputs:
   ApiUrl:
+    Condition: CreateDirectApi
     Description: Base URL of the nik-verify HTTP API
     Value: !Sub "https://${NikVerifyApi}.execute-api.${AWS::Region}.amazonaws.com"
 
   FunctionArn:
     Description: ARN of the nik-verify Lambda function
     Value: !GetAtt NikVerifyFunction.Arn
+
+  FunctionName:
+    Description: Name of the nik-verify Lambda function
+    Value: !Ref NikVerifyFunction

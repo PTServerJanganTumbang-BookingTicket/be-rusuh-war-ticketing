@@ -19,6 +19,14 @@ Parameters:
     Type: String
     Description: S3 key of the Lambda deployment package (bootstrap.zip)
 
+  EnableDirectApiAccess:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: >
+      Create a per-service API Gateway endpoint. Set to false when using the
+      unified API Gateway (rusuh-prod-api) as the single entry point.
+
   VpcSubnetIds:
     Type: AWS::SSM::Parameter::Value<List<AWS::EC2::Subnet::Id>>
     Default: /rusuh/prod/vpc/private-subnet-ids
@@ -46,6 +54,9 @@ Parameters:
   CookieDomain:
     Type: String
     Default: ""
+
+Conditions:
+  CreateDirectApi: !Equals [!Ref EnableDirectApiAccess, "true"]
 
 Resources:
   # ============================================================================
@@ -130,22 +141,25 @@ Resources:
       RetentionInDays: 14
 
   # ============================================================================
-  # HTTP API (API Gateway v2)
+  # HTTP API (API Gateway v2) — ONLY if EnableDirectApiAccess is true
   # ============================================================================
   UserApi:
     Type: AWS::ApiGatewayV2::Api
+    Condition: CreateDirectApi
     Properties:
       Name: !Sub rusuh-${Environment}-user-api
       ProtocolType: HTTP
 
   UserApiLogGroup:
     Type: AWS::Logs::LogGroup
+    Condition: CreateDirectApi
     Properties:
       LogGroupName: !Sub /aws/apigateway/rusuh-${Environment}-user-api
       RetentionInDays: 14
 
   UserApiStage:
     Type: AWS::ApiGatewayV2::Stage
+    Condition: CreateDirectApi
     Properties:
       ApiId: !Ref UserApi
       StageName: $default
@@ -159,6 +173,7 @@ Resources:
   # ============================================================================
   UserLambdaIntegration:
     Type: AWS::ApiGatewayV2::Integration
+    Condition: CreateDirectApi
     Properties:
       ApiId: !Ref UserApi
       IntegrationType: AWS_PROXY
@@ -166,10 +181,11 @@ Resources:
       PayloadFormatVersion: "2.0"
 
   # ============================================================================
-  # Routes
+  # Routes (only when direct API access is enabled)
   # ============================================================================
   RouteRequestMagicLink:
     Type: AWS::ApiGatewayV2::Route
+    Condition: CreateDirectApi
     Properties:
       ApiId: !Ref UserApi
       RouteKey: POST /auth/magic-link
@@ -177,6 +193,7 @@ Resources:
 
   RouteResendMagicLink:
     Type: AWS::ApiGatewayV2::Route
+    Condition: CreateDirectApi
     Properties:
       ApiId: !Ref UserApi
       RouteKey: POST /auth/magic-link/resend
@@ -184,6 +201,7 @@ Resources:
 
   RouteVerifyMagicLink:
     Type: AWS::ApiGatewayV2::Route
+    Condition: CreateDirectApi
     Properties:
       ApiId: !Ref UserApi
       RouteKey: GET /auth/verify
@@ -191,6 +209,7 @@ Resources:
 
   RouteVerifyEmail:
     Type: AWS::ApiGatewayV2::Route
+    Condition: CreateDirectApi
     Properties:
       ApiId: !Ref UserApi
       RouteKey: GET /auth/verify-email
@@ -198,6 +217,7 @@ Resources:
 
   RouteRefreshSession:
     Type: AWS::ApiGatewayV2::Route
+    Condition: CreateDirectApi
     Properties:
       ApiId: !Ref UserApi
       RouteKey: POST /auth/refresh
@@ -205,6 +225,7 @@ Resources:
 
   RouteRegister:
     Type: AWS::ApiGatewayV2::Route
+    Condition: CreateDirectApi
     Properties:
       ApiId: !Ref UserApi
       RouteKey: POST /auth/register
@@ -212,6 +233,7 @@ Resources:
 
   RouteListSavedNiks:
     Type: AWS::ApiGatewayV2::Route
+    Condition: CreateDirectApi
     Properties:
       ApiId: !Ref UserApi
       RouteKey: GET /accounts/me/saved-niks
@@ -219,6 +241,7 @@ Resources:
 
   RouteAddSavedNik:
     Type: AWS::ApiGatewayV2::Route
+    Condition: CreateDirectApi
     Properties:
       ApiId: !Ref UserApi
       RouteKey: POST /accounts/me/saved-niks
@@ -226,6 +249,7 @@ Resources:
 
   RouteDeleteSavedNik:
     Type: AWS::ApiGatewayV2::Route
+    Condition: CreateDirectApi
     Properties:
       ApiId: !Ref UserApi
       RouteKey: DELETE /accounts/me/saved-niks/{id}
@@ -233,6 +257,7 @@ Resources:
 
   RouteGetMyTickets:
     Type: AWS::ApiGatewayV2::Route
+    Condition: CreateDirectApi
     Properties:
       ApiId: !Ref UserApi
       RouteKey: GET /users/me/tickets
@@ -240,6 +265,7 @@ Resources:
 
   RouteGetETicket:
     Type: AWS::ApiGatewayV2::Route
+    Condition: CreateDirectApi
     Properties:
       ApiId: !Ref UserApi
       RouteKey: GET /tickets/{ticket_id}/eticket
@@ -247,16 +273,18 @@ Resources:
 
   RouteHealthCheck:
     Type: AWS::ApiGatewayV2::Route
+    Condition: CreateDirectApi
     Properties:
       ApiId: !Ref UserApi
       RouteKey: GET /sys/ping
       Target: !Sub integrations/${UserLambdaIntegration}
 
   # ============================================================================
-  # Lambda Permission
+  # Lambda Permission (for direct API access)
   # ============================================================================
-  UserFunctionApiPermission:
+  UserFunctionDirectApiPermission:
     Type: AWS::Lambda::Permission
+    Condition: CreateDirectApi
     Properties:
       FunctionName: !Ref UserFunction
       Action: lambda:InvokeFunction
@@ -265,9 +293,14 @@ Resources:
 
 Outputs:
   ApiUrl:
-    Description: Base URL of the user HTTP API
+    Condition: CreateDirectApi
+    Description: Base URL of the user HTTP API (direct access)
     Value: !Sub "https://${UserApi}.execute-api.${AWS::Region}.amazonaws.com"
 
   FunctionArn:
     Description: ARN of the user Lambda function
     Value: !GetAtt UserFunction.Arn
+
+  FunctionName:
+    Description: Name of the user Lambda function
+    Value: !Ref UserFunction
