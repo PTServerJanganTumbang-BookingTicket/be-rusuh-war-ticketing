@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -189,5 +190,128 @@ func TestStoreReportsDatabaseErrors(t *testing.T) {
 	}
 	if _, err := s.LapseDue(ctx, t0); err == nil {
 		t.Error("LapseDue hid a database error")
+	}
+	if _, err := s.ExpireSelectingDue(ctx, t0); err == nil {
+		t.Error("ExpireSelectingDue hid a database error")
+	}
+}
+
+func TestExpireSelectingDueMovesOnlyDueSelectingRowsAndOnlyOnce(t *testing.T) {
+	pool := pgtest.New(t)
+	seed(t, pool, "E1", "SELECTING", "due", t0.Add(-time.Second))
+	seed(t, pool, "E1", "SELECTING", "exactly", t0)
+	seed(t, pool, "E1", "SELECTING", "later", t0.Add(time.Second))
+	for _, st := range []string{"GRANTED", "HELD", "AWAITING_PAYMENT", "PENDING_CANCELLATION", "CONFIRMED"} {
+		seed(t, pool, "E1", st, "other_"+st, t0.Add(-time.Hour))
+	}
+	s := NewBookings(pool)
+
+	expired, err := s.ExpireSelectingDue(ctx, t0)
+	if err != nil || len(expired) != 2 {
+		t.Fatalf("expired %+v %v, want the two due SELECTING rows", expired, err)
+	}
+	for _, e := range expired {
+		if e.GrantToken == "" || e.EventID != "E1" || e.QueueToken == "" || e.BookingID == "" {
+			t.Fatalf("expired row misses fields: %+v", e)
+		}
+	}
+	if again, _ := s.ExpireSelectingDue(ctx, t0); len(again) != 0 {
+		t.Fatalf("the same rows expired twice: %+v", again)
+	}
+	rows, err := pool.Query(ctx, `SELECT queue_token, status FROM bookings ORDER BY queue_token`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var qt, st string
+		if err := rows.Scan(&qt, &st); err != nil {
+			t.Fatal(err)
+		}
+		want := map[string]string{"due": "EXPIRED", "exactly": "EXPIRED", "later": "SELECTING"}[qt]
+		if want == "" {
+			want = qt[len("other_"):] // never touched
+		}
+		if st != want {
+			t.Errorf("%s is %s, want %s", qt, st, want)
+		}
+	}
+}
+
+func TestExpireSelectingDueGivesEachRowToExactlyOneSweeper(t *testing.T) {
+	pool := pgtest.New(t)
+	for i := 0; i < 20; i++ {
+		seed(t, pool, "E1", "SELECTING", fmt.Sprintf("q%d", i), t0.Add(-time.Minute))
+	}
+	s := NewBookings(pool)
+	var wg sync.WaitGroup
+	counts := make([]int, 2)
+	for i := range counts {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			e, err := s.ExpireSelectingDue(ctx, t0)
+			if err != nil {
+				t.Errorf("sweeper %d: %v", i, err)
+			}
+			counts[i] = len(e)
+		}(i)
+	}
+	wg.Wait()
+	if counts[0]+counts[1] != 20 {
+		t.Fatalf("sweepers expired %v, want 20 in total", counts)
+	}
+}
+
+// The place goes to the next customer because the admission COUNT stops seeing the row: there is no counter to fix.
+func TestAnExpiredSelectingBookingNoLongerCountsAsInside(t *testing.T) {
+	pool := pgtest.New(t)
+	seed(t, pool, "E1", "SELECTING", "gone", t0.Add(-time.Second))
+	seed(t, pool, "E1", "SELECTING", "stays", t0.Add(time.Minute))
+	s := NewBookings(pool)
+	before, err := s.CountAdmission(ctx, "E1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ExpireSelectingDue(ctx, t0); err != nil {
+		t.Fatal(err)
+	}
+	after, err := s.CountAdmission(ctx, "E1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Open != before.Open-1 || after.Browsing != before.Browsing-1 {
+		t.Fatalf("count before %+v after %+v, want one fewer open and browsing", before, after)
+	}
+}
+
+func TestTheSelectingSweepUsesItsPartialIndex(t *testing.T) {
+	pool := pgtest.New(t)
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Release()
+	var plan strings.Builder
+	for _, mode := range []string{"force_custom_plan", "force_generic_plan"} {
+		if _, err := conn.Exec(ctx, "SET plan_cache_mode = "+mode); err != nil {
+			t.Fatal(err)
+		}
+		rows, err := conn.Query(ctx, "EXPLAIN "+ExpireSelectingSQL, t0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for rows.Next() {
+			var line string
+			if err := rows.Scan(&line); err != nil {
+				t.Fatal(err)
+			}
+			plan.WriteString(line)
+			plan.WriteString("\n")
+		}
+		rows.Close()
+	}
+	if strings.Count(plan.String(), "bookings_selecting_deadline_idx") < 2 {
+		t.Fatalf("both plans must use bookings_selecting_deadline_idx:\n%s", plan.String())
 	}
 }

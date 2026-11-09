@@ -7,7 +7,7 @@
 | **Contract** | Apidog `GET /events/{event_id}/tickets` · api-contracts §4.1 |
 | **Requirements** | FR-11, FR-12, FR-13, FR-17, BR-01, BR-02, BR-03, BR-04 |
 | **Detail** | impl-plan §2.2, §2.4, §5.3 · ADR-005 §6 (claim), §7 (deadlines) · ADR-006 §3.2 (COUNT), §8.12 (sweep from Aurora), §8.13 (grant hash) |
-| **Status** | approved; build step B2, needs B1 |
+| **Status** | built (B2), awaiting commit |
 
 ## 1. Purpose
 
@@ -73,8 +73,9 @@ sequenceDiagram
    | LAPSED, EXPIRED, CONFIRMED, ABANDONED | 401 `GRANT_TOKEN_INVALID` |
    | no row | 401 `GRANT_TOKEN_INVALID` + metric `LostGrant` (a live hash without a row should not exist) |
 
-   A deadline that has passed but the sweep has not run yet (≤ 1 s): still render, with `ttl_seconds = 0`. The sweep
-   expires it on its next run; the client shows the expired screen from the countdown.
+   The claim only happens before the deadline, on Aurora's clock (the sweeps' clock): a load after the 5 minutes ran
+   out, before the sweep reached the row, leaves it GRANTED, so it lapses instead of turning into an "opened, did not
+   pay" EXPIRED. Such a load still renders, with `ttl_seconds = 0`; the client shows the expired screen from the countdown.
 5. **Event:** `SELECT id, name, event_date, venue, image_url FROM events WHERE id = $1`. Missing → 404 `NOT_FOUND`
    (data error: a grant exists for an unknown event).
 6. **Categories:** `SELECT id, name, description, price, max_per_order FROM ticket_categories WHERE event_id = $1 ORDER BY sort_order, id`.
@@ -106,7 +107,7 @@ RETURNING id, event_id, grant_token
 - **No stock or NIK release:** a SELECTING row holds nothing (stock is taken only at HELD, ADR-005 §8).
 - Credentials: the same as LAPSED today: keep `token:{uuid}` and `acct:{ev}:{id}`, so `/queue/me` answers `EXPIRED`
   and a rejoin finds the old engagement instead of a fresh place.
-- Metric `SelectingExpired` per row, `SweepFailures` on a failed statement (as the LAPSED sweep).
+- Metric `BookingsSelectingExpired` per row (next to `BookingsLapsed`), `SweepFailures` on a failed statement (as the LAPSED sweep).
 - Index: `bookings (booking_expires_at) WHERE status = 'SELECTING'` (`0008`).
 - The next tick's COUNT no longer sees the row, so its place goes to the next person (ADR-006 §3, no counter to fix).
 
@@ -176,35 +177,36 @@ Contract changes: C1, C2 in README §6.
 
 Unit (`services/booking/.../usecase`, fakes for ports; `pkg/grantauth` on miniredis):
 
-- [ ] grantauth: missing header → `GRANT_TOKEN_MISSING`; unknown token → `GRANT_TOKEN_INVALID`; guest without device id →
+- [x] grantauth: missing header → `GRANT_TOKEN_MISSING`; unknown token → `GRANT_TOKEN_INVALID`; guest without device id →
       `DEVICE_ID_REQUIRED`; guest with another device → `DEVICE_MISMATCH`; guest with its device → passes; logged-in grant
       without device id → passes; Redis error → 503
-- [ ] a grant for event A on event B's page is rejected with `GRANT_TOKEN_INVALID`
-- [ ] the first load moves GRANTED to SELECTING and keeps `booking_expires_at`
-- [ ] a reload while SELECTING changes nothing and renders the same deadline
-- [ ] HELD renders the page with the payment deadline
-- [ ] a lapsed, expired, confirmed or abandoned booking is rejected with `GRANT_TOKEN_INVALID`
-- [ ] `max_per_order` is the smallest of the category limit, seats left and the per-order limit; 0 when sold out
-- [ ] a missing stock key answers `STOCK_UNINITIALIZED`, a negative stock shows 0
-- [ ] `ttl_seconds` never goes below 0; categories come back in `sort_order`
-- [ ] the response carries `Cache-Control: no-store` and the contract envelope
+- [x] a grant for event A on event B's page is rejected with `GRANT_TOKEN_INVALID`
+- [x] the first load moves GRANTED to SELECTING and keeps `booking_expires_at`
+- [x] a reload while SELECTING changes nothing and renders the same deadline
+- [x] HELD renders the page with the payment deadline
+- [x] a lapsed, expired, confirmed or abandoned booking is rejected with `GRANT_TOKEN_INVALID`
+- [x] `max_per_order` is the smallest of the category limit, seats left and the per-order limit; 0 when sold out
+- [x] a missing stock key answers `STOCK_UNINITIALIZED`, a negative stock shows 0
+- [x] `ttl_seconds` never goes below 0; categories come back in `sort_order`
+- [x] the response carries `Cache-Control: no-store` and the contract envelope
 
 Integration (real Postgres via `pkg/pgtest`, Redis cluster via `REDIS_ADDR`):
 
-- [ ] claim UPDATE is a compare-and-set: two concurrent loads → one row updated, both render
-- [ ] stock MGET works on the cluster (all keys on the `{ev}` shard)
-- [ ] admission-ctl: a SELECTING row past its deadline becomes EXPIRED and its grant hash is gone; one second before,
+- [x] claim UPDATE is a compare-and-set: two concurrent loads → one row updated, both render
+- [x] stock MGET works on the cluster (all keys on the `{ev}` shard)
+- [x] admission-ctl: a SELECTING row past its deadline becomes EXPIRED and its grant hash is gone; one second before,
       it stays SELECTING
-- [ ] admission-ctl: two sweepers on the same row → exactly one gets it back
-- [ ] admission-ctl: after the sweep, the next tick admits the next customer (COUNT dropped)
-- [ ] admission-ctl: the sweep never touches HELD or later rows
-- [ ] the SELECTING sweep query uses the partial index (EXPLAIN, generic plan as in `bookings_test.go`)
+- [x] admission-ctl: two sweepers on the same row → exactly one gets it back
+- [x] admission-ctl: after the sweep, the next tick admits the next customer (COUNT dropped)
+- [x] admission-ctl: the sweep never touches HELD or later rows
+- [x] the SELECTING sweep query uses the partial index (EXPLAIN, generic plan as in `bookings_test.go`)
 
 ## 8. Tasks
 
-- [ ] B1 done (grantauth, bookingstate, `0007`, `0008`, scaffold replaced)
-- [ ] tests red → list reviewed
-- [ ] use case `GetTicketSelection` + handler + route in `services/booking`
-- [ ] SELECTING sweep in `services/admission-ctl` (SQL, use case, metric) + `05-admission-controller.md` §1 note
-- [ ] `make verify` green, `/code-review` (booking) + fresh-subagent review (admission-ctl part)
+- [x] B1 done (grantauth, bookingstate, `0007`, `0008`, scaffold replaced)
+- [x] tests red → list reviewed
+- [x] use case `GetTicketSelection` + handler + route in `services/booking`
+- [x] SELECTING sweep in `services/admission-ctl` (SQL, use case, metric) + `05-admission-controller.md` §1 note
+- [x] `make verify` green, `/code-review` (booking) + fresh-subagent review (admission-ctl part)
+- [ ] commit approval
 - [ ] contract/Apidog C1, C2 (documentations, after approval)

@@ -16,7 +16,10 @@ internal/
 ├── config/            env-based configuration (Aurora writer, Redis, DEVICE_PEPPER, purchase rules)
 ├── delivery/          composition root: opens the connections, mounts the routes, Cache-Control: no-store
 └── booking/
-    └── infrastructure/postgres/   schema tests for migrations 0007 / 0008 (adapters land with B2, B3)
+    ├── domain/                    entities, contract codes, metric names
+    ├── port/outbound/             Bookings, Catalog, Stock, Metrics
+    ├── application/usecase/       TicketPage (GET /events/{event_id}/tickets)
+    └── infrastructure/            postgres (writer), redis (stock MGET), http handlers, metrics (log lines)
 ```
 
 Shared code: `pkg/grantauth` (grant check on every booking route), `pkg/bookingstate` (status and its API
@@ -69,7 +72,7 @@ curl localhost:3000/sys/ping
 | Method | Path | State |
 |--------|------|-------|
 | GET | `/sys/ping` | health check, no grant |
-| GET | `/events/{event_id}/tickets` | build step B2 |
+| GET | `/events/{event_id}/tickets` | ticket selection page (claims GRANTED → SELECTING), behind `pkg/grantauth` |
 | GET | `/bookings/{booking_id}` | build step B3 |
 | POST | `/bookings` | build step B4 (unmounted until then) |
 

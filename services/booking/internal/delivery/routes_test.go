@@ -76,3 +76,10 @@ func TestNewFailsWhenRedisIsUnreachable(t *testing.T) {
 		t.Fatal("New must fail when Redis does not answer")
 	}
 }
+
+func TestTheTicketPageAnswers401WithoutAGrant(t *testing.T) {
+	rec := serve(handler(t), http.MethodGet, "/events/evt_a/tickets")
+	if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), "GRANT_TOKEN_MISSING") {
+		t.Fatalf("GET /events/evt_a/tickets = %d %s, want 401 GRANT_TOKEN_MISSING", rec.Code, rec.Body.String())
+	}
+}

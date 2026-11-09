@@ -278,7 +278,11 @@ func (b *spyBookings) InsertGranted(ctx context.Context, g domain.Grant) (domain
 	return out, err
 }
 
-func (b *spyBookings) LapseDue(ctx context.Context, now time.Time) ([]domain.Lapsed, error) {
+func (b *spyBookings) ExpireSelectingDue(ctx context.Context, now time.Time) ([]domain.Ended, error) {
+	return b.inner.ExpireSelectingDue(ctx, now)
+}
+
+func (b *spyBookings) LapseDue(ctx context.Context, now time.Time) ([]domain.Ended, error) {
 	b.log.add(call{op: "Lapse"})
 	out, err := b.inner.LapseDue(ctx, now)
 	b.mu.Lock()
@@ -378,14 +382,28 @@ func (m *memBookings) moveOne(_ context.Context, ev, from, to string) error {
 	return fmt.Errorf("no %s booking to move", from)
 }
 
-func (m *memBookings) LapseDue(_ context.Context, now time.Time) ([]domain.Lapsed, error) {
+func (m *memBookings) LapseDue(_ context.Context, now time.Time) ([]domain.Ended, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	var out []domain.Lapsed
+	var out []domain.Ended
 	for _, r := range m.list {
 		if r.Status == "GRANTED" && !r.ExpiresAt.IsZero() && !r.ExpiresAt.After(now) {
 			r.Status = "LAPSED"
-			out = append(out, domain.Lapsed{BookingID: r.ID, EventID: r.EventID, QueueToken: r.QueueToken, GrantToken: r.GrantToken})
+			out = append(out, domain.Ended{BookingID: r.ID, EventID: r.EventID, QueueToken: r.QueueToken, GrantToken: r.GrantToken})
+		}
+	}
+	return out, nil
+}
+
+// ExpireSelectingDue is the SELECTING sweep (05-booking B2); the frozen scenarios don't exercise it.
+func (m *memBookings) ExpireSelectingDue(_ context.Context, now time.Time) ([]domain.Ended, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []domain.Ended
+	for _, r := range m.list {
+		if r.Status == "SELECTING" && !r.ExpiresAt.IsZero() && !r.ExpiresAt.After(now) {
+			r.Status = "EXPIRED"
+			out = append(out, domain.Ended{BookingID: r.ID, EventID: r.EventID, QueueToken: r.QueueToken, GrantToken: r.GrantToken})
 		}
 	}
 	return out, nil

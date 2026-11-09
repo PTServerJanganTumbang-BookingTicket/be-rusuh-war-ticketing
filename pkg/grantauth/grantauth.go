@@ -55,6 +55,17 @@ type Config struct {
 
 type ctxKey struct{}
 
+// ErrMissing is the 401 for a request without X-Grant-Token.
+func ErrMissing() error {
+	return apperror.ErrUnauthorized("X-Grant-Token wajib").WithCode(CodeGrantTokenMissing)
+}
+
+// ErrInvalid is the 401 for a grant that is unknown, expired, malformed, or no longer usable (its booking ended, or it
+// belongs to another event). One answer for all of them: the client gets a fresh state from GET /queue/me.
+func ErrInvalid() error {
+	return apperror.ErrUnauthorized("Grant tidak dikenal atau kedaluwarsa").WithCode(CodeGrantTokenInvalid)
+}
+
 // Middleware verifies the grant and calls next with the Grant in the context. Checks, in order:
 // missing header → 401 GRANT_TOKEN_MISSING; no hash, or a hash with both or neither identity → 401
 // GRANT_TOKEN_INVALID; guest without X-Device-Id → 400 DEVICE_ID_REQUIRED; guest from another device →
@@ -75,14 +86,14 @@ func Middleware(rdb goredis.UniversalClient, cfg Config) func(http.Handler) http
 func verify(r *http.Request, rdb goredis.UniversalClient, cfg Config) (Grant, error) {
 	token := r.Header.Get(HeaderGrantToken)
 	if token == "" {
-		return Grant{}, apperror.ErrUnauthorized("X-Grant-Token wajib").WithCode(CodeGrantTokenMissing)
+		return Grant{}, ErrMissing()
 	}
 	h, err := rdb.HGetAll(r.Context(), rediskeys.Grant(token)).Result()
 	if err != nil {
 		slog.Warn("grantauth: cannot read the grant", slog.Any("err", err))
 		return Grant{}, apperror.ErrServiceUnavailable("Layanan sedang sibuk, coba lagi").WithCode(apinizer.ErrorCodeInternal)
 	}
-	invalid := apperror.ErrUnauthorized("Grant tidak dikenal atau kedaluwarsa").WithCode(CodeGrantTokenInvalid)
+	invalid := ErrInvalid()
 	if len(h) == 0 {
 		return Grant{}, invalid
 	}

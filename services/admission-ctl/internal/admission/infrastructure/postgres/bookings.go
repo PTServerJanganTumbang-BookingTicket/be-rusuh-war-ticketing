@@ -85,17 +85,34 @@ WHERE status = 'GRANTED' AND booking_expires_at <= $1
 RETURNING id, event_id, COALESCE(queue_token, ''), COALESCE(grant_token, '')`
 
 // LapseDue moves due GRANTED bookings to LAPSED and returns them.
-func (b *Bookings) LapseDue(ctx context.Context, now time.Time) ([]domain.Lapsed, error) {
-	rows, err := b.db.Query(ctx, SweepSQL, now)
+func (b *Bookings) LapseDue(ctx context.Context, now time.Time) ([]domain.Ended, error) {
+	return b.endDue(ctx, SweepSQL, now, "lapse due bookings")
+}
+
+// ExpireSelectingSQL ends every SELECTING booking past its 5-minute deadline: the customer opened the ticket page but
+// did not press Pay in time. Same compare-and-set shape as SweepSQL; the partial index bookings_selecting_deadline_idx
+// (migration 0008) finds the due rows. A SELECTING row holds no stock and no NIK, so nothing else is released.
+const ExpireSelectingSQL = `UPDATE bookings SET status = 'EXPIRED'
+WHERE status = 'SELECTING' AND booking_expires_at <= $1
+RETURNING id, event_id, COALESCE(queue_token, ''), COALESCE(grant_token, '')`
+
+// ExpireSelectingDue moves due SELECTING bookings to EXPIRED and returns them.
+func (b *Bookings) ExpireSelectingDue(ctx context.Context, now time.Time) ([]domain.Ended, error) {
+	return b.endDue(ctx, ExpireSelectingSQL, now, "expire due selecting bookings")
+}
+
+// endDue runs one of the compare-and-set sweep statements and reads back the rows it ended.
+func (b *Bookings) endDue(ctx context.Context, sql string, now time.Time, what string) ([]domain.Ended, error) {
+	rows, err := b.db.Query(ctx, sql, now)
 	if err != nil {
-		return nil, fmt.Errorf("lapse due bookings: %w", err)
+		return nil, fmt.Errorf("%s: %w", what, err)
 	}
 	defer rows.Close()
-	var out []domain.Lapsed
+	var out []domain.Ended
 	for rows.Next() {
-		var l domain.Lapsed
+		var l domain.Ended
 		if err := rows.Scan(&l.BookingID, &l.EventID, &l.QueueToken, &l.GrantToken); err != nil {
-			return nil, fmt.Errorf("read lapsed booking: %w", err)
+			return nil, fmt.Errorf("%s: read row: %w", what, err)
 		}
 		out = append(out, l)
 	}

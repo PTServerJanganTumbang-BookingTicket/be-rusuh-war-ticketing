@@ -5,7 +5,7 @@ Plans for the Apidog folder **Booking**. Read with ADR-005 §6–§8, §12 (as a
 
 | # | Endpoint | Plan | Status |
 |---|---|---|---|
-| 01 | `GET /events/{event_id}/tickets` — Get Ticket Selection Page | [01-get-ticket-selection-page.md](01-get-ticket-selection-page.md) | approved (B2) |
+| 01 | `GET /events/{event_id}/tickets` — Get Ticket Selection Page | [01-get-ticket-selection-page.md](01-get-ticket-selection-page.md) | built (B2) |
 | 02 | `POST /bookings` — Create Booking | not written yet | — |
 | 03 | `GET /bookings/{booking_id}` — Get Booking Detail | [03-get-booking-detail.md](03-get-booking-detail.md) | approved (B3) |
 
@@ -85,6 +85,12 @@ Each step: plan approved → Go tests first (red) → code (green) → `make ver
 | **B4** | `POST /bookings` (hold Lua, NIK, HELD sweep with stock/NIK release) — plan `02-create-booking.md` written later | B1, B2 |
 
 B3 does not need B4: its tests seed HELD / CONFIRMED rows directly.
+
+**Rule for B4 (from the B2 review).** The SELECTING sweep and the hold race on the same row at the 5-minute deadline.
+The Aurora compare-and-set makes exactly one of them win, but Redis is outside that transaction: if the hold Lua takes
+stock and NIK and then its `UPDATE … WHERE status = 'SELECTING'` matches 0 rows (the sweep won), the stock and NIK must
+be given back. `02-create-booking.md` must either check the deadline in the same compare-and-set
+(`AND booking_expires_at > now()`, one clock: Aurora's) or always undo the Lua on 0 rows, and test that race.
 
 ### 4.1 B1 in detail
 
@@ -167,7 +173,7 @@ add them when they need them).
 - [x] plan approved
 - [x] tests red → list reviewed
 - [x] code green → `make verify` → `/code-review` (10 findings: 8 fixed, 2 kept with reasons)
-- [ ] commit approval
+- [x] commit approval (B1 committed)
 
 ## 5. Migrations
 
@@ -209,7 +215,7 @@ Made in the `documentations` repo (shared: changes are reviewed before they are 
 
 - [x] plans `01` and `03` reviewed
 - [x] B1 shared packages + migrations + scaffold replacement (built, awaiting commit)
-- [ ] B2 ticket page + SELECTING sweep
+- [x] B2 ticket page + SELECTING sweep (built, awaiting commit)
 - [ ] B3 booking detail + `pkg/eticket`
 - [ ] Contract/Apidog changes C1–C6 (documentations, after approval)
 - [ ] `02-create-booking.md` plan (B4)

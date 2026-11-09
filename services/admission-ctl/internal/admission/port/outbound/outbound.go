@@ -14,7 +14,10 @@ type Bookings interface {
 	CountAdmission(ctx context.Context, eventID string) (domain.Admission, error)
 	InsertGranted(ctx context.Context, g domain.Grant) (domain.Booking, error)
 	// LapseDue moves every GRANTED booking whose booking_expires_at <= now to LAPSED, once, and returns them.
-	LapseDue(ctx context.Context, now time.Time) ([]domain.Lapsed, error)
+	LapseDue(ctx context.Context, now time.Time) ([]domain.Ended, error)
+	// ExpireSelectingDue moves every SELECTING booking whose booking_expires_at <= now to EXPIRED, once, and returns
+	// them. Planned in docs/05-booking (B2): without it a closed ticket page holds an admission place for ever.
+	ExpireSelectingDue(ctx context.Context, now time.Time) ([]domain.Ended, error)
 }
 
 // Queue is the Redis side. Every method is one Redis round trip (or one atomic script).

@@ -1,4 +1,4 @@
-package metrics
+package emf
 
 import (
 	"bytes"
@@ -9,7 +9,7 @@ import (
 
 func TestEMF_writesOneLinePerPoint(t *testing.T) {
 	var buf bytes.Buffer
-	m := NewEMF(&buf)
+	m := New("Rusuh/Test", &buf)
 	m.Incr("RateLimitFailOpen")
 	m.Record("CaptchaFailOpenSeconds", 1.25)
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
@@ -30,7 +30,7 @@ func TestEMF_writesOneLinePerPoint(t *testing.T) {
 		aws := got["_aws"].(map[string]any)
 		cw := aws["CloudWatchMetrics"].([]any)[0].(map[string]any)
 		metric := cw["Metrics"].([]any)[0].(map[string]any)
-		if cw["Namespace"] != Namespace || metric["Unit"] != want.unit {
+		if cw["Namespace"] != "Rusuh/Test" || metric["Unit"] != want.unit {
 			t.Errorf("EMF block %v", cw)
 		}
 	}

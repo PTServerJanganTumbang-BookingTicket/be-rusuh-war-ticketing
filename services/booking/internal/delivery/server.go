@@ -5,13 +5,20 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/apinizer"
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/emf"
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/grantauth"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/pgutil"
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/booking/internal/booking/application/usecase"
+	bookinghttp "github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/booking/internal/booking/infrastructure/http"
+	bookingpg "github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/booking/internal/booking/infrastructure/postgres"
+	bookingredis "github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/booking/internal/booking/infrastructure/redis"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/booking/internal/config"
 )
 
@@ -55,12 +62,23 @@ func New(ctx context.Context, cfg config.Config) (http.Handler, Deps, error) {
 	return NewHandler(cfg, d), d, nil
 }
 
-// NewHandler wires the routes on the given connections. Every booking route will sit behind
-// pkg/grantauth.Middleware (docs/05-booking/README.md §3); the routes arrive with build steps B2
-// (GET /events/{event_id}/tickets) and B3 (GET /bookings/{booking_id}), POST /bookings with B4.
-func NewHandler(_ config.Config, _ Deps) http.Handler {
+// NewHandler wires the routes on the given connections. Every booking route sits behind pkg/grantauth.Middleware
+// (docs/05-booking/README.md §3). GET /bookings/{booking_id} arrives with build step B3, POST /bookings with B4.
+func NewHandler(cfg config.Config, d Deps) http.Handler {
 	mux := http.NewServeMux()
 	apinizer.RegisterHealthCheck(mux, "/sys/ping")
+
+	grant := grantauth.Middleware(d.Redis, grantauth.Config{DevicePepper: cfg.Grant.DevicePepper})
+	store := bookingpg.NewStore(d.DB)
+	ticketPage := usecase.NewTicketPage(usecase.TicketPageDeps{
+		Bookings: store,
+		Catalog:  store,
+		Stock:    bookingredis.NewStock(d.Redis),
+		Metrics:  emf.New("Rusuh/Booking", os.Stdout),
+		Clock:    time.Now,
+	}, cfg.Booking.MaxTicketsPerTransaction)
+	mux.Handle("GET /events/{event_id}/tickets", grant(bookinghttp.NewTicketPage(ticketPage)))
+
 	return noStore(mux)
 }
 

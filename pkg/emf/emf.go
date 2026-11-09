@@ -1,6 +1,6 @@
-// Package metrics writes CloudWatch metrics as Embedded Metric Format log
+// Package emf writes CloudWatch metrics as Embedded Metric Format log
 // lines: no SDK call on the hot path, CloudWatch extracts them from the logs.
-package metrics
+package emf
 
 import (
 	"encoding/json"
@@ -9,18 +9,18 @@ import (
 	"time"
 )
 
-// Namespace is the CloudWatch namespace for queue-service metrics.
-const Namespace = "Rusuh/Queue"
-
 // EMF writes one JSON line per data point.
 type EMF struct {
-	mu  sync.Mutex
-	out io.Writer
-	now func() time.Time
+	namespace string
+	mu        sync.Mutex
+	out       io.Writer
+	now       func() time.Time
 }
 
-// NewEMF writes to out (os.Stdout in Lambda).
-func NewEMF(out io.Writer) *EMF { return &EMF{out: out, now: time.Now} }
+// New writes to out (os.Stdout in Lambda) under one CloudWatch namespace (Rusuh/Queue, Rusuh/Booking, ...).
+func New(namespace string, out io.Writer) *EMF {
+	return &EMF{namespace: namespace, out: out, now: time.Now}
+}
 
 // Incr adds 1 to a count metric.
 func (e *EMF) Incr(name string) { e.write(name, 1, "Count") }
@@ -39,7 +39,7 @@ func (e *EMF) write(name string, value float64, unit string) {
 		"_aws": map[string]any{
 			"Timestamp": e.now().UnixMilli(),
 			"CloudWatchMetrics": []any{map[string]any{
-				"Namespace":  Namespace,
+				"Namespace":  e.namespace,
 				"Dimensions": [][]string{{}},
 				"Metrics":    []any{map[string]string{"Name": name, "Unit": unit}},
 			}},

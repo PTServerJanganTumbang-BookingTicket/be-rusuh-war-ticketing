@@ -3,7 +3,7 @@ Feature: If I don't use my turn within 5 minutes, I lose it
   As a customer whose turn came, I have 5 minutes to start choosing seats. If I don't, my booking moves
   GRANTED → LAPSED for good (no second chance) and the next tick gives my place to the next person.
   The queue part of SWEEP does this with one compare-and-set UPDATE on Aurora (no Redis deadline list: ADR-006 §8.12);
-  SELECTING and later belong to 05-booking.
+  SELECTING → EXPIRED runs in the same SWEEP, planned in 05-booking (Go tests, not Gherkin).
 
   Sources: 05-admission-controller.md §4 · README §3.2 · ADR-006 §8.12 · requirements §5 (no second chance)
 
@@ -50,13 +50,6 @@ Feature: If I don't use my turn within 5 minutes, I lose it
     # 1080 s TTL ends (it must outlive payment), so rejection comes from the status check, not from the hash.
 
   # ------------------------------------------------------------ I did show up
-
-  @integration @postgres
-  Scenario: If I started choosing seats in time, the queue leaves me alone
-    Given "B1" moved to "SELECTING"
-    When the deadline passes and the queue SWEEP runs
-    Then "B1" is still "SELECTING"
-    # SELECTING → EXPIRED belongs to 05-booking, which uses the same kind of query for its own statuses.
 
   @integration @postgres
   Scenario: If my deadline moved later, I keep my turn until the new deadline

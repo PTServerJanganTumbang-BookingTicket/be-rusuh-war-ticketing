@@ -28,6 +28,7 @@ const (
 	MetricSweepFailures          = "SweepFailures"
 	MetricEventDiscoveryFailures = "EventDiscoveryFailures"
 	MetricLapsed                 = "BookingsLapsed"
+	MetricSelectingExpired       = "BookingsSelectingExpired"
 	GaugeQueueDepth              = "QueueDepth"
 )
 

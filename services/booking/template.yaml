@@ -60,9 +60,13 @@ Resources:
           DEVICE_PEPPER: !Sub "{{resolve:secretsmanager:${DevicePepperSecretArn}}}"
       Policies:
         - AWSLambdaVPCAccessExecutionRole
-      # Booking routes are added with their build steps: GET /events/{event_id}/tickets (B2),
-      # GET /bookings/{booking_id} (B3), POST /bookings (B4).
+      # Booking routes are added with their build steps: GET /bookings/{booking_id} (B3), POST /bookings (B4).
       Events:
+        TicketPage:
+          Type: HttpApi
+          Properties:
+            Path: /events/{event_id}/tickets
+            Method: GET
         HealthCheck:
           Type: HttpApi
           Properties:

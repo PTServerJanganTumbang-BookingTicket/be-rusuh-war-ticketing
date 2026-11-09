@@ -39,14 +39,22 @@ func (m *metrics) Gauge(n string, v float64) {
 }
 
 type fakeBookings struct {
-	count      domain.Admission
-	countErr   error
-	insertErr  error
-	status     string // status returned for an existing row ("" = GRANTED)
-	inserted   []domain.Grant
-	lapsed     []domain.Lapsed
-	lapseErr   error
-	lapseCalls int
+	count       domain.Admission
+	countErr    error
+	insertErr   error
+	status      string // status returned for an existing row ("" = GRANTED)
+	inserted    []domain.Grant
+	lapsed      []domain.Ended
+	lapseErr    error
+	lapseCalls  int
+	expired     []domain.Ended
+	expireErr   error
+	expireCalls int
+}
+
+func (b *fakeBookings) ExpireSelectingDue(context.Context, time.Time) ([]domain.Ended, error) {
+	b.expireCalls++
+	return b.expired, b.expireErr
 }
 
 func (b *fakeBookings) CountAdmission(context.Context, string) (domain.Admission, error) {
@@ -61,7 +69,7 @@ func (b *fakeBookings) InsertGranted(_ context.Context, g domain.Grant) (domain.
 	return domain.Booking{ID: g.BookingID, GrantToken: g.GrantToken, GrantedAt: g.GrantedAt, ExpiresAt: g.ExpiresAt, Status: b.status}, nil
 }
 
-func (b *fakeBookings) LapseDue(context.Context, time.Time) ([]domain.Lapsed, error) {
+func (b *fakeBookings) LapseDue(context.Context, time.Time) ([]domain.Ended, error) {
 	b.lapseCalls++
 	return b.lapsed, b.lapseErr
 }

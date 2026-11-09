@@ -169,9 +169,6 @@ func registerSweepSteps(sc *godog.ScenarioContext, w *tickWorld) {
 		}
 		return nil
 	})
-	sc.Step(`^"B1" moved to "SELECTING"$`, func() error {
-		return w.bks.setStatus(w.ctx, w.scratch["B1"].(string), "SELECTING")
-	})
 	sc.Step(`^"B1" is "GRANTED" with booking_expires_at moved to "([^"]*)"$`, func(ts string) error {
 		t, err := parseTime(ts)
 		if err != nil {

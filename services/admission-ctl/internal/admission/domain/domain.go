@@ -24,8 +24,9 @@ type Booking struct {
 	Status     string // GRANTED unless the row already moved on (lapsed, selecting, ...)
 }
 
-// Lapsed is a booking the sweep just moved GRANTED → LAPSED: the customer did not start choosing seats in time.
-type Lapsed struct {
+// Ended is a booking the sweep just ended: GRANTED → LAPSED (the customer never opened the ticket page) or
+// SELECTING → EXPIRED (opened it, but did not press Pay within the 5 minutes).
+type Ended struct {
 	BookingID  string
 	EventID    string
 	QueueToken string
