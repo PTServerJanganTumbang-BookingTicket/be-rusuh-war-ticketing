@@ -6,7 +6,7 @@ Plans for the Apidog folder **Booking**. Read with ADR-005 §6–§8, §12 (as a
 | # | Endpoint | Plan | Status |
 |---|---|---|---|
 | 01 | `GET /events/{event_id}/tickets` — Get Ticket Selection Page | [01-get-ticket-selection-page.md](01-get-ticket-selection-page.md) | built (B2) |
-| 02 | `POST /bookings` — Create Booking | not written yet | — |
+| 02 | `POST /bookings` — Create Booking | [02-create-booking.md](02-create-booking.md) | **planning** (awaiting review, B4) |
 | 03 | `GET /bookings/{booking_id}` — Get Booking Detail | [03-get-booking-detail.md](03-get-booking-detail.md) | built (B3) |
 
 `POST /nik/validate` is in Apidog folder *NIK* (`06-nik/`, `services/nik-verify`), even though api-contracts lists it as §4.2.
@@ -82,7 +82,7 @@ Each step: plan approved → Go tests first (red) → code (green) → `make ver
 | **B1** | `pkg/grantauth`, `pkg/bookingstate` (status enum, `IsTerminal`, API mapping), migrations `0007` (`ticket_categories`) and `0008` (`booking_items`, `nik_claims`, `tickets.booking_item_id`, SELECTING deadline index); booking scaffold replaced (config, Postgres + Redis adapters, `pkg/apinizer`) | — |
 | **B2** | `GET /events/{event_id}/tickets` + SELECTING → EXPIRED sweep in admission-ctl | B1 |
 | **B3** | `GET /bookings/{booking_id}` + `pkg/eticket` (`Mint`, `Verify`) | B1 |
-| **B4** | `POST /bookings` (hold Lua, NIK, HELD sweep with stock/NIK release) — plan `02-create-booking.md` written later | B1, B2 |
+| **B4** | `POST /bookings` (NIK check via nik-verify, hold Lua, HELD → EXPIRED sweep with stock/NIK release): [02-create-booking.md](02-create-booking.md) | B1, B2 |
 
 B3 does not need B4: its tests seed HELD / CONFIRMED rows directly.
 
@@ -222,5 +222,5 @@ Made in the `documentations` repo (shared: changes are reviewed before they are 
 - [x] B2 ticket page + SELECTING sweep (`4bcdc26`)
 - [x] B3 booking detail + `pkg/eticket` (`ab32140`)
 - [x] Contract/Apidog changes C1–C6, plus §3.3 credentials on EXPIRED/LAPSED: api-contracts v2.13.0 (`documentations` `392ab5a`)
-- [ ] `02-create-booking.md` plan (B4)
+- [x] `02-create-booking.md` plan (B4) written; review and OPEN 1–6 pending
 - [x] queue's `caller.deviceHash` reuses `pkg/grantauth.DeviceHash` (one HMAC definition, B1)
