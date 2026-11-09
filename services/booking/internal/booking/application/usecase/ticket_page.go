@@ -117,7 +117,7 @@ func (p *TicketPage) Get(ctx context.Context, g grantauth.Grant, eventID string)
 
 	now := p.d.Clock().UTC()
 	return TicketPageView{
-		Event:      EventView{ID: ev.ID, Name: ev.Name, Date: ev.Date, Venue: ev.Venue, ImageURL: ev.ImageURL},
+		Event:      eventView(ev),
 		Session:    session(currentDeadline(b), now),
 		Categories: p.categories(cats, levels),
 		Rules:      RulesView{MaxTicketsPerOrder: p.maxPerOrder, OneNIKPerTicket: true},
@@ -134,6 +134,10 @@ func (p *TicketPage) categories(cats []domain.Category, levels map[string]int64)
 		}
 	}
 	return out
+}
+
+func eventView(e domain.Event) EventView {
+	return EventView{ID: e.ID, Name: e.Name, Date: e.Date, Venue: e.Venue, ImageURL: e.ImageURL}
 }
 
 // currentDeadline is the deadline that applies now: the 5-minute booking deadline until the customer presses Pay,
@@ -164,6 +168,6 @@ func session(deadline, now time.Time) SessionView {
 
 // unavailable logs an infrastructure failure and answers 503 without its details.
 func unavailable(what string, err error) error {
-	slog.Error("ticket page: "+what, slog.Any("err", err))
+	slog.Error("booking: "+what, slog.Any("err", err))
 	return apperror.ErrServiceUnavailable("Layanan sedang sibuk, coba lagi").WithCode(apinizer.ErrorCodeInternal)
 }

@@ -32,6 +32,7 @@ func Load() (Config, error) {
 		Grant: Grant{DevicePepper: []byte(os.Getenv("DEVICE_PEPPER"))},
 		Booking: Booking{
 			MaxTicketsPerTransaction: envutil.EnvInt("MAX_TICKETS_PER_TRANSACTION", 3),
+			ETicketSigningKey:        []byte(os.Getenv("ETICKET_SIGNING_KEY")),
 		},
 	}
 
@@ -56,6 +57,9 @@ func (c Config) validate() error {
 	}
 	if c.App.Env != "local" && len(c.Grant.DevicePepper) == 0 {
 		errs = append(errs, errors.New("DEVICE_PEPPER is required outside local: without queue's pepper every guest gets DEVICE_MISMATCH"))
+	}
+	if c.App.Env != "local" && len(c.Booking.ETicketSigningKey) == 0 {
+		errs = append(errs, errors.New("ETICKET_SIGNING_KEY is required outside local: e-ticket links must verify in user-service"))
 	}
 	if c.DB.MaxConns < 1 {
 		errs = append(errs, fmt.Errorf("DATABASE_MAX_CONNS must be at least 1, got %d", c.DB.MaxConns))

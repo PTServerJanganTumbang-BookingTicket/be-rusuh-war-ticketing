@@ -78,7 +78,7 @@ func Middleware(rdb goredis.UniversalClient, cfg Config) func(http.Handler) http
 				apinizer.WriteError(w, err)
 				return
 			}
-			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, g)))
+			next.ServeHTTP(w, r.WithContext(WithGrant(r.Context(), g)))
 		})
 	}
 }
@@ -120,6 +120,11 @@ func verify(r *http.Request, rdb goredis.UniversalClient, cfg Config) (Grant, er
 		}
 	}
 	return g, nil
+}
+
+// WithGrant returns ctx carrying g, as the middleware does. For handler tests.
+func WithGrant(ctx context.Context, g Grant) context.Context {
+	return context.WithValue(ctx, ctxKey{}, g)
 }
 
 // FromContext returns the Grant the middleware stored.

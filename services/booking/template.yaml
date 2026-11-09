@@ -15,6 +15,9 @@ Parameters:
   DevicePepperSecretArn:
     Type: String
     Description: Secrets Manager secret holding DEVICE_PEPPER (the same secret rusuh-queue uses)
+  ETicketSigningKeySecretArn:
+    Type: String
+    Description: Secrets Manager secret holding ETICKET_SIGNING_KEY (the same secret notification and rusuh-user use)
   RedisAddr:
     Type: String
     Description: ElastiCache (cluster mode) configuration endpoint, host:port
@@ -58,10 +61,16 @@ Resources:
           MAX_TICKETS_PER_TRANSACTION: "3"
           DATABASE_URL: !Sub "{{resolve:secretsmanager:${DatabaseUrlSecretArn}}}"
           DEVICE_PEPPER: !Sub "{{resolve:secretsmanager:${DevicePepperSecretArn}}}"
+          ETICKET_SIGNING_KEY: !Sub "{{resolve:secretsmanager:${ETicketSigningKeySecretArn}}}"
       Policies:
         - AWSLambdaVPCAccessExecutionRole
-      # Booking routes are added with their build steps: GET /bookings/{booking_id} (B3), POST /bookings (B4).
+      # POST /bookings is added with build step B4.
       Events:
+        BookingDetail:
+          Type: HttpApi
+          Properties:
+            Path: /bookings/{booking_id}
+            Method: GET
         TicketPage:
           Type: HttpApi
           Properties:

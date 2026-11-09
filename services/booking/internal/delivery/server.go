@@ -3,6 +3,7 @@ package delivery
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"net/http"
 	"os"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/apinizer"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/emf"
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/eticket"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/grantauth"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/pgutil"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/booking/internal/booking/application/usecase"
@@ -41,6 +43,10 @@ func (d Deps) Close() {
 // New opens the Aurora writer pool and the Redis client from cfg and wires the handler.
 // The caller closes the returned Deps on shutdown.
 func New(ctx context.Context, cfg config.Config) (http.Handler, Deps, error) {
+	// Check the configuration that needs no network first, so a bad key is reported as such, not as a connection error.
+	if _, err := ticketLinks(cfg); err != nil {
+		return nil, Deps{}, err
+	}
 	var rdb goredis.UniversalClient
 	if cfg.Redis.Cluster {
 		rdb = goredis.NewClusterClient(&goredis.ClusterOptions{Addrs: []string{cfg.Redis.Addr}, Password: cfg.Redis.Password})
@@ -59,27 +65,57 @@ func New(ctx context.Context, cfg config.Config) (http.Handler, Deps, error) {
 		return nil, Deps{}, fmt.Errorf("database: %w", err)
 	}
 	d := Deps{Redis: rdb, DB: pool}
-	return NewHandler(cfg, d), d, nil
+	h, err := NewHandler(cfg, d)
+	if err != nil {
+		d.Close()
+		return nil, Deps{}, err
+	}
+	return h, d, nil
 }
 
 // NewHandler wires the routes on the given connections. Every booking route sits behind pkg/grantauth.Middleware
-// (docs/05-booking/README.md §3). GET /bookings/{booking_id} arrives with build step B3, POST /bookings with B4.
-func NewHandler(cfg config.Config, d Deps) http.Handler {
+// (docs/05-booking/README.md §3). POST /bookings arrives with build step B4.
+func NewHandler(cfg config.Config, d Deps) (http.Handler, error) {
+	links, err := ticketLinks(cfg)
+	if err != nil {
+		return nil, err
+	}
 	mux := http.NewServeMux()
 	apinizer.RegisterHealthCheck(mux, "/sys/ping")
 
 	grant := grantauth.Middleware(d.Redis, grantauth.Config{DevicePepper: cfg.Grant.DevicePepper})
+	metrics := emf.New("Rusuh/Booking", os.Stdout)
 	store := bookingpg.NewStore(d.DB)
 	ticketPage := usecase.NewTicketPage(usecase.TicketPageDeps{
 		Bookings: store,
 		Catalog:  store,
 		Stock:    bookingredis.NewStock(d.Redis),
-		Metrics:  emf.New("Rusuh/Booking", os.Stdout),
+		Metrics:  metrics,
 		Clock:    time.Now,
 	}, cfg.Booking.MaxTicketsPerTransaction)
 	mux.Handle("GET /events/{event_id}/tickets", grant(bookinghttp.NewTicketPage(ticketPage)))
 
-	return noStore(mux)
+	detail := usecase.NewBookingDetail(usecase.BookingDetailDeps{Details: store, Links: links, Metrics: metrics, Clock: time.Now})
+	mux.Handle("GET /bookings/{booking_id}", grant(bookinghttp.NewBookingDetail(detail)))
+
+	return noStore(mux), nil
+}
+
+// ticketLinks builds the e-ticket signer. Outside local the key is required by config; locally an empty key gets a
+// random one, so links work until the next restart (they would not verify in user-service anyway).
+func ticketLinks(cfg config.Config) (*eticket.Signer, error) {
+	key := cfg.Booking.ETicketSigningKey
+	if len(key) == 0 && cfg.App.Env == "local" {
+		key = make([]byte, 32)
+		if _, err := rand.Read(key); err != nil {
+			return nil, fmt.Errorf("local e-ticket key: %w", err)
+		}
+	}
+	s, err := eticket.NewSigner(key)
+	if err != nil {
+		return nil, fmt.Errorf("ETICKET_SIGNING_KEY: %w", err)
+	}
+	return s, nil
 }
 
 // noStore marks every response uncacheable: a grant-bound answer must never be served from a CDN or browser cache.

@@ -7,7 +7,7 @@ Plans for the Apidog folder **Booking**. Read with ADR-005 §6–§8, §12 (as a
 |---|---|---|---|
 | 01 | `GET /events/{event_id}/tickets` — Get Ticket Selection Page | [01-get-ticket-selection-page.md](01-get-ticket-selection-page.md) | built (B2) |
 | 02 | `POST /bookings` — Create Booking | not written yet | — |
-| 03 | `GET /bookings/{booking_id}` — Get Booking Detail | [03-get-booking-detail.md](03-get-booking-detail.md) | approved (B3) |
+| 03 | `GET /bookings/{booking_id}` — Get Booking Detail | [03-get-booking-detail.md](03-get-booking-detail.md) | built (B3) |
 
 `POST /nik/validate` is in Apidog folder *NIK* (`06-nik/`, `services/nik-verify`), even though api-contracts lists it as §4.2.
 
@@ -91,6 +91,10 @@ The Aurora compare-and-set makes exactly one of them win, but Redis is outside t
 stock and NIK and then its `UPDATE … WHERE status = 'SELECTING'` matches 0 rows (the sweep won), the stock and NIK must
 be given back. `02-create-booking.md` must either check the deadline in the same compare-and-set
 (`AND booking_expires_at > now()`, one clock: Aurora's) or always undo the Lua on 0 rows, and test that race.
+
+**Rule for B4 (from the B3 review).** `GET /bookings/{id}` lists seats by `created_at, id`. The hold writes the seats of
+one order in one transaction, where `now()` is the same for all of them, so it sets `created_at = clock_timestamp()`
+(or the ids are increasing) to keep the order the customer chose.
 
 ### 4.1 B1 in detail
 
@@ -215,8 +219,8 @@ Made in the `documentations` repo (shared: changes are reviewed before they are 
 
 - [x] plans `01` and `03` reviewed
 - [x] B1 shared packages + migrations + scaffold replacement (built, awaiting commit)
-- [x] B2 ticket page + SELECTING sweep (built, awaiting commit)
-- [ ] B3 booking detail + `pkg/eticket`
+- [x] B2 ticket page + SELECTING sweep (committed)
+- [x] B3 booking detail + `pkg/eticket` (built, awaiting commit)
 - [ ] Contract/Apidog changes C1–C6 (documentations, after approval)
 - [ ] `02-create-booking.md` plan (B4)
 - [ ] Later, when queue code is touched again: queue's `caller.deviceHash` reuses `pkg/grantauth.DeviceHash` (one HMAC definition)

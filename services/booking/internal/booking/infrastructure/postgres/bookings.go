@@ -116,3 +116,66 @@ FROM ticket_categories WHERE event_id = $1 ORDER BY sort_order, id`, eventID)
 	}
 	return e, cats, true, nil
 }
+
+// detailSQL reads the booking and its event, bound to id AND grant_token (ADR-005 §12).
+const detailSQL = `SELECT b.id, b.event_id, b.status, b.payment_expires_at, COALESCE(b.payment_method, ''),
+       e.id, e.name, e.event_date, e.venue, e.image_url
+FROM bookings b JOIN events e ON e.id = b.event_id
+WHERE b.id = $1 AND b.grant_token = $2`
+
+// itemsSQL reads the seats, each with its ticket once issued. Bound to the grant too, so a wrong or foreign id
+// reads nothing in either statement. Order: created_at, then id; POST /bookings (B4) writes the seats of one order
+// with increasing created_at (clock_timestamp()), so this is the order they were chosen in.
+const itemsSQL = `SELECT i.id, i.category_name, i.unit_price, i.nik_masked, COALESCE(t.id, ''), COALESCE(t.status, '')
+FROM booking_items i
+JOIN bookings b ON b.id = i.booking_id AND b.grant_token = $2
+LEFT JOIN tickets t ON t.booking_item_id = i.id
+WHERE i.booking_id = $1 ORDER BY i.created_at, i.id`
+
+// Detail reads a booking for GET /bookings/{id}: booking + event, then the seats, as one batch.
+func (s *Store) Detail(ctx context.Context, bookingID, grantToken string) (domain.BookingDetail, bool, error) {
+	batch := &pgx.Batch{}
+	batch.Queue(detailSQL, bookingID, grantToken)
+	batch.Queue(itemsSQL, bookingID, grantToken)
+	res := s.db.SendBatch(ctx, batch)
+	defer func() { _ = res.Close() }()
+
+	var (
+		d       domain.BookingDetail
+		status  string
+		payment *time.Time
+		date    time.Time
+	)
+	err := res.QueryRow().Scan(&d.ID, &d.EventID, &status, &payment, &d.PaymentMethod,
+		&d.Event.ID, &d.Event.Name, &date, &d.Event.Venue, &d.Event.ImageURL)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.BookingDetail{}, false, nil
+	}
+	if err != nil {
+		return domain.BookingDetail{}, false, fmt.Errorf("read booking detail: %w", err)
+	}
+	if d.Status, err = bookingstate.Parse(status); err != nil {
+		return domain.BookingDetail{}, false, err
+	}
+	if payment != nil {
+		d.PaymentExpiresAt = payment.UTC()
+	}
+	d.Event.Date = date.Format(time.DateOnly)
+
+	rows, err := res.Query()
+	if err != nil {
+		return domain.BookingDetail{}, false, fmt.Errorf("read booking items: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var it domain.Item
+		if err := rows.Scan(&it.ID, &it.CategoryName, &it.UnitPrice, &it.NIKMasked, &it.TicketID, &it.TicketStatus); err != nil {
+			return domain.BookingDetail{}, false, fmt.Errorf("read booking item: %w", err)
+		}
+		d.Items = append(d.Items, it)
+	}
+	if err := rows.Err(); err != nil {
+		return domain.BookingDetail{}, false, fmt.Errorf("read booking items: %w", err)
+	}
+	return d, true, nil
+}

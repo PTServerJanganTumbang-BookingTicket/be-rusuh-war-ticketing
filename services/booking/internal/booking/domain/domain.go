@@ -20,6 +20,10 @@ const (
 	MetricLostGrant = "LostGrant"
 	// MetricStockUninitialized counts a ticket page that found a stock key missing in Redis.
 	MetricStockUninitialized = "StockUninitialized"
+	// MetricUnknownPaymentMethod counts a paid booking whose payment_method has no display label yet.
+	MetricUnknownPaymentMethod = "UnknownPaymentMethod"
+	// MetricPaymentDeadlineMissing counts a pending-payment booking without payment_expires_at (a data bug).
+	MetricPaymentDeadlineMissing = "PaymentDeadlineMissing"
 )
 
 // Booking is the part of a bookings row the ticket page needs.
@@ -47,4 +51,25 @@ type Category struct {
 	Description string
 	Price       int64
 	MaxPerOrder int
+}
+
+// BookingDetail is everything GET /bookings/{id} renders: the booking, its event and one item per seat.
+type BookingDetail struct {
+	ID               string
+	EventID          string
+	Status           bookingstate.Status
+	PaymentExpiresAt time.Time // zero before HELD
+	PaymentMethod    string    // bank_transfer | gopay | "" (set by payment-api)
+	Event            Event
+	Items            []Item
+}
+
+// Item is one seat (booking_items), with its ticket once issued.
+type Item struct {
+	ID           string
+	CategoryName string
+	UnitPrice    int64
+	NIKMasked    string
+	TicketID     string // "" until the ticket is issued
+	TicketStatus string // VALID | USED | EXPIRED | REVOKED; "" until issued
 }

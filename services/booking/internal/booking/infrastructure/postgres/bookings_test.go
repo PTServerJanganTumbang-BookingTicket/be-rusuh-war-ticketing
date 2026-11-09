@@ -150,4 +150,71 @@ func TestTheStoreReportsDatabaseErrors(t *testing.T) {
 	if _, _, _, err := s.Page(ctx, "evt_a"); err == nil {
 		t.Error("Page hid a database error")
 	}
+	if _, _, err := s.Detail(ctx, "RB-1", "gt"); err == nil {
+		t.Error("Detail hid a database error")
+	}
+}
+
+// detailSeed writes a HELD booking with two seats, the first one with an issued ticket.
+func detailSeed(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	for _, q := range []string{
+		`INSERT INTO events (id, name, event_date, venue, image_url) VALUES ('evt_a', 'Konser A', '2026-12-25', 'GBK', 'https://cdn/a.jpg')`,
+		`INSERT INTO bookings (id, event_id, queue_token, status, grant_token, booking_expires_at, held_at, payment_expires_at,
+		   payment_method, contact_email, terms_accepted_at)
+		 VALUES ('RB-1', 'evt_a', 'qt_1', 'CONFIRMED', 'gt_1', now(), now(), '2026-11-10T19:15:00Z', 'gopay', 'a@example.com', now())`,
+		`INSERT INTO booking_items (id, booking_id, event_id, category_id, category_name, unit_price, nik_hmac, nik_masked, holder_email, created_at)
+		 VALUES ('it_1', 'RB-1', 'evt_a', 'cat_vip', 'VIP', 1500000, 'h1', '3171********0001', 'a@example.com', '2026-11-10T19:00:00Z'),
+		        ('it_2', 'RB-1', 'evt_a', 'cat_fest', 'Festival', 850000, 'h2', '3171********0002', 'b@example.com', '2026-11-10T19:00:01Z')`,
+		`INSERT INTO tickets (id, booking_id, event_id, nik_hmac, nik_masked, holder_email, category_id, category_name, price, qr_nonce, booking_item_id)
+		 VALUES ('TKT-001', 'RB-1', 'evt_a', 'h1', '3171********0001', 'a@example.com', 'cat_vip', 'VIP', 1500000, 'n1', 'it_1')`,
+	} {
+		if _, err := pool.Exec(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestDetailReadsTheEventAndEachSeatWithItsTicketOnceIssued(t *testing.T) {
+	pool := pgtest.New(t)
+	detailSeed(t, pool)
+	d, found, err := NewStore(pool).Detail(ctx, "RB-1", "gt_1")
+	if err != nil || !found {
+		t.Fatalf("found=%v err=%v", found, err)
+	}
+	if d.ID != "RB-1" || d.EventID != "evt_a" || d.Status != bookingstate.Confirmed || d.PaymentMethod != "gopay" ||
+		!d.PaymentExpiresAt.Equal(time.Date(2026, 11, 10, 19, 15, 0, 0, time.UTC)) {
+		t.Fatalf("booking %+v", d)
+	}
+	if d.Event != (domain.Event{ID: "evt_a", Name: "Konser A", Date: "2026-12-25", Venue: "GBK", ImageURL: "https://cdn/a.jpg"}) {
+		t.Fatalf("event %+v", d.Event)
+	}
+	want := []domain.Item{
+		{ID: "it_1", CategoryName: "VIP", UnitPrice: 1500000, NIKMasked: "3171********0001", TicketID: "TKT-001", TicketStatus: "VALID"},
+		{ID: "it_2", CategoryName: "Festival", UnitPrice: 850000, NIKMasked: "3171********0002"},
+	}
+	if len(d.Items) != 2 || d.Items[0] != want[0] || d.Items[1] != want[1] {
+		t.Fatalf("items %+v, want %+v", d.Items, want)
+	}
+}
+
+func TestDetailNeedsTheMatchingGrantToken(t *testing.T) {
+	pool := pgtest.New(t)
+	detailSeed(t, pool)
+	if _, found, err := NewStore(pool).Detail(ctx, "RB-1", "gt_other"); err != nil || found {
+		t.Fatalf("found=%v err=%v, want nothing for another grant", found, err)
+	}
+	if _, found, err := NewStore(pool).Detail(ctx, "RB-404", "gt_1"); err != nil || found {
+		t.Fatalf("found=%v err=%v, want nothing for an unknown id", found, err)
+	}
+}
+
+func TestDetailOfABookingWithoutSeatsHasNoItems(t *testing.T) {
+	pool := pgtest.New(t)
+	detailSeed(t, pool)
+	granted(t, pool, "RB-2", "SELECTING")
+	d, found, err := NewStore(pool).Detail(ctx, "RB-2", "gt_RB-2")
+	if err != nil || !found || len(d.Items) != 0 || d.Status != bookingstate.Selecting || !d.PaymentExpiresAt.IsZero() {
+		t.Fatalf("detail %+v found=%v err=%v", d, found, err)
+	}
 }

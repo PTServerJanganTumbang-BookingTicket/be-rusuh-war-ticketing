@@ -25,7 +25,7 @@ func main() {
 
 	handler, deps, err := delivery.New(context.Background(), cfg)
 	if err != nil {
-		slog.Error("Failed to connect", slog.Any("err", err))
+		slog.Error("Failed to start", slog.Any("err", err))
 		os.Exit(1)
 	}
 	defer deps.Close()

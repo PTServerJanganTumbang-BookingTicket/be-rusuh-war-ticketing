@@ -37,6 +37,7 @@ func TestLoad_envOverrides(t *testing.T) {
 	t.Setenv("APP_PORT", "9090")
 	t.Setenv("DATABASE_URL", "postgres://prod")
 	t.Setenv("DEVICE_PEPPER", "pepper")
+	t.Setenv("ETICKET_SIGNING_KEY", "key")
 	t.Setenv("LOG_LEVEL", "debug")
 	t.Setenv("LOG_FORMAT", "text")
 
@@ -94,7 +95,7 @@ func TestLoad_portZeroOutOfRange(t *testing.T) {
 func clearB1(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{"APP_ENV", "APP_PORT", "DATABASE_MAX_CONNS", "REDIS_ADDR", "REDIS_PASSWORD",
-		"REDIS_CLUSTER", "DEVICE_PEPPER", "MAX_TICKETS_PER_TRANSACTION", "AWS_LAMBDA_FUNCTION_NAME"} {
+		"REDIS_CLUSTER", "DEVICE_PEPPER", "MAX_TICKETS_PER_TRANSACTION", "AWS_LAMBDA_FUNCTION_NAME", "ETICKET_SIGNING_KEY"} {
 		t.Setenv(k, "")
 	}
 	t.Setenv("DATABASE_URL", "postgres://local")
@@ -165,5 +166,19 @@ func TestAPerOrderLimitBelowOneIsRejected(t *testing.T) {
 	t.Setenv("MAX_TICKETS_PER_TRANSACTION", "0")
 	if _, err := Load(); err == nil {
 		t.Fatal("MAX_TICKETS_PER_TRANSACTION=0 must be rejected")
+	}
+}
+
+func TestTheETicketKeyIsReadAndRequiredOutsideLocal(t *testing.T) {
+	clearB1(t)
+	t.Setenv("ETICKET_SIGNING_KEY", "k")
+	if cfg, err := Load(); err != nil || string(cfg.Booking.ETicketSigningKey) != "k" {
+		t.Fatalf("key = %q (%v)", cfg.Booking.ETicketSigningKey, err)
+	}
+	clearB1(t)
+	t.Setenv("APP_ENV", "preprod")
+	t.Setenv("DEVICE_PEPPER", "p")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "ETICKET_SIGNING_KEY") {
+		t.Fatalf("err = %v, want ETICKET_SIGNING_KEY reported outside local", err)
 	}
 }

@@ -18,7 +18,7 @@ internal/
 └── booking/
     ├── domain/                    entities, contract codes, metric names
     ├── port/outbound/             Bookings, Catalog, Stock, Metrics
-    ├── application/usecase/       TicketPage (GET /events/{event_id}/tickets)
+    ├── application/usecase/       TicketPage (GET /events/{event_id}/tickets), BookingDetail (GET /bookings/{booking_id})
     └── infrastructure/            postgres (writer), redis (stock MGET), http handlers, metrics (log lines)
 ```
 
@@ -73,7 +73,7 @@ curl localhost:3000/sys/ping
 |--------|------|-------|
 | GET | `/sys/ping` | health check, no grant |
 | GET | `/events/{event_id}/tickets` | ticket selection page (claims GRANTED → SELECTING), behind `pkg/grantauth` |
-| GET | `/bookings/{booking_id}` | build step B3 |
+| GET | `/bookings/{booking_id}` | Payment and Success page data; e-ticket links once paid, behind `pkg/grantauth` |
 | POST | `/bookings` | build step B4 (unmounted until then) |
 
 Responses use the contract envelope `{meta:{code,message,server_time[,error_code]}, data}` (api-contracts §7).
@@ -135,3 +135,4 @@ Set these under **Settings → Secrets and variables → Actions**.
 | `REDIS_CLUSTER` | Cluster mode (ElastiCache) | `true` |
 | `DEVICE_PEPPER` | HMAC key for guest device hashes; same value as queue (required outside local) | — |
 | `MAX_TICKETS_PER_TRANSACTION` | BR-01 per-order limit | `3` |
+| `ETICKET_SIGNING_KEY` | HMAC key of e-ticket links; same value as notification and user-service (required outside local) | random per start locally |

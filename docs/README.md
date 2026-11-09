@@ -25,7 +25,7 @@ source below, the source wins and the plan gets fixed.
 | `02-accounts/tickets/` | Accounts › Tickets (`GET /users/me/tickets`, `GET /tickets/{ticket_id}/eticket`) | `services/user` | not started |
 | `03-events/` | Events | `services/events` | not started |
 | [`04-queue/`](04-queue/README.md) | Queue | `services/queue`, `services/sse-server`, `services/admission-ctl` | **planning** |
-| [`05-booking/`](05-booking/README.md) | Booking | `services/booking` (+ SELECTING sweep in `services/admission-ctl`) | **in progress**: B1 shared + migrations, B2 ticket page + SELECTING sweep built; B3 next |
+| [`05-booking/`](05-booking/README.md) | Booking | `services/booking` (+ SELECTING sweep in `services/admission-ctl`) | **in progress**: GET endpoints built (B1–B3); `POST /bookings` (B4) next |
 | [`06-nik/`](06-nik/README.md) | NIK | `services/nik-verify` | **documented** — branch |
 | `07-payment/` | Payment | `services/payment-api` | not started |
 | `08-admin/` | Admin | `services/payment-api` | not started |

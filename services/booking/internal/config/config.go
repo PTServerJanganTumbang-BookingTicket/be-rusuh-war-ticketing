@@ -40,7 +40,8 @@ type Grant struct {
 	DevicePepper []byte // DEVICE_PEPPER, the same value queue's join uses
 }
 
-// Booking holds the purchase rules.
+// Booking holds the purchase rules and the e-ticket link key.
 type Booking struct {
-	MaxTicketsPerTransaction int // BR-01
+	MaxTicketsPerTransaction int    // BR-01
+	ETicketSigningKey        []byte // ETICKET_SIGNING_KEY, the same key notification and user-service use
 }

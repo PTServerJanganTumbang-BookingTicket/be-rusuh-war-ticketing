@@ -20,7 +20,11 @@ func handler(t *testing.T) http.Handler {
 	mr := miniredis.RunT(t)
 	rdb := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { _ = rdb.Close() })
-	return delivery.NewHandler(config.Config{}, delivery.Deps{Redis: rdb})
+	h, err := delivery.NewHandler(config.Config{App: config.App{Env: "local"}}, delivery.Deps{Redis: rdb})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h
 }
 
 func serve(h http.Handler, method, path string) *httptest.ResponseRecorder {
@@ -56,7 +60,7 @@ func TestNewConnectsToTheConfiguredRedisAndDatabase(t *testing.T) {
 	if addr == "" || dsn == "" || testing.Short() {
 		t.Skip("set REDIS_ADDR and DATABASE_URL (make verify does)")
 	}
-	cfg := config.Config{DB: config.DB{URL: dsn, MaxConns: 1}, Redis: config.Redis{Addr: addr, Cluster: true}}
+	cfg := config.Config{App: config.App{Env: "local"}, DB: config.DB{URL: dsn, MaxConns: 1}, Redis: config.Redis{Addr: addr, Cluster: true}}
 	h, deps, err := delivery.New(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -81,5 +85,26 @@ func TestTheTicketPageAnswers401WithoutAGrant(t *testing.T) {
 	rec := serve(handler(t), http.MethodGet, "/events/evt_a/tickets")
 	if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), "GRANT_TOKEN_MISSING") {
 		t.Fatalf("GET /events/evt_a/tickets = %d %s, want 401 GRANT_TOKEN_MISSING", rec.Code, rec.Body.String())
+	}
+}
+
+func TestTheBookingDetailAnswers401WithoutAGrant(t *testing.T) {
+	rec := serve(handler(t), http.MethodGet, "/bookings/RB-1")
+	if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), "GRANT_TOKEN_MISSING") {
+		t.Fatalf("GET /bookings/RB-1 = %d %s, want 401 GRANT_TOKEN_MISSING", rec.Code, rec.Body.String())
+	}
+}
+
+func TestTheHandlerRefusesAMissingETicketKeyOutsideLocal(t *testing.T) {
+	if _, err := delivery.NewHandler(config.Config{App: config.App{Env: "production"}}, delivery.Deps{}); err == nil {
+		t.Fatal("without ETICKET_SIGNING_KEY outside local the handler must not start")
+	}
+}
+
+func TestNewReportsAMissingETicketKeyBeforeOpeningAnyConnection(t *testing.T) {
+	cfg := config.Config{App: config.App{Env: "production"}, Redis: config.Redis{Addr: "127.0.0.1:1"}}
+	_, _, err := delivery.New(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "ETICKET_SIGNING_KEY") {
+		t.Fatalf("err = %v, want the key reported (not a connection error)", err)
 	}
 }

@@ -25,7 +25,7 @@ func main() {
 	// Connections are opened once per Lambda execution environment and reused across invocations.
 	handler, _, err := delivery.New(context.Background(), cfg)
 	if err != nil {
-		slog.Error("Failed to connect", slog.Any("err", err))
+		slog.Error("Failed to start", slog.Any("err", err))
 		os.Exit(1)
 	}
 	lambda.Start(httpadapter.NewV2(handler).ProxyWithContext)

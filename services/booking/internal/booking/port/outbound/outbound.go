@@ -3,6 +3,7 @@ package outbound
 
 import (
 	"context"
+	"time"
 
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/booking/internal/booking/domain"
 )
@@ -31,4 +32,16 @@ type Stock interface {
 // Metrics counts events by name.
 type Metrics interface {
 	Incr(name string)
+}
+
+// Details reads a booking for GET /bookings/{id} on the Aurora writer.
+type Details interface {
+	// Detail reads the booking, its event and its items (with ticket ids once issued), bound to id AND grant_token.
+	// found is false when no such row exists: an unknown id and another grant's booking look the same.
+	Detail(ctx context.Context, bookingID, grantToken string) (d domain.BookingDetail, found bool, err error)
+}
+
+// TicketLinks mints the token of an e-ticket link (pkg/eticket).
+type TicketLinks interface {
+	Mint(ticketID string, expiresAt time.Time) (string, error)
 }
