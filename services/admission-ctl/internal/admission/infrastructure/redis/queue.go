@@ -89,11 +89,11 @@ func (q *Queue) Token(ctx context.Context, queueToken string) (domain.TokenInfo,
 
 // PutGrant writes grant:<grant_token> and its TTL in one MULTI, so it can never live without a TTL.
 func (q *Queue) PutGrant(ctx context.Context, eventID, queueToken string, b domain.Booking, info domain.TokenInfo, ttl time.Duration) error {
-	fields := map[string]any{"event_id": eventID, "booking_id": b.ID, "queue_token": queueToken}
+	fields := map[string]any{rediskeys.FieldEventID: eventID, rediskeys.FieldBookingID: b.ID, rediskeys.FieldQueueToken: queueToken}
 	if info.AccountID != "" {
-		fields["account_id"] = info.AccountID
+		fields[rediskeys.FieldAccountID] = info.AccountID
 	} else if info.DeviceHash != "" {
-		fields["device_hash"] = info.DeviceHash
+		fields[rediskeys.FieldDeviceHash] = info.DeviceHash
 	}
 	key := rediskeys.Grant(b.GrantToken)
 	_, err := q.rdb.TxPipelined(ctx, func(p goredis.Pipeliner) error {

@@ -65,6 +65,11 @@ Field names are constants in `pkg/rediskeys` (`FieldState`, `FieldIssued`, `Fiel
 | `rate_per_min` | int | admission-ctl | stream, `/serving`, `/me` | Ticket numbers `now_serving` passes per minute |
 | `name`, `sale_starts_at` | string | sale-ops seed | join | Echoed in the join response and the 409 `SALE_NOT_OPEN` |
 
+### Fields of `grant:<grant_token>`
+
+Constants: `FieldEventID`, `FieldBookingID`, `FieldQueueToken`, plus exactly one of `FieldAccountID` (logged-in) or
+`FieldDeviceHash` (guest). Written by admission-ctl at GRANT with the TTL in the same MULTI; read by `pkg/grantauth`.
+
 ### Fields of `token:<queue_token>`
 
 Constants: `FieldTicketNo`, `FieldAccountID`, `FieldDeviceHash`, `FieldGrantToken`, `FieldBookingID`, `FieldBookingExpiresAt`.

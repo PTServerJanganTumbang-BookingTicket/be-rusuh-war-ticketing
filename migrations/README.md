@@ -61,6 +61,7 @@ migrate -path ./migrations -database "$DATABASE_URL" up
 | `bookings` | `services/booking` — `services/user` reads only (BR-09) |
 | `queue_entries` | `services/queue` — `services/user` reads only (BR-09) |
 | `outbox` | written by every producer, drained by `services/outbox-publisher` |
+| `ticket_categories` (0007), `booking_items`, `nik_claims` (0008) | `services/booking` |
 
 `bookings` and `queue_entries` are transcribed from ADR-005 §4 because
 `services/booking` and `services/queue` do not exist in this repository yet.

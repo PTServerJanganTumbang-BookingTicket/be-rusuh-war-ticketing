@@ -1,13 +1,11 @@
 package usecase
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/hex"
 	"errors"
 
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/apperror"
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/grantauth"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/token"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/queue/internal/queue/domain"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/queue/internal/queue/port/outbound"
@@ -39,15 +37,9 @@ func (c caller) identity(bearer, deviceID string) (accountID string, err error) 
 	return accountID, nil
 }
 
-// deviceHash is HMAC(DEVICE_PEPPER, device id); empty for no device id.
-func (c caller) deviceHash(deviceID string) string {
-	if deviceID == "" {
-		return ""
-	}
-	m := hmac.New(sha256.New, c.pepper)
-	m.Write([]byte(deviceID))
-	return hex.EncodeToString(m.Sum(nil))
-}
+// deviceHash is HMAC(DEVICE_PEPPER, device id); empty for no device id. One definition, shared with booking's
+// grantauth, which recomputes it from X-Device-Id on every booking request.
+func (c caller) deviceHash(deviceID string) string { return grantauth.DeviceHash(c.pepper, deviceID) }
 
 // owns rejects a presented token of this event that is not the caller's: a logged-in token needs the same account;
 // a guest token, presented by a guest, needs the same device. A guest token with a logged-in caller is not an error.

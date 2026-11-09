@@ -474,7 +474,7 @@ func (p *pgBookings) setStatus(ctx context.Context, id, status string) error {
 }
 
 func (p *pgBookings) reset(ctx context.Context) error {
-	_, err := p.db.admin.Exec(ctx, "TRUNCATE bookings")
+	_, err := p.db.admin.Exec(ctx, "TRUNCATE bookings CASCADE")
 	return err
 }
 

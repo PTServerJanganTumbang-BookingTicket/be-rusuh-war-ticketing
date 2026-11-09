@@ -322,7 +322,7 @@ func (w *world) start() error {
 			if err := testDB(); err != nil {
 				return err
 			}
-			if _, err := adminDB.Exec(context.Background(), "TRUNCATE bookings"); err != nil {
+			if _, err := adminDB.Exec(context.Background(), "TRUNCATE bookings CASCADE"); err != nil {
 				return err
 			}
 			tracer.reset()

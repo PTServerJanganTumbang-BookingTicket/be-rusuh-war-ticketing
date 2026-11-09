@@ -1,6 +1,23 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
-Description: rusuh-booking — native Lambda handler (Option B) behind API Gateway HTTP API
+Description: rusuh-booking — Detail Ticket and booking endpoints (docs/05-booking) behind API Gateway HTTP API
+
+Parameters:
+  VpcSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Private subnets with reachability to Aurora and Redis
+  SecurityGroupIds:
+    Type: List<AWS::EC2::SecurityGroup::Id>
+    Description: Security group permitting Aurora (5432) and Redis (6379) egress
+  DatabaseUrlSecretArn:
+    Type: String
+    Description: Secrets Manager secret holding the Aurora WRITER connection string
+  DevicePepperSecretArn:
+    Type: String
+    Description: Secrets Manager secret holding DEVICE_PEPPER (the same secret rusuh-queue uses)
+  RedisAddr:
+    Type: String
+    Description: ElastiCache (cluster mode) configuration endpoint, host:port
 
 Parameters:
   Environment:
@@ -29,17 +46,23 @@ Resources:
       FunctionName: !Sub rusuh-${Environment}-booking
       Handler: bootstrap
       CodeUri: .
+      VpcConfig:
+        SubnetIds: !Ref VpcSubnetIds
+        SecurityGroupIds: !Ref SecurityGroupIds
+      Environment:
+        Variables:
+          APP_ENV: production
+          REDIS_ADDR: !Ref RedisAddr
+          REDIS_CLUSTER: "true"
+          DATABASE_MAX_CONNS: "2"
+          MAX_TICKETS_PER_TRANSACTION: "3"
+          DATABASE_URL: !Sub "{{resolve:secretsmanager:${DatabaseUrlSecretArn}}}"
+          DEVICE_PEPPER: !Sub "{{resolve:secretsmanager:${DevicePepperSecretArn}}}"
+      Policies:
+        - AWSLambdaVPCAccessExecutionRole
+      # Booking routes are added with their build steps: GET /events/{event_id}/tickets (B2),
+      # GET /bookings/{booking_id} (B3), POST /bookings (B4).
       Events:
-        CreateBooking:
-          Type: HttpApi
-          Properties:
-            Path: /bookings
-            Method: POST
-        GetBooking:
-          Type: HttpApi
-          Properties:
-            Path: /bookings/{booking_id}
-            Method: GET
         HealthCheck:
           Type: HttpApi
           Properties:

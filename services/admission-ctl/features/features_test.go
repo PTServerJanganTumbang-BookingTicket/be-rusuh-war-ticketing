@@ -298,7 +298,7 @@ func (w *storeWorld) sharedDatabase() error {
 		return err
 	}
 	w.db = db
-	if _, err := db.admin.Exec(w.ctx, "TRUNCATE bookings"); err != nil {
+	if _, err := db.admin.Exec(w.ctx, "TRUNCATE bookings CASCADE"); err != nil {
 		return err
 	}
 	w.store = postgres.NewBookings(db.writer)

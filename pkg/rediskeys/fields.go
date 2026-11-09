@@ -23,3 +23,10 @@ const (
 	FieldBookingID        = "booking_id"
 	FieldBookingExpiresAt = "booking_expires_at" // RFC 3339, UTC
 )
+
+// Field names of the grant:<grant_token> hash (admission-ctl writes it at GRANT, ADR-006 §8.13). It also uses
+// FieldBookingID and exactly one of FieldAccountID (logged-in customer) or FieldDeviceHash (guest).
+const (
+	FieldEventID    = "event_id"
+	FieldQueueToken = "queue_token"
+)
