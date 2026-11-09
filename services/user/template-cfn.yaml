@@ -1,0 +1,264 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: rusuh-user — raw CloudFormation (no SAM transform, SCP workaround)
+
+Parameters:
+  DeployRevision:
+    Type: String
+    Default: unset
+
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues: [dev, prod]
+
+  LambdaS3Bucket:
+    Type: String
+    Description: S3 bucket containing the Lambda deployment package
+
+  LambdaS3Key:
+    Type: String
+    Description: S3 key of the Lambda deployment package (bootstrap.zip)
+
+  VpcSubnetIds:
+    Type: AWS::SSM::Parameter::Value<List<AWS::EC2::Subnet::Id>>
+    Default: /rusuh/prod/vpc/private-subnet-ids
+
+  SecurityGroupIds:
+    Type: AWS::SSM::Parameter::Value<List<AWS::EC2::SecurityGroup::Id>>
+    Default: /rusuh/prod/vpc/lambda-security-group-ids
+
+  DatabaseSecretArn:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/db/secret-arn
+
+  JwtSecretArn:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/auth/jwt-secret-arn
+
+  NikVerifyBaseUrl:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/nik-verify/base-url
+
+  RedisAddr:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/redis/addr
+
+  CookieDomain:
+    Type: String
+    Default: ""
+
+Resources:
+  # ============================================================================
+  # IAM Role for Lambda
+  # ============================================================================
+  UserFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub rusuh-${Environment}-user-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: SecretsAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref DatabaseSecretArn
+                  - !Ref JwtSecretArn
+        - PolicyName: CloudWatchLogs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/rusuh-${Environment}-user:*
+
+  # ============================================================================
+  # Lambda Function
+  # ============================================================================
+  UserFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub rusuh-${Environment}-user
+      Runtime: provided.al2023
+      Architectures:
+        - arm64
+      Handler: bootstrap
+      Role: !GetAtt UserFunctionRole.Arn
+      Timeout: 15
+      MemorySize: 512
+      Code:
+        S3Bucket: !Ref LambdaS3Bucket
+        S3Key: !Ref LambdaS3Key
+      VpcConfig:
+        SubnetIds: !Ref VpcSubnetIds
+        SecurityGroupIds: !Ref SecurityGroupIds
+      Environment:
+        Variables:
+          DEPLOY_REVISION: !Ref DeployRevision
+          APP_ENV: production
+          NIK_VERIFY_BASE_URL: !Ref NikVerifyBaseUrl
+          NIK_VERIFY_TIMEOUT_MS: "5000"
+          DATABASE_URL: !Sub '{{resolve:secretsmanager:rusuh-${Environment}/database-url:SecretString:url}}'
+          JWT_SECRET: !Sub '{{resolve:secretsmanager:rusuh-${Environment}/jwt-signing:SecretString}}'
+          REDIS_ADDR: !Ref RedisAddr
+          COOKIE_DOMAIN: !Ref CookieDomain
+          SECURE_COOKIES: "true"
+          SALE_WINDOW_SECONDS: "21600"
+          DATABASE_MAX_CONNS: "4"
+
+  # ============================================================================
+  # CloudWatch Log Group
+  # ============================================================================
+  UserLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/rusuh-${Environment}-user
+      RetentionInDays: 14
+
+  # ============================================================================
+  # HTTP API (API Gateway v2)
+  # ============================================================================
+  UserApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub rusuh-${Environment}-user-api
+      ProtocolType: HTTP
+
+  UserApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref UserApi
+      StageName: $default
+      AutoDeploy: true
+
+  # ============================================================================
+  # Lambda Integration
+  # ============================================================================
+  UserLambdaIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref UserApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt UserFunction.Arn
+      PayloadFormatVersion: "2.0"
+
+  # ============================================================================
+  # Routes
+  # ============================================================================
+  RouteRequestMagicLink:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UserApi
+      RouteKey: POST /auth/magic-link
+      Target: !Sub integrations/${UserLambdaIntegration}
+
+  RouteResendMagicLink:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UserApi
+      RouteKey: POST /auth/magic-link/resend
+      Target: !Sub integrations/${UserLambdaIntegration}
+
+  RouteVerifyMagicLink:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UserApi
+      RouteKey: GET /auth/verify
+      Target: !Sub integrations/${UserLambdaIntegration}
+
+  RouteVerifyEmail:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UserApi
+      RouteKey: GET /auth/verify-email
+      Target: !Sub integrations/${UserLambdaIntegration}
+
+  RouteRefreshSession:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UserApi
+      RouteKey: POST /auth/refresh
+      Target: !Sub integrations/${UserLambdaIntegration}
+
+  RouteRegister:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UserApi
+      RouteKey: POST /auth/register
+      Target: !Sub integrations/${UserLambdaIntegration}
+
+  RouteListSavedNiks:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UserApi
+      RouteKey: GET /accounts/me/saved-niks
+      Target: !Sub integrations/${UserLambdaIntegration}
+
+  RouteAddSavedNik:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UserApi
+      RouteKey: POST /accounts/me/saved-niks
+      Target: !Sub integrations/${UserLambdaIntegration}
+
+  RouteDeleteSavedNik:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UserApi
+      RouteKey: DELETE /accounts/me/saved-niks/{id}
+      Target: !Sub integrations/${UserLambdaIntegration}
+
+  RouteGetMyTickets:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UserApi
+      RouteKey: GET /users/me/tickets
+      Target: !Sub integrations/${UserLambdaIntegration}
+
+  RouteGetETicket:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UserApi
+      RouteKey: GET /tickets/{ticket_id}/eticket
+      Target: !Sub integrations/${UserLambdaIntegration}
+
+  RouteHealthCheck:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UserApi
+      RouteKey: GET /sys/ping
+      Target: !Sub integrations/${UserLambdaIntegration}
+
+  # ============================================================================
+  # Lambda Permission
+  # ============================================================================
+  UserFunctionApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref UserFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${UserApi}/*/*
+
+Outputs:
+  ApiUrl:
+    Description: Base URL of the user HTTP API
+    Value: !Sub "https://${UserApi}.execute-api.${AWS::Region}.amazonaws.com"
+
+  FunctionArn:
+    Description: ARN of the user Lambda function
+    Value: !GetAtt UserFunction.Arn

@@ -1,0 +1,247 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: rusuh-nik-verify — raw CloudFormation (no SAM transform, SCP workaround)
+
+Parameters:
+  DeployRevision:
+    Type: String
+    Default: unset
+
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues: [dev, prod]
+
+  LambdaS3Bucket:
+    Type: String
+    Description: S3 bucket containing the Lambda deployment package
+
+  LambdaS3Key:
+    Type: String
+    Description: S3 key of the Lambda deployment package (bootstrap.zip)
+
+  VpcSubnetIds:
+    Type: AWS::SSM::Parameter::Value<List<AWS::EC2::Subnet::Id>>
+    Default: /rusuh/prod/vpc/private-subnet-ids
+
+  SecurityGroupIds:
+    Type: AWS::SSM::Parameter::Value<List<AWS::EC2::SecurityGroup::Id>>
+    Default: /rusuh/prod/vpc/lambda-security-group-ids
+
+  DatabaseSecretArn:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/db/secret-arn
+
+  NikPepperSecretArn:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/nik/pepper-secret-arn
+
+  NikPepperKmsKeyArn:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/nik/pepper-kms-key-arn
+
+  DukcapilApiKeySecretArn:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/dukcapil/api-key-secret-arn
+
+  DukcapilMode:
+    Type: String
+    Default: stub
+    AllowedValues: [live, stub]
+
+  DukcapilBaseUrl:
+    Type: String
+    Default: ""
+
+  DukcapilExtraHeaderName:
+    Type: String
+    Default: ""
+
+  DukcapilExtraHeaderValue:
+    Type: String
+    Default: ""
+    NoEcho: true
+
+  RedisAddr:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/redis/addr
+
+Rules:
+  LiveModeRequiresBaseUrl:
+    RuleCondition: !Equals [!Ref DukcapilMode, live]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref DukcapilBaseUrl, ""]]
+        AssertDescription: DukcapilBaseUrl must be set when DukcapilMode is live.
+
+Conditions:
+  IsDukcapilStub: !Equals [!Ref DukcapilMode, stub]
+  HasDukcapilExtraHeader: !Not [!Equals [!Ref DukcapilExtraHeaderName, ""]]
+
+Resources:
+  # ============================================================================
+  # IAM Role for Lambda
+  # ============================================================================
+  NikVerifyFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub rusuh-${Environment}-nik-verify-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: SecretsAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref DatabaseSecretArn
+                  - !Ref NikPepperSecretArn
+                  - !Ref DukcapilApiKeySecretArn
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource:
+                  - !Ref NikPepperKmsKeyArn
+        - PolicyName: CloudWatchLogs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/rusuh-${Environment}-nik-verify:*
+
+  # ============================================================================
+  # Lambda Function
+  # ============================================================================
+  NikVerifyFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub rusuh-${Environment}-nik-verify
+      Runtime: provided.al2023
+      Architectures:
+        - arm64
+      Handler: bootstrap
+      Role: !GetAtt NikVerifyFunctionRole.Arn
+      Timeout: 10
+      MemorySize: 512
+      Code:
+        S3Bucket: !Ref LambdaS3Bucket
+        S3Key: !Ref LambdaS3Key
+      VpcConfig:
+        SubnetIds: !Ref VpcSubnetIds
+        SecurityGroupIds: !Ref SecurityGroupIds
+      Environment:
+        Variables:
+          DEPLOY_REVISION: !Ref DeployRevision
+          APP_ENV: !If [IsDukcapilStub, poc, production]
+          DUKCAPIL_MODE: !Ref DukcapilMode
+          DUKCAPIL_EXTRA_HEADERS: !If
+            - HasDukcapilExtraHeader
+            - !Sub '{"${DukcapilExtraHeaderName}":"${DukcapilExtraHeaderValue}"}'
+            - ""
+          DUKCAPIL_BASE_URL: !Ref DukcapilBaseUrl
+          DUKCAPIL_TIMEOUT_MS: "3000"
+          DUKCAPIL_RATE_LIMIT_RPS: "40"
+          DUKCAPIL_BURST_CAPACITY: "80"
+          DUKCAPIL_BREAKER_FAILURE_THRESHOLD: "5"
+          DUKCAPIL_BREAKER_OPEN_SECONDS: "30"
+          DATABASE_URL: !Sub '{{resolve:secretsmanager:rusuh-${Environment}/database-url:SecretString:url}}'
+          NIK_PEPPER: !Sub '{{resolve:secretsmanager:rusuh-${Environment}/nik-pepper:SecretString}}'
+          DUKCAPIL_API_KEY: !Sub '{{resolve:secretsmanager:rusuh-${Environment}/dukcapil-api-key:SecretString:api_key}}'
+          REDIS_ADDR: !Ref RedisAddr
+          DATABASE_MAX_CONNS: "4"
+
+  # ============================================================================
+  # CloudWatch Log Group
+  # ============================================================================
+  NikVerifyLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/rusuh-${Environment}-nik-verify
+      RetentionInDays: 14
+
+  # ============================================================================
+  # HTTP API (API Gateway v2)
+  # ============================================================================
+  NikVerifyApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub rusuh-${Environment}-nik-verify-api
+      ProtocolType: HTTP
+
+  NikVerifyApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref NikVerifyApi
+      StageName: $default
+      AutoDeploy: true
+
+  # ============================================================================
+  # Lambda Integration
+  # ============================================================================
+  NikVerifyLambdaIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref NikVerifyApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt NikVerifyFunction.Arn
+      PayloadFormatVersion: "2.0"
+
+  # ============================================================================
+  # Routes
+  # ============================================================================
+  RouteValidateNik:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref NikVerifyApi
+      RouteKey: POST /nik/validate
+      Target: !Sub integrations/${NikVerifyLambdaIntegration}
+
+  RouteHealthCheck:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref NikVerifyApi
+      RouteKey: GET /sys/ping
+      Target: !Sub integrations/${NikVerifyLambdaIntegration}
+
+  # ============================================================================
+  # Lambda Permission
+  # ============================================================================
+  NikVerifyFunctionApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref NikVerifyFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${NikVerifyApi}/*/*
+
+  # ============================================================================
+  # SSM Parameter (for user service to discover this URL)
+  # ============================================================================
+  SsmBaseUrl:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /rusuh/${Environment}/nik-verify/base-url
+      Type: String
+      Value: !Sub "https://${NikVerifyApi}.execute-api.${AWS::Region}.amazonaws.com"
+      Description: Base URL of the nik-verify HTTP API
+
+Outputs:
+  ApiUrl:
+    Description: Base URL of the nik-verify HTTP API
+    Value: !Sub "https://${NikVerifyApi}.execute-api.${AWS::Region}.amazonaws.com"
+
+  FunctionArn:
+    Description: ARN of the nik-verify Lambda function
+    Value: !GetAtt NikVerifyFunction.Arn

@@ -1,0 +1,148 @@
+name: CloudFormation deploy (no SAM transform)
+description: >
+  Build Go binary, upload to S3, deploy with raw CloudFormation.
+  Workaround for SCP blocking cloudformation:CreateChangeSet on SAM transform.
+
+inputs:
+  service:
+    description: Directory under services/
+    required: true
+  stack-name:
+    description: CloudFormation stack name
+    required: true
+  parameter-overrides:
+    description: Space-separated Key=Value pairs passed to cloudformation deploy
+    required: false
+    default: ""
+  aws-region:
+    required: true
+  role-to-assume:
+    required: true
+  environment:
+    description: Environment name, used to locate the artifact bucket in SSM.
+    required: false
+    default: prod
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+      with:
+        go-version: '1.26'
+        check-latest: true
+
+    - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+      with:
+        role-to-assume: ${{ inputs.role-to-assume }}
+        aws-region: ${{ inputs.aws-region }}
+
+    - name: Vendor the shared package
+      shell: bash
+      working-directory: services/${{ inputs.service }}
+      env:
+        GOWORK: off
+      run: |
+        set -euo pipefail
+        go mod vendor
+
+        pkg="github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg"
+        if ! grep -q "^# ${pkg} " vendor/modules.txt; then
+          echo "::error::vendor/modules.txt has no entry for ${pkg}."
+          echo "::error::The replace directive did not resolve - check go.mod in services/${{ inputs.service }}."
+          exit 1
+        fi
+        echo "vendored $(grep -c '^# ' vendor/modules.txt) modules, including the shared pkg"
+
+    - name: Build Lambda binary
+      shell: bash
+      working-directory: services/${{ inputs.service }}
+      env:
+        GOWORK: off
+        GOOS: linux
+        GOARCH: arm64
+        CGO_ENABLED: "0"
+      run: |
+        set -euo pipefail
+        go build -o bootstrap ./cmd/lambda/
+        zip -j bootstrap.zip bootstrap
+        echo "Built bootstrap.zip: $(ls -lh bootstrap.zip | awk '{print $5}')"
+
+    - name: Get artifact bucket from SSM
+      id: bucket
+      shell: bash
+      env:
+        REGION: ${{ inputs.aws-region }}
+        ENVIRONMENT: ${{ inputs.environment }}
+      run: |
+        set -euo pipefail
+        param="/rusuh/${ENVIRONMENT}/sam/artifact-bucket"
+        BUCKET=$(aws ssm get-parameter --name "$param" --region "$REGION" \
+                   --query Parameter.Value --output text 2>/dev/null | tr -d '"' || true)
+        if [ -z "$BUCKET" ] || [ "$BUCKET" = "None" ]; then
+          echo "::error::No artifact bucket. $param does not exist."
+          echo "::error::It is created by infra/foundation - deploy that first."
+          exit 1
+        fi
+        echo "bucket=$BUCKET" >> "$GITHUB_OUTPUT"
+        echo "Artifact bucket: $BUCKET"
+
+    - name: Upload Lambda package to S3
+      shell: bash
+      working-directory: services/${{ inputs.service }}
+      env:
+        BUCKET: ${{ steps.bucket.outputs.bucket }}
+        SERVICE: ${{ inputs.service }}
+        REGION: ${{ inputs.aws-region }}
+      run: |
+        set -euo pipefail
+        S3_KEY="${SERVICE}/bootstrap.zip"
+        aws s3 cp bootstrap.zip "s3://${BUCKET}/${S3_KEY}" --region "$REGION"
+        echo "Uploaded to s3://${BUCKET}/${S3_KEY}"
+        echo "s3_key=${S3_KEY}" >> "$GITHUB_ENV"
+
+    - name: Deploy with CloudFormation
+      shell: bash
+      working-directory: services/${{ inputs.service }}
+      env:
+        STACK: ${{ inputs.stack-name }}
+        REGION: ${{ inputs.aws-region }}
+        BUCKET: ${{ steps.bucket.outputs.bucket }}
+        SERVICE: ${{ inputs.service }}
+        OVERRIDES: ${{ inputs.parameter-overrides }}
+      run: |
+        set -euo pipefail
+
+        # Use template-cfn.yaml (raw CloudFormation, no SAM transform)
+        TEMPLATE="template-cfn.yaml"
+        if [ ! -f "$TEMPLATE" ]; then
+          echo "::error::$TEMPLATE not found in services/$SERVICE"
+          echo "::error::Raw CloudFormation template required to bypass SCP restriction on SAM transform."
+          exit 1
+        fi
+
+        S3_KEY="${SERVICE}/bootstrap.zip"
+
+        args=(
+          --template-file "$TEMPLATE"
+          --stack-name "$STACK"
+          --region "$REGION"
+          --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM
+          --no-fail-on-empty-changeset
+          --tags "Project=rusuh" "ManagedBy=github-actions"
+        )
+
+        # Build parameter overrides - always include LambdaS3Bucket and LambdaS3Key
+        params=("LambdaS3Bucket=$BUCKET" "LambdaS3Key=$S3_KEY")
+
+        # Add user-provided overrides, filtering empty values
+        for pair in $OVERRIDES; do
+          case "$pair" in
+            *=) echo "skipping empty override: ${pair%=}" ;;
+            *)  params+=("$pair") ;;
+          esac
+        done
+
+        args+=(--parameter-overrides "${params[@]}")
+
+        echo "aws cloudformation deploy ${args[*]}"
+        aws cloudformation deploy "${args[@]}"

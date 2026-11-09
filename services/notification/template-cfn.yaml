@@ -1,0 +1,197 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: rusuh-notification — raw CloudFormation (no SAM transform, SCP workaround)
+
+Parameters:
+  DeployRevision:
+    Type: String
+    Default: unset
+
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues: [dev, prod]
+
+  LambdaS3Bucket:
+    Type: String
+    Description: S3 bucket containing the Lambda deployment package
+
+  LambdaS3Key:
+    Type: String
+    Description: S3 key of the Lambda deployment package (bootstrap.zip)
+
+  VpcSubnetIds:
+    Type: AWS::SSM::Parameter::Value<List<AWS::EC2::Subnet::Id>>
+    Default: /rusuh/prod/vpc/private-subnet-ids
+
+  SecurityGroupIds:
+    Type: AWS::SSM::Parameter::Value<List<AWS::EC2::SecurityGroup::Id>>
+    Default: /rusuh/prod/vpc/lambda-security-group-ids
+
+  RedisAddr:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/redis/addr
+
+  AppBaseUrl:
+    Type: String
+    Description: Public FRONTEND base URL for emailed links.
+
+  EmailFromAddress:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/ses/from-address
+
+  SesConfigurationSet:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/ses/configuration-set
+
+Resources:
+  # ============================================================================
+  # SQS Queues
+  # ============================================================================
+  NotificationDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub rusuh-${Environment}-notification-dlq
+      MessageRetentionPeriod: 1209600
+
+  NotificationQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub rusuh-${Environment}-notification
+      VisibilityTimeout: 180
+      MessageRetentionPeriod: 1209600
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt NotificationDLQ.Arn
+        maxReceiveCount: 5
+
+  # ============================================================================
+  # IAM Role for Lambda
+  # ============================================================================
+  NotificationFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub rusuh-${Environment}-notification-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: SQSAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt NotificationQueue.Arn
+        - PolicyName: SESAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ses:SendEmail
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/*
+                  - !Sub arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:configuration-set/*
+        - PolicyName: CloudWatchLogs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/rusuh-${Environment}-notification:*
+
+  # ============================================================================
+  # Lambda Function
+  # ============================================================================
+  NotificationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub rusuh-${Environment}-notification
+      Runtime: provided.al2023
+      Architectures:
+        - arm64
+      Handler: bootstrap
+      Role: !GetAtt NotificationFunctionRole.Arn
+      Timeout: 30
+      MemorySize: 512
+      Code:
+        S3Bucket: !Ref LambdaS3Bucket
+        S3Key: !Ref LambdaS3Key
+      VpcConfig:
+        SubnetIds: !Ref VpcSubnetIds
+        SecurityGroupIds: !Ref SecurityGroupIds
+      Environment:
+        Variables:
+          DEPLOY_REVISION: !Ref DeployRevision
+          APP_ENV: production
+          APP_BASE_URL: !Ref AppBaseUrl
+          REDIS_ADDR: !Ref RedisAddr
+          EMAIL_FROM_ADDRESS: !Ref EmailFromAddress
+          SES_CONFIGURATION_SET: !Ref SesConfigurationSet
+          MAGIC_TOKEN_TTL_MINUTES: "15"
+
+  # ============================================================================
+  # SQS Event Source Mapping (replaces SAM Events.SQS)
+  # ============================================================================
+  NotificationEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt NotificationQueue.Arn
+      FunctionName: !Ref NotificationFunction
+      BatchSize: 10
+      FunctionResponseTypes:
+        - ReportBatchItemFailures
+
+  # ============================================================================
+  # CloudWatch Log Group
+  # ============================================================================
+  NotificationLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/rusuh-${Environment}-notification
+      RetentionInDays: 14
+
+  # ============================================================================
+  # SSM Parameters (for outbox-publisher to discover)
+  # ============================================================================
+  SsmQueueUrl:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /rusuh/${Environment}/notification/queue-url
+      Type: String
+      Value: !Ref NotificationQueue
+
+  SsmQueueArn:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /rusuh/${Environment}/notification/queue-arn
+      Type: String
+      Value: !GetAtt NotificationQueue.Arn
+
+Outputs:
+  QueueUrl:
+    Description: URL of the notification queue
+    Value: !Ref NotificationQueue
+
+  QueueArn:
+    Description: ARN of the notification queue
+    Value: !GetAtt NotificationQueue.Arn
+
+  DLQUrl:
+    Description: URL of the dead-letter queue
+    Value: !Ref NotificationDLQ
+
+  FunctionArn:
+    Description: ARN of the notification Lambda function
+    Value: !GetAtt NotificationFunction.Arn
