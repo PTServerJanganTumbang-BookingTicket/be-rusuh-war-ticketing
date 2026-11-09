@@ -147,6 +147,11 @@ Resources:
           Properties:
             Path: /auth/verify-email
             Method: GET
+        RefreshSession:
+          Type: HttpApi
+          Properties:
+            Path: /auth/refresh
+            Method: POST
         Register:
           Type: HttpApi
           Properties:
