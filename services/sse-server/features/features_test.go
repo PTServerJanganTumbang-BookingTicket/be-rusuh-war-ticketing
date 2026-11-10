@@ -224,20 +224,6 @@ func (l *switchLimiter) Allow(ctx context.Context, key string, lim ratelimit.Lim
 	return l.inner.Allow(ctx, key, lim)
 }
 
-type failStore struct{}
-
-func (failStore) State(context.Context, rediskeys.Event) (string, bool, error) {
-	return "", false, fmt.Errorf("redis unreachable")
-}
-
-func (failStore) Numbers(context.Context, rediskeys.Event) (int64, int64, error) {
-	return 0, 0, fmt.Errorf("redis unreachable")
-}
-
-func (failStore) TokenEvent(context.Context, string) (string, bool, error) {
-	return "", false, fmt.Errorf("redis unreachable")
-}
-
 // ---------------------------------------------------------------- in-process connection
 
 // memWriter is a ResponseWriter whose body the test can read at any time. A
