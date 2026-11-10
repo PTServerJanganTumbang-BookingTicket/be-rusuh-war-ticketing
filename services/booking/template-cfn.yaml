@@ -2,6 +2,14 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: rusuh-booking — raw CloudFormation (no SAM transform, SCP workaround)
 
 Parameters:
+  DeployRevision:
+    Type: String
+    Default: unset
+    Description: >
+      Commit SHA of the deploy that last touched this stack. Nothing reads it; it forces an update so the
+      {{resolve:secretsmanager:...}} references below are re-read on every deploy (CloudFormation does not detect a
+      rotated secret behind a dynamic reference).
+
   Environment:
     Type: String
     Default: prod
@@ -25,6 +33,33 @@ Parameters:
       unified API Gateway (rusuh-prod-api) as the single entry point.
       Direct access is useful for debugging but exposes an additional endpoint.
 
+  VpcSubnetIds:
+    Type: AWS::SSM::Parameter::Value<List<AWS::EC2::Subnet::Id>>
+    Default: /rusuh/prod/vpc/private-subnet-ids
+    Description: Private subnets with reachability to Aurora and Redis
+
+  SecurityGroupIds:
+    Type: AWS::SSM::Parameter::Value<List<AWS::EC2::SecurityGroup::Id>>
+    Default: /rusuh/prod/vpc/lambda-security-group-ids
+    Description: Security group permitting Aurora (5432) and Redis (6379) egress
+
+  RedisAddr:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/redis/addr
+    Description: ElastiCache endpoint, host:port
+
+  DevicePepperSecretArn:
+    Type: String
+    Description: >
+      Secrets Manager secret holding DEVICE_PEPPER (HMAC key for X-Device-Id). Must be the same secret queue uses,
+      or every guest gets DEVICE_MISMATCH on the ticket page.
+
+  ETicketSigningKeySecretArn:
+    Type: String
+    Description: >
+      Secrets Manager secret holding ETICKET_SIGNING_KEY (signs the e-ticket links). Notification and user-service
+      must use the same secret so the links they send and verify match.
+
 Conditions:
   CreateDirectApi: !Equals [!Ref EnableDirectApiAccess, "true"]
 
@@ -44,7 +79,7 @@ Resources:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
       Policies:
         - PolicyName: CloudWatchLogs
           PolicyDocument:
@@ -60,6 +95,10 @@ Resources:
   # ============================================================================
   # Lambda Function
   # ============================================================================
+  # Secrets are read at deploy time (dynamic references), so the role needs no Secrets Manager access.
+  #
+  # REDIS_CLUSTER is "false": the foundation provisions a single-node ElastiCache cache cluster, not a cluster-mode
+  # replication group, and a cluster client cannot talk to it. Switch to "true" together with a cluster-mode Redis.
   BookingFunction:
     Type: AWS::Lambda::Function
     Properties:
@@ -74,6 +113,20 @@ Resources:
       Code:
         S3Bucket: !Ref LambdaS3Bucket
         S3Key: !Ref LambdaS3Key
+      VpcConfig:
+        SubnetIds: !Ref VpcSubnetIds
+        SecurityGroupIds: !Ref SecurityGroupIds
+      Environment:
+        Variables:
+          DEPLOY_REVISION: !Ref DeployRevision
+          APP_ENV: production
+          REDIS_ADDR: !Ref RedisAddr
+          REDIS_CLUSTER: "false"
+          DATABASE_MAX_CONNS: "2"
+          MAX_TICKETS_PER_TRANSACTION: "3"
+          DATABASE_URL: !Sub '{{resolve:secretsmanager:rusuh-${Environment}/database-url:SecretString:url}}'
+          DEVICE_PEPPER: !Sub '{{resolve:secretsmanager:${DevicePepperSecretArn}:SecretString}}'
+          ETICKET_SIGNING_KEY: !Sub '{{resolve:secretsmanager:${ETicketSigningKeySecretArn}:SecretString}}'
 
   # ============================================================================
   # CloudWatch Log Group (explicit retention)
@@ -121,6 +174,14 @@ Resources:
       IntegrationType: AWS_PROXY
       IntegrationUri: !GetAtt BookingFunction.Arn
       PayloadFormatVersion: "2.0"
+
+  RouteTicketPage:
+    Type: AWS::ApiGatewayV2::Route
+    Condition: CreateDirectApi
+    Properties:
+      ApiId: !Ref BookingApi
+      RouteKey: GET /events/{event_id}/tickets
+      Target: !Sub integrations/${BookingLambdaIntegration}
 
   RouteCreateBooking:
     Type: AWS::ApiGatewayV2::Route

@@ -10,9 +10,11 @@ Plan: [`docs/04-queue/05-admission-controller.md`](../../docs/04-queue/05-admiss
 From the repository root (`be-rusuh-war-ticketing/`):
 
 ```bash
+cp -n .env.example .env                        # then set POSTGRES_PASSWORD in .env
+set -a; . ./.env; set +a
 make deps-up                                   # Redis cluster :16379 + Postgres :15432
 for f in migrations/*.up.sql; do               # idempotent; skip if already applied
-  PGPASSWORD=rusuh-local-only psql -h 127.0.0.1 -p 15432 -U rusuh -d rusuh -q -f "$f"
+  PGPASSWORD="$POSTGRES_PASSWORD" psql -h 127.0.0.1 -p 15432 -U rusuh -d rusuh -q -f "$f"
 done
 
 # seed one sale (sale-ops does not exist yet, so by hand). Redis runs in cluster mode: use -c.

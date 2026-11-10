@@ -7,6 +7,8 @@ Description: >
   
   Routes:
     /bookings/*  → booking service
+    /events/{event_id}/tickets → booking service
+    /events/{event_id}/queue/* → queue service (join, me)
     /nik/*       → nik-verify service
     /auth/*      → user service
     /accounts/*  → user service
@@ -45,6 +47,9 @@ Resources:
           - Authorization
           - X-Request-ID
           - Cookie
+          - X-Grant-Token
+          - X-Device-Id
+          - X-Queue-Token
         AllowCredentials: false
         MaxAge: 86400
 
@@ -83,6 +88,14 @@ Resources:
       IntegrationUri: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:rusuh-${Environment}-nik-verify
       PayloadFormatVersion: "2.0"
 
+  QueueIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref UnifiedApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:rusuh-${Environment}-queue
+      PayloadFormatVersion: "2.0"
+
   UserIntegration:
     Type: AWS::ApiGatewayV2::Integration
     Properties:
@@ -106,6 +119,14 @@ Resources:
     Type: AWS::Lambda::Permission
     Properties:
       FunctionName: !Sub rusuh-${Environment}-nik-verify
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${UnifiedApi}/*/*
+
+  QueuePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Sub rusuh-${Environment}-queue
       Action: lambda:InvokeFunction
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${UnifiedApi}/*/*
@@ -134,6 +155,31 @@ Resources:
       ApiId: !Ref UnifiedApi
       RouteKey: GET /bookings/{booking_id}
       Target: !Sub integrations/${BookingIntegration}
+
+  RouteTicketPage:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UnifiedApi
+      RouteKey: GET /events/{event_id}/tickets
+      Target: !Sub integrations/${BookingIntegration}
+
+  # ============================================================================
+  # Routes — Queue Service (/events/{event_id}/queue/*)
+  # The stream (/queue/stream) and /queue/serving are not here: the SSE server runs on ECS behind its own ALB.
+  # ============================================================================
+  RouteQueueJoin:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UnifiedApi
+      RouteKey: POST /events/{event_id}/queue/join
+      Target: !Sub integrations/${QueueIntegration}
+
+  RouteQueueMe:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UnifiedApi
+      RouteKey: GET /events/{event_id}/queue/me
+      Target: !Sub integrations/${QueueIntegration}
 
   # ============================================================================
   # Routes — NIK Verify Service (/nik/*)
@@ -256,6 +302,9 @@ Outputs:
     Description: |
       Unified API URL — Frontend should call this single URL.
       All routes are available here:
+        GET  /events/{event_id}/tickets
+        POST /events/{event_id}/queue/join
+        GET  /events/{event_id}/queue/me
         POST /bookings
         GET  /bookings/{booking_id}
         POST /nik/validate

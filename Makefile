@@ -9,6 +9,10 @@ SPECCHECK        := tools/speccheck/speccheck
 GOVULN_VERSION   := v1.9.0
 GOVULNCHECK      := .bin/govulncheck-$(GOVULN_VERSION)
 
+# Local secrets live in the git-ignored .env (copy .env.example). docker compose reads the same file.
+-include .env
+export POSTGRES_PASSWORD
+
 # docker compose host ports (see docker-compose.yml).
 REDIS_PORT    ?= 16379
 POSTGRES_PORT ?= 15432
@@ -19,10 +23,10 @@ COVERAGE_MIN ?= 80
 # Integration tests and @integration features run only when these are set
 # (pkg/specsuite). The targets below that need them export them.
 REDIS_ADDR   ?= 127.0.0.1:$(REDIS_PORT)
-DATABASE_URL ?= postgres://rusuh:rusuh-local-only@127.0.0.1:$(POSTGRES_PORT)/rusuh?sslmode=disable
+DATABASE_URL ?= postgres://rusuh:$(POSTGRES_PASSWORD)@127.0.0.1:$(POSTGRES_PORT)/rusuh?sslmode=disable
 
 .PHONY: build test tidy isolation-check lint booking-run booking-build-lambda test-module \
-        fmt-check vet spec step test-short verify-fast verify deps-up deps-down coverage
+        fmt-check vet spec step test-short verify-fast verify deps-up deps-down check-pg-password coverage
 
 # Workspace-wide build/test. The repo root is NOT a module (it only holds
 # go.work), so `go build ./...` must run per-module; go.work still resolves
@@ -107,8 +111,11 @@ test-short:
 verify-fast: fmt-check vet spec test-short lint
 	@echo "verify-fast: OK"
 
-deps-up:
+deps-up: check-pg-password
 	docker compose up -d --wait
+
+check-pg-password:
+	@test -n "$(POSTGRES_PASSWORD)" || { echo "POSTGRES_PASSWORD is not set: cp .env.example .env and fill it in"; exit 1; }
 
 deps-down:
 	docker compose down -v

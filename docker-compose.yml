@@ -32,7 +32,7 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: rusuh
-      POSTGRES_PASSWORD: rusuh-local-only
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (see .env.example)}
       POSTGRES_DB: rusuh
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-15432}:5432"
