@@ -36,6 +36,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  debug-oidc:
+    name: Debug OIDC claim
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Print OIDC subject claim
+        run: |
+          TOKEN=$(curl -sSL \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" \
+            | jq -r '.value')
+          echo "$TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null \
+            | jq '{sub,iss,ref,environment,job_workflow_ref}' \
+            || echo "$TOKEN" | cut -d. -f2 | base64 --decode | python3 -m json.tool
+
   detect-changes:
     name: Detect Changed Modules
     runs-on: ubuntu-latest
