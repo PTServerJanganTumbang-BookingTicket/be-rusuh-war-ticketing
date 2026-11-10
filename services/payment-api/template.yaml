@@ -48,6 +48,14 @@ Parameters:
       Secrets Manager ARN holding the HMAC pepper for the guest device binding.
       Must be the SAME value resolved by whatever issues grants, or every guest
       grant fails its device check here (ADR-006 §8.9).
+  JwtSecretArn:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/auth/jwt-secret-arn
+    Description: >
+      Secrets Manager ARN holding the account-session signing secret, the same
+      one user-service issues with. ADR-006 §8.17 has the grant guard verify
+      the session behind an account grant, so a wrong value here turns every
+      logged-in payment into 401 and a missing one into 503.
   MidtransServerKeySecretArn:
     Type: AWS::SSM::Parameter::Value<String>
     Default: /rusuh/prod/midtrans/server-key-secret-arn
@@ -192,6 +200,9 @@ Resources:
           # sales, because rotating it mid-sale returns 401 DEVICE_MISMATCH to
           # every guest holding a grant.
           DEVICE_PEPPER: !Sub '{{resolve:secretsmanager:rusuh-${Environment}/device-pepper:SecretString}}'
+          # The same secret user-service signs access tokens with. §8.17: an
+          # account grant is only honoured alongside that account's Bearer.
+          JWT_SECRET: !Sub '{{resolve:secretsmanager:rusuh-${Environment}/jwt-signing:SecretString}}'
           # Signs charges AND verifies every notification signature. While this
           # is still at its REPLACE_ME placeholder the service starts, accepts
           # requests, and rejects every callback Midtrans sends - money taken,
@@ -210,6 +221,7 @@ Resources:
               Resource:
                 - !Ref DatabaseSecretArn
                 - !Ref DevicePepperSecretArn
+                - !Ref JwtSecretArn
                 - !Ref MidtransServerKeySecretArn
       Events:
         # ── Grant-guarded, one booking each ────────────────────────────────

@@ -53,7 +53,6 @@ func TestInitiate_BankTransfer_OK(t *testing.T) {
 	assert.Equal(t, entity.MethodBankTransfer, out.Method)
 	assert.Equal(t, dto.StatusPending, out.Status)
 	assert.Equal(t, "8277081234567890", out.Instructions["va_number"])
-	assert.Equal(t, 300, out.TTL.TTLSeconds)
 	assert.Equal(t, b.PaymentExpiresAt.UTC().Format(time.RFC3339), out.TTL.ExpiresAt)
 	assert.Equal(t, 1, h.gw.chargeCalls)
 }

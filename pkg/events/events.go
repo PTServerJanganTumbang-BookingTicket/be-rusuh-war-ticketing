@@ -148,28 +148,38 @@ type AuthMagicLinkPayload struct {
 	Locale    Locale `json:"locale,omitempty"`
 }
 
-// TicketIssuePayload is the payload for TypeTicketIssue — one per seat, so one
-// email per NIK holder (FR-26).
+// TicketIssuePayload is the payload for TypeTicketIssue — one per seat, all
+// delivered to the buyer.
+//
+// ContactEmail, not a per-seat address: ADR-006 §8.15 (10 November 2026)
+// removed tickets[].holder_email and sends every e-ticket of one booking to
+// bookings.contact_email, which the buyer forwards. FR-26 was amended to
+// match. The NIK still binds the seat (BR-02).
 type TicketIssuePayload struct {
-	TicketID    string `json:"ticket_id"`
-	BookingID   string `json:"booking_id"`
-	HolderEmail string `json:"holder_email"`
-	EventName   string `json:"event_name"`
-	EventDate   string `json:"event_date"`
-	EventVenue  string `json:"event_venue"`
-	Category    string `json:"category"`
-	NIKMasked   string `json:"nik_masked"`
-	QRValue     string `json:"qr_value"`
-	Locale      Locale `json:"locale,omitempty"`
+	TicketID  string `json:"ticket_id"`
+	BookingID string `json:"booking_id"`
+	// LegacyHolderEmail is read, never written: outbox rows queued before
+	// §8.15 carry holder_email, and they must still deliver while the queue
+	// drains. Remove once no pre-§8.15 row can be in flight.
+	LegacyHolderEmail string `json:"holder_email,omitempty"`
+	ContactEmail      string `json:"contact_email"`
+	EventName         string `json:"event_name"`
+	EventDate         string `json:"event_date"`
+	EventVenue        string `json:"event_venue"`
+	Category          string `json:"category"`
+	NIKMasked         string `json:"nik_masked"`
+	QRValue           string `json:"qr_value"`
+	Locale            Locale `json:"locale,omitempty"`
 }
 
 // BookingExpiredPayload is the payload for TypeBookingExpired.
+//
+// ContactEmail only, since ADR-006 §8.15: the seats never carried an address.
 type BookingExpiredPayload struct {
-	BookingID    string   `json:"booking_id"`
-	ContactEmail string   `json:"contact_email"`
-	HolderEmails []string `json:"holder_emails,omitempty"`
-	EventName    string   `json:"event_name"`
-	Locale       Locale   `json:"locale,omitempty"`
+	BookingID    string `json:"booking_id"`
+	ContactEmail string `json:"contact_email"`
+	EventName    string `json:"event_name"`
+	Locale       Locale `json:"locale,omitempty"`
 }
 
 // FailureReason distinguishes the three conditions of FR-28a. Condition (c)

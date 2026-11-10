@@ -114,7 +114,6 @@ func (u *PaymentUsecase) Initiate(ctx context.Context, bookingID, grantToken str
 		Status:       dto.StatusPending,
 		Instructions: out.Instructions,
 		TTL: dto.TTL{
-			TTLSeconds: int(out.Booking.RemainingPaymentWindow(now).Seconds()),
 			ServerTime: now.Format(time.RFC3339),
 		},
 	}

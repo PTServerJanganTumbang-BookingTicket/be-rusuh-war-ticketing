@@ -7,55 +7,41 @@ Built on a **domain-based hexagonal architecture (ports & adapters)**, following
 
 ## Architecture
 
+Hexagonal (ports and adapters). The build plan is `docs/05-booking/` (steps B1–B4).
+
 ```
-cmd/server/main.go                  HTTP server entry point (config load, logger, server, graceful shutdown)
-cmd/lambda/main.go                  AWS Lambda entry point (native handler, Option B)
+cmd/server/main.go     HTTP server entry point
+cmd/lambda/main.go     AWS Lambda entry point (connections reused across invocations)
 internal/
-├── config/                         env-based configuration
-├── delivery/                       composition root — wires adapters -> usecase -> controller
-├── shared/entity/                  cross-domain shared types (validation errors)
+├── config/            env-based configuration (Aurora writer, Redis, DEVICE_PEPPER, purchase rules)
+├── delivery/          composition root: opens the connections, mounts the routes, Cache-Control: no-store
 └── booking/
-    ├── port/
-    │   ├── inbound/                IBookingUsecase (driving port)
-    │   └── outbound/               IBookingRepository (driven port)
-    ├── domain/
-    │   ├── entity/                 Booking business entity
-    │   ├── dto/                    request/response DTOs
-    │   ├── valueobject/            immutable value types
-    │   └── mapper/                 entity <-> DTO transformation
-    ├── application/usecase/        business logic (implements inbound port)
-    └── infrastructure/
-        ├── http/                   handlers + router (implements the handler interface)
-        └── memory/                 in-memory repository (implements outbound port)
-pkg/
-├── apinizer/                       health check + JSON response helpers
-├── apperror/                       transport-agnostic application errors
-└── dotenv/                         .env loader
-_mock/                              generated gomock mocks (go.uber.org/mock)
+    ├── domain/                    entities, contract codes, metric names
+    ├── port/outbound/             Bookings, Catalog, Stock, Metrics
+    ├── application/usecase/       TicketPage (GET /events/{event_id}/tickets), BookingDetail (GET /bookings/{booking_id})
+    └── infrastructure/            postgres (writer), redis (stock MGET), http handlers, metrics (log lines)
 ```
 
-Dependencies flow inward: `infrastructure -> application -> domain`. The usecase
-constructor returns the inbound port interface, so the composition root depends only on
-abstractions.
+Shared code: `pkg/grantauth` (grant check on every booking route), `pkg/bookingstate` (status and its API
+meaning), `pkg/apinizer` (contract envelope), `pkg/rediskeys`.
 
 ## Prerequisites
 
 - Go 1.26.0+
-- `mockgen` from `go.uber.org/mock` (for mock generation)
 - `golangci-lint` (for linting)
 - Docker (for containerized builds and SAM local)
 - AWS SAM CLI (only for running/deploying the Lambda target)
 
 ## Running locally
 
-The service has two entrypoints that share the same wiring (`delivery.New(cfg)`):
+The service has two entrypoints that share the same wiring (`delivery.New(ctx, cfg)`, which needs Redis and Postgres: `make deps-up` at the repo root):
 `cmd/server/main.go` (plain HTTP server, for local/EC2) and `cmd/lambda/main.go` (native
 AWS Lambda handler, Option B). You can run and test both locally.
 
 ### 1. As a plain HTTP server
 
 ```bash
-cp example.env .env   # optional; all values have defaults
+cp example.env .env   # DATABASE_URL is required; the file points at the compose stack
 make run              # go run ./cmd/server  -> listens on :8080
 
 # or with Docker
@@ -63,74 +49,34 @@ make docker-build
 docker run --rm -p 8080:8080 rusuh-booking:latest
 ```
 
-### 2. Tests (no Docker, no AWS)
+### 2. Tests
 
 ```bash
-go mod tidy             # first time: pulls aws-lambda-go, aws-lambda-go-api-proxy, oklog/ulid
-make test               # go test -v ./...
-make unit-test-coverage # coverage profile + func summary
-
-# just the delivery (integration + lambda-proxy) tests
-go test -v ./internal/delivery/...
+make test-module MODULE=services/booking   # from the repo root: unit + integration (real Redis / Postgres)
 ```
 
-Two integration tests exercise the fully-wired stack without a live server:
-`internal/delivery/integration_test.go` drives it over a real `httptest` server, and
-`internal/delivery/lambda_proxy_test.go` feeds synthetic API Gateway v2 events through
-the Lambda proxy adapter against the same mux.
+Integration tests skip without `REDIS_ADDR` / `DATABASE_URL`; `make verify` sets both.
 
 ### 3. As a Lambda (closest to production) — needs Docker + AWS SAM CLI
 
 ```bash
 make build-lambda                                   # -> bin/bootstrap (arm64, provided.al2023)
 
-# one-shot invoke with the sample event
-sam local invoke BookingFunction -e events/create-booking.json
-
-# or run a local API Gateway on :3000
+# run a local API Gateway on :3000 (needs Redis + Postgres reachable from the container)
 sam local start-api
-curl -X POST localhost:3000/bookings \
-  -H 'Content-Type: application/json' \
-  -d @events/create-booking.json
+curl localhost:3000/sys/ping
 ```
-
-> The in-memory repository resets on each SAM container restart, so a `GET` after a
-> `POST` across restarts will not find the booking. This is expected for the demo;
-> swap in a persistent repository adapter (e.g. DynamoDB) behind `IBookingRepository`
-> for durable state.
 
 ## API Endpoints
 
-| Method | Path                        | Description                        |
-|--------|-----------------------------|------------------------------------|
-| GET    | `/sys/ping`                 | Health check                       |
-| POST   | `/bookings`                 | Create a booking (`PENDING_PAYMENT`) |
-| GET    | `/bookings/{booking_id}`    | Get a booking by id                |
+| Method | Path | State |
+|--------|------|-------|
+| GET | `/sys/ping` | health check, no grant |
+| GET | `/events/{event_id}/tickets` | ticket selection page (claims GRANTED → SELECTING), behind `pkg/grantauth` |
+| GET | `/bookings/{booking_id}` | Payment and Success page data; e-ticket links once paid, behind `pkg/grantauth` |
+| POST | `/bookings` | build step B4 (unmounted until then) |
 
-All responses use the `{meta:{code,message}, data}` envelope (api-contracts.md §7).
-
-### Create booking
-
-```bash
-curl -X POST localhost:8080/bookings \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "event_id": "evt_rusuh_2026",
-    "tickets": [
-      {"category_id": "cat_vip", "nik": "3171000000000001", "holder_email": "a@example.com"}
-    ],
-    "contact_email": "contact@example.com",
-    "terms_version": "v1"
-  }'
-```
-
-## Testing
-
-```bash
-make test               # go test -v ./...
-make unit-test-coverage # coverage profile + func summary
-make mock               # regenerate gomock mocks after changing port interfaces
-```
+Responses use the contract envelope `{meta:{code,message,server_time[,error_code]}, data}` (api-contracts §7).
 
 ## Linting
 
@@ -182,3 +128,11 @@ Set these under **Settings → Secrets and variables → Actions**.
 | `APP_ENV`    | Environment (local/preprod/prod)     | `local` |
 | `LOG_LEVEL`  | Log level (debug/info/warn/error)    | `info`  |
 | `LOG_FORMAT` | Log format (json/text)               | `json`  |
+| `DATABASE_URL` | Aurora writer DSN (required outside local) | — |
+| `DATABASE_MAX_CONNS` | Pool size per Lambda | `2` |
+| `REDIS_ADDR` | Redis address | `localhost:16379` |
+| `REDIS_PASSWORD` | Redis password | — |
+| `REDIS_CLUSTER` | Cluster mode (ElastiCache) | `true` |
+| `DEVICE_PEPPER` | HMAC key for guest device hashes; same value as queue (required outside local) | — |
+| `MAX_TICKETS_PER_TRANSACTION` | BR-01 per-order limit | `3` |
+| `ETICKET_SIGNING_KEY` | HMAC key of e-ticket links; same value as notification and user-service (required outside local) | random per start locally |

@@ -65,9 +65,9 @@ func (u *PaymentUsecase) GetStatus(ctx context.Context, bookingID, grantToken st
 				ServerTime:       now.Format(time.RFC3339),
 			}, nil
 		}
-		ttl := int(b.RemainingPaymentWindow(now).Seconds())
 		return dto.StatusResponse{
-			Status: dto.StatusPending, ServerTime: now.Format(time.RFC3339), TTLSeconds: &ttl,
+			Status: dto.StatusPending, ServerTime: now.Format(time.RFC3339),
+			ExpiresAt: iso(b.PaymentExpiresAt),
 		}, nil
 
 	case entity.StatusPendingCancellation:
@@ -75,18 +75,21 @@ func (u *PaymentUsecase) GetStatus(ctx context.Context, bookingID, grantToken st
 		// PENDING, not EXPIRED: a callback may still arrive and confirm, and
 		// showing an expiry screen here would be the "jangan PHP" failure
 		// NFR-02 exists to prevent. The frontend shows "verifying payment…".
-		ttl := 0
+		// The deadline is reported as it stands - already in the past - and the
+		// client's countdown lands on zero by itself. Nothing says "expired":
+		// a callback may still arrive and confirm.
 		return dto.StatusResponse{
-			Status: dto.StatusPending, ServerTime: now.Format(time.RFC3339), TTLSeconds: &ttl,
+			Status: dto.StatusPending, ServerTime: now.Format(time.RFC3339),
+			ExpiresAt: iso(b.PaymentExpiresAt),
 		}, nil
 
 	default:
 		// AWAITING_PAYMENT, and GRANTED/SELECTING/ABANDONED, which cannot be
 		// reached through a payment route but must still answer something
 		// coherent rather than an empty status.
-		ttl := int(b.RemainingPaymentWindow(now).Seconds())
 		return dto.StatusResponse{
-			Status: dto.StatusPending, ServerTime: now.Format(time.RFC3339), TTLSeconds: &ttl,
+			Status: dto.StatusPending, ServerTime: now.Format(time.RFC3339),
+			ExpiresAt: iso(b.PaymentExpiresAt),
 		}, nil
 	}
 }

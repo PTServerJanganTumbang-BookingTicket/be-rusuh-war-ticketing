@@ -26,7 +26,7 @@ on:
       force_deploy:
         description: >
           Force deploy specific services regardless of changed files.
-          Comma-separated: booking,nik-verify,user,notification,outbox-publisher,all
+          Comma-separated: booking,queue,nik-verify,user,notification,outbox-publisher,all
           Use "all" to redeploy everything. Useful for reruns.
         type: string
         default: ""
@@ -45,6 +45,7 @@ jobs:
     outputs:
       modules: ${{ steps.set.outputs.modules }}
       booking: ${{ steps.filter.outputs.booking }}
+      queue: ${{ steps.filter.outputs.queue }}
       user: ${{ steps.filter.outputs.user }}
       nik_verify: ${{ steps.filter.outputs.nik_verify }}
       notification: ${{ steps.filter.outputs.notification }}
@@ -67,6 +68,10 @@ jobs:
               - 'services/booking/**'
               - 'pkg/**'
               - 'go.work'
+            queue:
+              - 'services/queue/**'
+              - 'pkg/**'
+              - 'go.work'
             user:
               - 'services/user/**'
               - 'pkg/**'
@@ -87,6 +92,14 @@ jobs:
               - 'services/payment-api/**'
               - 'pkg/**'
               - 'go.work'
+            sse_server:
+              - 'services/sse-server/**'
+              - 'pkg/**'
+              - 'go.work'
+            admission_ctl:
+              - 'services/admission-ctl/**'
+              - 'pkg/**'
+              - 'go.work'
             infra:
               - 'infra/foundation/**'
             api_gateway:
@@ -101,15 +114,18 @@ jobs:
 
           # force_deploy=all overrides path detection entirely
           if [ "$FORCE" = "all" ]; then
-            mods=("pkg" "services/booking" "services/user" "services/nik-verify" "services/notification" "services/outbox-publisher" "services/payment-api")
+            mods=("pkg" "services/booking" "services/queue" "services/user" "services/nik-verify" "services/notification" "services/outbox-publisher" "services/payment-api" "services/sse-server" "services/admission-ctl")
           else
             if [ "${{ steps.filter.outputs.pkg }}" = "true" ]; then mods+=("pkg"); fi
             if [ "${{ steps.filter.outputs.booking }}" = "true" ] || echo "$FORCE" | grep -q "booking"; then mods+=("services/booking"); fi
+            if [ "${{ steps.filter.outputs.queue }}" = "true" ] || echo "$FORCE" | grep -q "queue"; then mods+=("services/queue"); fi
             if [ "${{ steps.filter.outputs.user }}" = "true" ] || echo "$FORCE" | grep -q "user"; then mods+=("services/user"); fi
             if [ "${{ steps.filter.outputs.nik_verify }}" = "true" ] || echo "$FORCE" | grep -q "nik-verify"; then mods+=("services/nik-verify"); fi
             if [ "${{ steps.filter.outputs.notification }}" = "true" ] || echo "$FORCE" | grep -q "notification"; then mods+=("services/notification"); fi
             if [ "${{ steps.filter.outputs.outbox_publisher }}" = "true" ] || echo "$FORCE" | grep -q "outbox-publisher"; then mods+=("services/outbox-publisher"); fi
             if [ "${{ steps.filter.outputs.payment_api }}" = "true" ] || echo "$FORCE" | grep -q "payment-api"; then mods+=("services/payment-api"); fi
+            if [ "${{ steps.filter.outputs.sse_server }}" = "true" ]; then mods+=("services/sse-server"); fi
+            if [ "${{ steps.filter.outputs.admission_ctl }}" = "true" ]; then mods+=("services/admission-ctl"); fi
           fi
 
           # Matrix must have at least one entry — fall back to pkg (fastest)
@@ -131,6 +147,7 @@ jobs:
     outputs:
       environment: ${{ steps.env.outputs.environment }}
       booking: ${{ steps.env.outputs.booking }}
+      queue: ${{ steps.env.outputs.queue }}
       user: ${{ steps.env.outputs.user }}
       nik_verify: ${{ steps.env.outputs.nik_verify }}
       notification: ${{ steps.env.outputs.notification }}
@@ -143,6 +160,7 @@ jobs:
       - id: env
         env:
           B: ${{ needs.detect-changes.outputs.booking }}
+          Q: ${{ needs.detect-changes.outputs.queue }}
           U: ${{ needs.detect-changes.outputs.user }}
           N: ${{ needs.detect-changes.outputs.nik_verify }}
           T: ${{ needs.detect-changes.outputs.notification }}
@@ -164,6 +182,7 @@ jobs:
           }
 
           b=$(is_changed "$B" "booking")
+          q=$(is_changed "$Q" "queue")
           u=$(is_changed "$U" "user")
           n=$(is_changed "$N" "nik-verify")
           t=$(is_changed "$T" "notification")
@@ -171,6 +190,7 @@ jobs:
           p=$(is_changed "$P" "payment-api")
 
           echo "booking=$b"           >> "$GITHUB_OUTPUT"
+          echo "queue=$q"             >> "$GITHUB_OUTPUT"
           echo "user=$u"              >> "$GITHUB_OUTPUT"
           echo "nik_verify=$n"        >> "$GITHUB_OUTPUT"
           echo "notification=$t"      >> "$GITHUB_OUTPUT"
@@ -178,13 +198,14 @@ jobs:
           echo "payment_api=$p"       >> "$GITHUB_OUTPUT"
 
           any=false
-          for f in "$b" "$u" "$n" "$t" "$o" "$p"; do
+          for f in "$b" "$q" "$u" "$n" "$t" "$o" "$p"; do
             [ "$f" = "true" ] && any=true
           done
           echo "any_service_changed=$any" >> "$GITHUB_OUTPUT"
 
           echo "environment        : $environment"
           echo "booking            : $b"
+          echo "queue              : $q"
           echo "user               : $u"
           echo "nik_verify         : $n"
           echo "notification       : $t"
@@ -202,6 +223,9 @@ jobs:
         module: ${{ fromJSON(needs.detect-changes.outputs.modules) }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: ${{ vars.SOURCE_REPO || github.repository }}
+          ref: ${{ vars.SOURCE_REPO_BRANCH || (github.event_name == 'pull_request' && github.event.pull_request.head.sha) || 'main' }}
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version: '1.26'
@@ -225,6 +249,9 @@ jobs:
         module: ${{ fromJSON(needs.detect-changes.outputs.modules) }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: ${{ vars.SOURCE_REPO || github.repository }}
+          ref: ${{ vars.SOURCE_REPO_BRANCH || (github.event_name == 'pull_request' && github.event.pull_request.head.sha) || 'main' }}
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version: '1.26'
@@ -236,7 +263,7 @@ jobs:
         run: go build ./...
       - name: Run tests with coverage
         working-directory: ${{ matrix.module }}
-        run: go test -coverprofile=coverage.out ./...
+        run: go test -coverpkg=./... -coverprofile=coverage.out ./...
       - name: Name coverage report
         id: cov
         run: |
@@ -250,10 +277,15 @@ jobs:
           path: ${{ steps.cov.outputs.name }}.out
       - name: Check code coverage (80% gate)
         working-directory: ${{ matrix.module }}
+        # Gate on testable code only. Excluded from the denominator:
+        #   cmd/    — func main() + process wiring, not unit-testable
+        #   _mock/  — generated gomock code, never counts toward coverage
+        #   pgtest/ — test-only Postgres helper (same exclusion as `make verify`)
+        # The full profile is still uploaded above for Sonar; only the gate drops these.
         run: |
-          grep -vE '/(cmd|_mock)/' coverage.out > coverage.gate.out || cp coverage.out coverage.gate.out
+          grep -vE '/(cmd|_mock|pgtest)/' coverage.out > coverage.gate.out || cp coverage.out coverage.gate.out
           coverage=$(go tool cover -func=coverage.gate.out | awk '/^total:/ {sub(/%/,"",$3); print $3}')
-          echo "Gate coverage ($(basename ${{ matrix.module }}), excl. cmd/ _mock/): $coverage%"
+          echo "Gate coverage ($(basename ${{ matrix.module }}), excl. cmd/ _mock/ pgtest/): $coverage%"
           awk -v c="$coverage" 'BEGIN { if (c+0 < 80) { print "Code coverage below threshold!"; exit 1 } }'
 
   govulncheck:
@@ -266,6 +298,9 @@ jobs:
         module: ${{ fromJSON(needs.detect-changes.outputs.modules) }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: ${{ vars.SOURCE_REPO || github.repository }}
+          ref: ${{ vars.SOURCE_REPO_BRANCH || (github.event_name == 'pull_request' && github.event.pull_request.head.sha) || 'main' }}
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version: '1.26'
@@ -302,8 +337,13 @@ jobs:
       github.event_name != 'workflow_dispatch' &&
       vars.SONAR_HOST_URL != ''
     steps:
+      # Checkout the SOURCE repo (where pkg/ and services/ actually live),
+      # not the deploy repo (which only has infra templates).
+      # SonarQube must scan the same files the coverage reports reference.
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          repository: ${{ vars.SOURCE_REPO || github.repository }}
+          ref: ${{ vars.SOURCE_REPO_BRANCH || (github.event_name == 'pull_request' && github.event.pull_request.head.sha) || 'main' }}
           fetch-depth: 0
       - name: Download coverage artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -422,6 +462,7 @@ jobs:
       needs.deploy-foundation.result != 'failure' &&
       needs.resolve-env.outputs.any_service_changed == 'true'
     runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-env.outputs.environment }}
     permissions:
       id-token: write
       contents: read
@@ -436,6 +477,11 @@ jobs:
           NEEDS_NOTIFICATION: ${{ needs.resolve-env.outputs.notification }}
           NEEDS_PAYMENT_API: ${{ needs.resolve-env.outputs.payment_api }}
           ENV_NAME: ${{ needs.resolve-env.outputs.environment }}
+          NEEDS_QUEUE: ${{ needs.resolve-env.outputs.queue }}
+          NEEDS_BOOKING: ${{ needs.resolve-env.outputs.booking }}
+          DEVICE_PEPPER_SECRET_ARN: ${{ vars.DEVICE_PEPPER_SECRET_ARN }}
+          TURNSTILE_SECRET_ARN: ${{ vars.TURNSTILE_SECRET_ARN }}
+          ETICKET_SIGNING_KEY_SECRET_ARN: ${{ vars.ETICKET_SIGNING_KEY_SECRET_ARN }}
         run: |
           set -euo pipefail
           fail=0
@@ -489,6 +535,29 @@ jobs:
             echo "::warning::holds a real server key and not REPLACE_ME, and that the Midtrans"
             echo "::warning::dashboard's Payment Notification URL points at this stack's WebhookUrl"
             echo "::warning::output. Neither is checked here."
+          fi
+
+          # Secrets Manager ARNs for the queue, booking and payment Lambdas. Missing or malformed values would only
+          # show up as a failed CloudFormation deploy (or a Lambda that cannot start), so fail early with the name.
+          check_arn() {
+            local name="$1" value="$2"
+            case "$value" in
+              arn:aws:secretsmanager:*) ;;
+              "") echo "::error::$name is empty (Secrets Manager secret ARN required)."; fail=1 ;;
+              *)  echo "::error::$name is not a Secrets Manager ARN: '$value'."; fail=1 ;;
+            esac
+          }
+          # payment-api verifies the guest device binding with the SAME pepper queue's
+          # join and booking use (ADR-006 section 8.9). A different value here fails
+          # every guest checkout and nothing else, so it is checked with them.
+          if [ "$NEEDS_QUEUE" = "true" ] || [ "$NEEDS_BOOKING" = "true" ] || [ "$NEEDS_PAYMENT_API" = "true" ]; then
+            check_arn DEVICE_PEPPER_SECRET_ARN "$DEVICE_PEPPER_SECRET_ARN"
+          fi
+          if [ "$NEEDS_QUEUE" = "true" ]; then
+            check_arn TURNSTILE_SECRET_ARN "$TURNSTILE_SECRET_ARN"
+          fi
+          if [ "$NEEDS_BOOKING" = "true" ]; then
+            check_arn ETICKET_SIGNING_KEY_SECRET_ARN "$ETICKET_SIGNING_KEY_SECRET_ARN"
           fi
 
           [ "$fail" -eq 0 ] || exit 1
@@ -568,6 +637,36 @@ jobs:
           parameter-overrides: >-
             Environment=${{ needs.resolve-env.outputs.environment }}
             EnableDirectApiAccess=${{ vars.ENABLE_DIRECT_API_ACCESS || 'false' }}
+            DeployRevision=${{ github.sha }}
+            DevicePepperSecretArn=${{ vars.DEVICE_PEPPER_SECRET_ARN }}
+            ETicketSigningKeySecretArn=${{ vars.ETICKET_SIGNING_KEY_SECRET_ARN }}
+
+  deploy-queue:
+    name: Deploy queue
+    needs: [resolve-env, preflight]
+    if: always() && needs.preflight.result == 'success' && needs.resolve-env.outputs.queue == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-env.outputs.environment }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/cfn-deploy
+        with:
+          service: queue
+          stack-name: rusuh-${{ needs.resolve-env.outputs.environment }}-queue
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          environment: ${{ needs.resolve-env.outputs.environment }}
+          parameter-overrides: >-
+            Environment=${{ needs.resolve-env.outputs.environment }}
+            EnableDirectApiAccess=${{ vars.ENABLE_DIRECT_API_ACCESS || 'false' }}
+            DeployRevision=${{ github.sha }}
+            DevicePepperSecretArn=${{ vars.DEVICE_PEPPER_SECRET_ARN }}
+            TurnstileSecretArn=${{ vars.TURNSTILE_SECRET_ARN }}
+            CookieDomain=${{ vars.COOKIE_DOMAIN }}
+            SseBaseUrl=${{ vars.SSE_BASE_URL }}
 
   deploy-nik-verify:
     name: Deploy nik-verify
@@ -712,15 +811,16 @@ jobs:
   # ══════════════════════════════════════════════════════════════════════════
   #  UNIFIED API GATEWAY — Single entry point for frontend
   #
-  #  Deploys after all HTTP services (booking, nik-verify, user) are up.
+  #  Deploys after all HTTP services (booking, queue, nik-verify, user) are up.
   #  Creates routes that proxy to the individual Lambda functions.
   # ══════════════════════════════════════════════════════════════════════════
   deploy-api-gateway:
     name: Deploy unified API gateway
-    needs: [resolve-env, deploy-booking, deploy-nik-verify, deploy-user]
+    needs: [resolve-env, deploy-booking, deploy-queue, deploy-nik-verify, deploy-user]
     if: >-
       always() &&
       needs.deploy-booking.result != 'failure' &&
+      needs.deploy-queue.result != 'failure' &&
       needs.deploy-nik-verify.result != 'failure' &&
       needs.deploy-user.result != 'failure' &&
       (needs.resolve-env.outputs.any_service_changed == 'true' ||
@@ -756,10 +856,11 @@ jobs:
   # ══════════════════════════════════════════════════════════════════════════
   smoke:
     name: Smoke test
-    needs: [resolve-env, deploy-booking, deploy-nik-verify, deploy-user, deploy-api-gateway, deploy-payment-api]
+    needs: [resolve-env, deploy-booking, deploy-queue, deploy-nik-verify, deploy-user, deploy-api-gateway, deploy-payment-api]
     if: >-
       always() &&
       needs.deploy-booking.result != 'failure' &&
+      needs.deploy-queue.result != 'failure' &&
       needs.deploy-nik-verify.result != 'failure' &&
       needs.deploy-user.result != 'failure' &&
       needs.deploy-api-gateway.result != 'failure' &&
@@ -804,7 +905,7 @@ jobs:
             echo ""
             echo "Testing direct service endpoints (ENABLE_DIRECT_API_ACCESS=true)..."
             fail=0
-            for svc in booking nik-verify user payment-api; do
+            for svc in booking queue nik-verify user payment-api; do
               url=$(aws cloudformation describe-stacks --stack-name "rusuh-${ENV}-${svc}" \
                 --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue" \
                 --output text 2>/dev/null || true)

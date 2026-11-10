@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/grantauth"
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/rediskeys"
 	portout "github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/payment-api/internal/payment/port/outbound"
 )
 
@@ -20,73 +20,15 @@ func newTestClient(t *testing.T) (*goredis.Client, *miniredis.Miniredis) {
 	return goredis.NewClient(&goredis.Options{Addr: mr.Addr()}), mr
 }
 
-// ── GrantStore ────────────────────────────────────────────────────────────────
-
-// The hash fields are fixed by ADR-006 §8.13: event_id, booking_id,
-// queue_token, plus exactly one of account_id or device_hash.
-func TestGrantStore_ReturnsTheHashFields(t *testing.T) {
-	client, _ := newTestClient(t)
-	ctx := context.Background()
-	require.NoError(t, client.HSet(ctx, "grant:tok-1",
-		"event_id", "EV-1",
-		"booking_id", "RB-00912",
-		"queue_token", "qt-1",
-		"account_id", "ACC-1",
-	).Err())
-
-	fields, err := NewGrantStore(client).Grant(ctx, "tok-1")
+// ev builds the keys for the event these tests settle against. Built the same
+// way the adapter builds them, so a test cannot assert a key the production
+// code would never write - including the {hash tag} that keeps an event's keys
+// on one cluster slot.
+func ev(t *testing.T) rediskeys.Event {
+	t.Helper()
+	e, err := rediskeys.NewEvent("EV-1")
 	require.NoError(t, err)
-
-	assert.Equal(t, "EV-1", fields["event_id"])
-	assert.Equal(t, "RB-00912", fields["booking_id"])
-	assert.Equal(t, "qt-1", fields["queue_token"])
-	assert.Equal(t, "ACC-1", fields["account_id"])
-}
-
-// HGETALL on a missing key returns an EMPTY MAP rather than an error, which is
-// why the length is checked explicitly: without that an expired grant would
-// look like a grant with no fields and sail past the credential check.
-func TestGrantStore_MissingGrant_IsNotFound(t *testing.T) {
-	client, _ := newTestClient(t)
-
-	_, err := NewGrantStore(client).Grant(context.Background(), "nope")
-	assert.ErrorIs(t, err, grantauth.ErrNotFound)
-}
-
-// The key's own TTL is the expiry mechanism, so there is no timestamp to
-// compare: once Redis drops the hash the grant is gone.
-func TestGrantStore_ExpiredGrant_IsNotFound(t *testing.T) {
-	client, mr := newTestClient(t)
-	ctx := context.Background()
-	require.NoError(t, client.HSet(ctx, "grant:tok-1", "booking_id", "RB-00912").Err())
-	require.NoError(t, client.Expire(ctx, "grant:tok-1", 30*time.Second).Err())
-
-	mr.FastForward(31 * time.Second)
-
-	_, err := NewGrantStore(client).Grant(ctx, "tok-1")
-	assert.ErrorIs(t, err, grantauth.ErrNotFound)
-}
-
-// Redis being unreachable is an infrastructure failure, and it must not be
-// reported as a missing grant: the guard turns ErrNotFound into a 401, and
-// telling every paying customer their session expired over a Redis blip is
-// the worst available answer.
-func TestGrantStore_Unreachable_IsNotMistakenForMissing(t *testing.T) {
-	client := goredis.NewClient(&goredis.Options{Addr: "127.0.0.1:1"})
-
-	_, err := NewGrantStore(client).Grant(context.Background(), "tok-1")
-	require.Error(t, err)
-	assert.NotErrorIs(t, err, grantauth.ErrNotFound)
-}
-
-func TestGrantStore_KeyIsPrefixed(t *testing.T) {
-	client, _ := newTestClient(t)
-	ctx := context.Background()
-	// Written WITHOUT the prefix, so a store that forgot it would find this.
-	require.NoError(t, client.HSet(ctx, "tok-1", "booking_id", "RB-00912").Err())
-
-	_, err := NewGrantStore(client).Grant(ctx, "tok-1")
-	assert.ErrorIs(t, err, grantauth.ErrNotFound)
+	return e
 }
 
 // ── CircuitBreaker ────────────────────────────────────────────────────────────
@@ -225,25 +167,25 @@ func settleInput() portout.SettleInput {
 func TestSettleEngagement_ReleasesAndTombstones(t *testing.T) {
 	client, _ := newTestClient(t)
 	ctx := context.Background()
-	require.NoError(t, client.Set(ctx, KeyAcctPrefix+"EV-1:ACC-1", "qt-1", 0).Err())
-	require.NoError(t, client.Set(ctx, KeyTokenPrefix+"qt-1", "engaged", 0).Err())
+	require.NoError(t, client.Set(ctx, ev(t).Acct("ACC-1"), "qt-1", 0).Err())
+	require.NoError(t, client.Set(ctx, rediskeys.Token("qt-1"), "engaged", 0).Err())
 
 	require.NoError(t, NewCredentialStore(client).SettleEngagement(ctx, settleInput()))
 
 	// BR-07 allows one ACTIVE engagement, and a confirmed purchase is not
 	// active: a customer who wants a second pair of tickets must not be locked
 	// out.
-	n, err := client.Exists(ctx, KeyAcctPrefix+"EV-1:ACC-1").Result()
+	n, err := client.Exists(ctx, ev(t).Acct("ACC-1")).Result()
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), n)
 
-	n, err = client.Exists(ctx, KeyTokenPrefix+"qt-1").Result()
+	n, err = client.Exists(ctx, rediskeys.Token("qt-1")).Result()
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), n)
 
 	// The tombstone is what stops a guest who refreshes between settlement and
 	// the e-ticket email from being shown an expiry screen (§3.3).
-	got, err := client.Get(ctx, KeySettledPrefix+"qt-1").Result()
+	got, err := client.Get(ctx, rediskeys.Settled("qt-1")).Result()
 	require.NoError(t, err)
 	assert.Equal(t, "RB-00912", got)
 }
@@ -256,7 +198,7 @@ func TestSettleEngagement_TombstoneHoldsOnlyTheBookingID(t *testing.T) {
 
 	require.NoError(t, NewCredentialStore(client).SettleEngagement(ctx, settleInput()))
 
-	got, err := client.Get(ctx, KeySettledPrefix+"qt-1").Result()
+	got, err := client.Get(ctx, rediskeys.Settled("qt-1")).Result()
 	require.NoError(t, err)
 	assert.Equal(t, "RB-00912", got)
 	assert.NotContains(t, got, "ACC-1")
@@ -274,7 +216,7 @@ func TestSettleEngagement_TombstoneCarriesItsTTL(t *testing.T) {
 	require.NoError(t, NewCredentialStore(client).SettleEngagement(ctx, in))
 	mr.FastForward(31 * time.Second)
 
-	n, err := client.Exists(ctx, KeySettledPrefix+"qt-1").Result()
+	n, err := client.Exists(ctx, rediskeys.Settled("qt-1")).Result()
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), n)
 }
@@ -284,13 +226,13 @@ func TestSettleEngagement_TombstoneCarriesItsTTL(t *testing.T) {
 func TestSettleEngagement_GuestBooking_TouchesNoAccountKey(t *testing.T) {
 	client, _ := newTestClient(t)
 	ctx := context.Background()
-	require.NoError(t, client.Set(ctx, KeyAcctPrefix+"EV-1:", "someone-else", 0).Err())
+	require.NoError(t, client.Set(ctx, ev(t).Acct(""), "someone-else", 0).Err())
 
 	in := settleInput()
 	in.AccountID = ""
 	require.NoError(t, NewCredentialStore(client).SettleEngagement(ctx, in))
 
-	n, err := client.Exists(ctx, KeyAcctPrefix+"EV-1:").Result()
+	n, err := client.Exists(ctx, ev(t).Acct("")).Result()
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), n, "a blank account id must not delete another key")
 }
@@ -305,7 +247,7 @@ func TestSettleEngagement_NoQueueToken_WritesNoTombstone(t *testing.T) {
 	in.QueueToken = ""
 	require.NoError(t, NewCredentialStore(client).SettleEngagement(ctx, in))
 
-	n, err := client.Exists(ctx, KeySettledPrefix).Result()
+	n, err := client.Exists(ctx, rediskeys.Settled("")).Result()
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), n)
 }
@@ -321,7 +263,7 @@ func TestSettleEngagement_IsIdempotent(t *testing.T) {
 	require.NoError(t, store.SettleEngagement(ctx, settleInput()))
 	require.NoError(t, store.SettleEngagement(ctx, settleInput()))
 
-	got, err := client.Get(ctx, KeySettledPrefix+"qt-1").Result()
+	got, err := client.Get(ctx, rediskeys.Settled("qt-1")).Result()
 	require.NoError(t, err)
 	assert.Equal(t, "RB-00912", got)
 }
@@ -333,50 +275,23 @@ func TestSettleEngagement_Unreachable_IsReported(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// Harmless if missed - the sweep re-reads the booking and finds it CONFIRMED -
-// but leaving it costs a wasted row read every tick for the rest of the sale.
-func TestUnscheduleExpiry_RemovesTheBookingFromTheSweep(t *testing.T) {
-	client, _ := newTestClient(t)
-	ctx := context.Background()
-	require.NoError(t, client.ZAdd(ctx, KeyExpiriesPrefix+"EV-1",
-		goredis.Z{Score: 1, Member: "RB-00912"},
-		goredis.Z{Score: 2, Member: "RB-00913"},
-	).Err())
-
-	require.NoError(t, NewCredentialStore(client).UnscheduleExpiry(ctx, "EV-1", "RB-00912"))
-
-	n, err := client.ZCard(ctx, KeyExpiriesPrefix+"EV-1").Result()
-	require.NoError(t, err)
-	assert.Equal(t, int64(1), n, "only this booking is removed")
-	_, err = client.ZScore(ctx, KeyExpiriesPrefix+"EV-1", "RB-00913").Result()
-	assert.NoError(t, err)
-}
-
-func TestUnscheduleExpiry_AlreadyGone_IsNotAnError(t *testing.T) {
-	client, _ := newTestClient(t)
-
-	assert.NoError(t, NewCredentialStore(client).UnscheduleExpiry(context.Background(), "EV-1", "RB-00912"))
-}
-
-func TestUnscheduleExpiry_Unreachable_IsReported(t *testing.T) {
-	client := goredis.NewClient(&goredis.Options{Addr: "127.0.0.1:1"})
-
-	err := NewCredentialStore(client).UnscheduleExpiry(context.Background(), "EV-1", "RB-00912")
-	assert.Error(t, err)
-}
-
 // ── keys ──────────────────────────────────────────────────────────────────────
 
 // The breaker state is read by other services, so renaming it here would
 // silently decouple them. The payment breaker is also deliberately distinct
 // from the Dukcapil one: one upstream being down says nothing about the other.
-func TestKeyNamesAreStable(t *testing.T) {
-	assert.Equal(t, "grant:", KeyGrantPrefix)
+func TestBreakerKeyNamesAreStable(t *testing.T) {
 	assert.Equal(t, "payment:breaker:state", KeyBreakerState)
 	assert.Equal(t, "payment:breaker:failures", KeyBreakerFails)
-	assert.Equal(t, "token:", KeyTokenPrefix)
-	assert.Equal(t, "acct:", KeyAcctPrefix)
-	assert.Equal(t, "settled:", KeySettledPrefix)
-	assert.Equal(t, "expiries:", KeyExpiriesPrefix)
 	assert.NotEqual(t, KeyBreakerState, "dukcapil:breaker:state")
+}
+
+// Every key more than one service touches is pkg/rediskeys' to name. A local
+// copy of a prefix is exactly how two readers drift apart, and this service
+// used to carry four of them.
+func TestSharedKeysComeFromRediskeys(t *testing.T) {
+	assert.Equal(t, "grant:tok-1", rediskeys.Grant("tok-1"))
+	assert.Equal(t, "token:qt-1", rediskeys.Token("qt-1"))
+	assert.Equal(t, "settled:qt-1", rediskeys.Settled("qt-1"))
+	assert.Equal(t, "acct:{EV-1}:ACC-1", ev(t).Acct("ACC-1"))
 }

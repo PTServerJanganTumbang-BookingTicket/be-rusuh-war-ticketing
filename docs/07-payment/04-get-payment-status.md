@@ -40,9 +40,9 @@ sequenceDiagram
     else HELD and payment_attempts > 0
         H-->>C: 200 FAILED {reason, can_retry, attempt,<br/>payment_expires_at, server_time}
     else PENDING_CANCELLATION
-        H-->>C: 200 PENDING {ttl_seconds: 0}<br/>"verifying payment…", NOT an expiry screen
+        H-->>C: 200 PENDING {expires_at past}<br/>"verifying payment…", NOT an expiry screen
     else anything else
-        H-->>C: 200 PENDING {ttl_seconds, server_time}
+        H-->>C: 200 PENDING {expires_at, server_time}
     end
 ```
 
@@ -50,9 +50,14 @@ sequenceDiagram
 
 1. `GetOwned(booking_id, grant.Token)` — one read, no transaction.
 2. Map the booking status onto the API status (table below).
-3. `ttl_seconds` is derived from the stored `payment_expires_at`, never
-   recomputed as "now + TTL", and never negative: the client renders it
-   directly, and `-12s` would reach a customer's screen.
+3. `expires_at` is the stored `payment_expires_at`, reported as it is: never
+   recomputed as "now + TTL", and never clamped. Contract v2.15 (#107) replaced
+   `ttl_seconds` with it, because a countdown computed at the server is already
+   stale by the time the reply is rendered — and stale in the customer's
+   favour, right up to the moment the seats go. The client subtracts
+   `expires_at - server_time` and clamps its own countdown at zero, so a
+   deadline already past still reads as "0s" on screen without the server
+   having to pretend the deadline moved.
 4. `meta.message` tracks the status (`Payment successful` / `expired` /
    `failed` / `pending`), and `meta.server_time` is on every envelope so a
    client can correct its own clock drift from any reply it is already making
@@ -66,7 +71,7 @@ sequenceDiagram
 | `CONFIRMED` | `PAID` | Go to the ticket page |
 | `HELD` with `payment_attempts > 0` | **`FAILED`** | Back to the method list |
 | `HELD` with `payment_attempts = 0` | `PENDING` | Never charged; stay on the method list |
-| `PENDING_CANCELLATION` | `PENDING`, `ttl_seconds: 0` | Show "verifying payment…" — **not** an expiry screen |
+| `PENDING_CANCELLATION` | `PENDING`, `expires_at` in the past | Show "verifying payment…" — **not** an expiry screen |
 | `EXPIRED` / `LAPSED` | `EXPIRED` | Expiry screen |
 | `GRANTED` / `SELECTING` / `ABANDONED` | `PENDING` | Unreachable through a payment route, but still answers coherently |
 
@@ -121,11 +126,11 @@ Implemented in `internal/payment/application/usecase/get_status_test.go` and
       payment route cannot reach
 - [x] unit: `HELD` + attempts → FAILED with `can_retry`, `attempt` and the
       unchanged deadline
-- [x] unit: `HELD` + no attempts → PENDING with the remaining TTL
+- [x] unit: `HELD` + no attempts → PENDING with the deadline and `server_time`
 - [x] unit: at `MAX_PAYMENT_ATTEMPTS` → `can_retry: false`
-- [x] unit: `PENDING_CANCELLATION` → PENDING with `ttl_seconds: 0` and no
+- [x] unit: `PENDING_CANCELLATION` → PENDING with its deadline and no
       `expired_at`
-- [x] unit: a deadline in the past → `ttl_seconds: 0`, never negative
+- [x] unit: a deadline in the past → reported unchanged, not clamped to now
 - [x] unit: `server_time` present on every polled answer
 - [x] unit: unknown booking → 404
 - [x] unit (handler): `meta.message` tracks the status

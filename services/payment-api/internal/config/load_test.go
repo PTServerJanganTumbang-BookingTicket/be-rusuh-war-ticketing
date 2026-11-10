@@ -8,13 +8,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// setRequired sets only the three variables that have no default, so each test
-// can remove exactly one and watch the loader refuse to start.
+// setRequired sets only the variables that have no default, so each test can
+// remove exactly one and watch the loader refuse to start.
 func setRequired(t *testing.T) {
 	t.Helper()
 	t.Setenv("DATABASE_URL", "postgres://u:p@localhost:5432/db")
 	t.Setenv("MIDTRANS_SERVER_KEY", "SB-Mid-server-test")
 	t.Setenv("DEVICE_PEPPER", "pepper")
+	t.Setenv("JWT_SECRET", "jwt-secret")
 }
 
 func TestLoad_Defaults(t *testing.T) {
@@ -64,6 +65,19 @@ func TestLoad_DevicePepperRequired(t *testing.T) {
 	_, err := Load()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "DEVICE_PEPPER")
+}
+
+// ADR-006 §8.17: the guard verifies the account session behind an account
+// grant, and it cannot do that without the signing key. A default would be a
+// forged-session generator, and an empty one makes every logged-in payment
+// 503 at runtime instead of failing at boot.
+func TestLoad_JWTSecretRequired(t *testing.T) {
+	setRequired(t)
+	t.Setenv("JWT_SECRET", "")
+
+	_, err := Load()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "JWT_SECRET")
 }
 
 func TestLoad_DatabaseURLRequired(t *testing.T) {

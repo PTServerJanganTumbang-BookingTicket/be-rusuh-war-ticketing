@@ -106,9 +106,6 @@ func (u *PaymentUsecase) HandleNotification(ctx context.Context, n dto.Notificat
 	//    guard: the lease existed to protect the one non-idempotent operation
 	//    (the DECR) and that operation no longer exists.
 	if out.Applied && out.Action == valueobject.ActionConfirm {
-		if err := u.credentials.UnscheduleExpiry(ctx, out.EventID, out.Booking.ID); err != nil {
-			slog.WarnContext(ctx, "could not unschedule expiry", slog.Any("err", err))
-		}
 		if err := u.credentials.SettleEngagement(ctx, portout.SettleInput{
 			EventID:      out.EventID,
 			BookingID:    out.Booking.ID,

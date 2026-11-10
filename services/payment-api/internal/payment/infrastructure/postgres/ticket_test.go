@@ -24,8 +24,8 @@ func testBooking() entity.Booking {
 }
 
 var twoSeats = [][]any{
-	{"bi-1", "EV-1", "cat-1", "Festival", int64(1500000), "hmac-1", "3171****33", "a@example"},
-	{"bi-2", "EV-1", "cat-1", "Festival", int64(1500000), "hmac-2", "3171****44", "b@example"},
+	{"bi-1", "EV-1", "cat-1", "Festival", int64(1500000), "hmac-1", "3171****33"},
+	{"bi-2", "EV-1", "cat-1", "Festival", int64(1500000), "hmac-2", "3171****44"},
 }
 
 // ticketTx answers the reads issueTickets and the outbox helpers make.
@@ -183,9 +183,12 @@ func TestIssueTickets_GuestPurchase_HasNoPurchaser(t *testing.T) {
 
 // ── outbox ────────────────────────────────────────────────────────────────────
 
-// One email per NIK HOLDER, not one per purchase: FR-26 requires the ticket to
-// reach each holder, which is why holder_email is per seat.
-func TestEnqueueTicketEmails_OnePerHolder(t *testing.T) {
+// One email per SEAT, all of them to the buyer. FR-26 wants every e-ticket
+// delivered; ADR-006 §8.15 settled where to: booking_items never collected an
+// address, so contact_email is the only one that exists and the buyer forwards
+// each link on. Two seats still mean two emails - one link per seat, never one
+// email carrying both.
+func TestEnqueueTicketEmails_OnePerSeatAllToTheBuyer(t *testing.T) {
 	tx := ticketTx(twoSeats, inserted())
 	repo := newRepo(&mockDB{})
 
@@ -202,7 +205,8 @@ func TestEnqueueTicketEmails_OnePerHolder(t *testing.T) {
 	require.NoError(t, json.Unmarshal(raw, &payload))
 
 	assert.Equal(t, string(events.TypeTicketIssue), rows[0].args[2])
-	assert.Equal(t, "a@example", payload.HolderEmail)
+	assert.Equal(t, "buyer@example", payload.ContactEmail)
+	assert.Empty(t, payload.LegacyHolderEmail, "nothing new writes the dropped field")
 	assert.Equal(t, "Konser Rusuh", payload.EventName)
 	assert.Equal(t, "2026-04-01", payload.EventDate)
 	assert.Equal(t, "GBK", payload.EventVenue)
@@ -211,6 +215,11 @@ func TestEnqueueTicketEmails_OnePerHolder(t *testing.T) {
 	// forwarded and photographed, so it must carry no identity.
 	assert.Equal(t, "nonce-x", payload.QRValue)
 	assert.NotContains(t, string(raw), "hmac-1")
+
+	var second events.TicketIssuePayload
+	require.NoError(t, json.Unmarshal(rows[1].args[3].([]byte), &second))
+	assert.Equal(t, "buyer@example", second.ContactEmail)
+	assert.NotEqual(t, payload.NIKMasked, second.NIKMasked, "two distinct seats")
 }
 
 func TestEnqueueTicketEmails_NoTickets_QueuesNothing(t *testing.T) {
@@ -250,11 +259,12 @@ func TestEnqueueFailureNotice_CarriesThePaymentReference(t *testing.T) {
 	assert.Equal(t, events.FailureDisputed, payload.Reason)
 }
 
-// FR-28 goes to the buyer AND every holder, because a holder whose seat
-// lapsed has no other way of finding out.
-func TestEnqueueExpiredNotice_ReachesBuyerAndHolders(t *testing.T) {
-	holders := [][]any{{"a@example"}, {"b@example"}, {"buyer@example"}, {""}}
-	tx := ticketTx(holders, inserted())
+// FR-28 goes to the buyer, and to nobody else: §8.15 left contact_email as
+// the only address a booking has. The notice must also not go looking for
+// holder addresses, because the column is gone and the query would fail on a
+// path that runs when a customer has just lost their seats.
+func TestEnqueueExpiredNotice_ReachesTheBuyerAlone(t *testing.T) {
+	tx := ticketTx(twoSeats, inserted())
 
 	require.NoError(t, newRepo(&mockDB{}).enqueueExpiredNotice(context.Background(), tx, testBooking()))
 
@@ -262,12 +272,17 @@ func TestEnqueueExpiredNotice_ReachesBuyerAndHolders(t *testing.T) {
 	require.Len(t, rows, 1)
 	assert.Equal(t, string(events.TypeBookingExpired), rows[0].args[2])
 
+	raw, ok := rows[0].args[3].([]byte)
+	require.True(t, ok)
 	var payload events.BookingExpiredPayload
-	require.NoError(t, json.Unmarshal(rows[0].args[3].([]byte), &payload))
+	require.NoError(t, json.Unmarshal(raw, &payload))
 	assert.Equal(t, "buyer@example", payload.ContactEmail)
-	// The buyer is not listed twice, and a blank holder_email is dropped
-	// rather than queued as an unsendable address.
-	assert.Equal(t, []string{"a@example", "b@example"}, payload.HolderEmails)
+	assert.NotContains(t, string(raw), "holder_email")
+
+	// No read of booking_items at all: one address needs no fan-out.
+	for _, sql := range tx.queries {
+		assert.NotContains(t, sql, "FROM booking_items")
+	}
 }
 
 // The outbox write is in the caller's transaction, which is the whole point of

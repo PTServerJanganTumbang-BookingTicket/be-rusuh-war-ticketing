@@ -22,6 +22,16 @@ type AppError struct {
 	// on 429 responses, where the contract returns a retry_after field
 	// alongside the message (§1.1). Zero means "not applicable".
 	RetryAfter time.Duration `json:"-"`
+
+	// Data is written as the envelope's data on error (e.g. queue_state,
+	// sale_starts_at). Nil means {}.
+	Data any `json:"-"`
+}
+
+// WithData attaches the error response's data object.
+func (e *AppError) WithData(data any) *AppError {
+	e.Data = data
+	return e
 }
 
 // WithCode attaches an Appendix A error code and returns the error, so call
@@ -97,12 +107,8 @@ const (
 	CodeTokenInvalid         = "TOKEN_INVALID"
 	CodeAdmissionPaused      = "ADMISSION_PAUSED"
 
-	// Grant and device binding. Enforced by pkg/grantauth on every endpoint in
-	// contract §4 and §5 (ADR-006 §8.9, §8.13).
-	CodeGrantTokenMissing = "GRANT_TOKEN_MISSING"
-	CodeGrantTokenInvalid = "GRANT_TOKEN_INVALID"
-	CodeDeviceIDRequired  = "DEVICE_ID_REQUIRED"
-	CodeDeviceMismatch    = "DEVICE_MISMATCH"
+	// Grant and device binding codes live in pkg/grantauth, next to the
+	// middleware that is the only thing allowed to emit them.
 
 	// Shared 404: a resource that does not exist and one that is not the
 	// caller's answer identically. 403 would confirm the row exists, which is

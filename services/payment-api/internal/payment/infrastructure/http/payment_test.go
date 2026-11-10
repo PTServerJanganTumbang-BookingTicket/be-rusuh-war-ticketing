@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/apinizer"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/apperror"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/payment-api/internal/payment/domain/dto"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/payment-api/internal/payment/domain/entity"
@@ -161,9 +162,13 @@ func TestHandlers_UnknownError_Is500WithoutDetail(t *testing.T) {
 
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 	e := decode(t, w)
-	assert.Empty(t, e.Meta.ErrorCode)
+	// A fixed code, so a client can switch on it, and it names nothing about
+	// what broke: pkg/apinizer stamps INTERNAL_ERROR on any 5xx written
+	// without one of its own.
+	assert.Equal(t, apinizer.ErrorCodeInternal, e.Meta.ErrorCode)
 	assert.NotContains(t, e.Meta.Message, "bookings")
 	assert.NotContains(t, e.Meta.Message, "pq:")
+	assert.NotContains(t, w.Body.String(), "relation")
 }
 
 func TestStatusMessage(t *testing.T) {

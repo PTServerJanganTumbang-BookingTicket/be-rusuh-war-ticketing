@@ -28,8 +28,8 @@ func TestGetStatus_Confirmed_IsPaid(t *testing.T) {
 	assert.Equal(t, dto.StatusPaid, out.Status)
 	assert.Equal(t, "/bookings/RB-00912/success", out.RedirectURL)
 	assert.NotEmpty(t, out.PaidAt)
-	// A settled booking has no countdown left to show.
-	assert.Nil(t, out.TTLSeconds)
+	// A settled booking has no deadline left to show.
+	assert.Empty(t, out.ExpiresAt)
 }
 
 func TestGetStatus_ExpiredAndLapsed_AreExpired(t *testing.T) {
@@ -72,8 +72,12 @@ func TestGetStatus_HeldBeforeAnyCharge_IsPending(t *testing.T) {
 
 	assert.Equal(t, dto.StatusPending, out.Status)
 	assert.Nil(t, out.CanRetry)
-	require.NotNil(t, out.TTLSeconds)
-	assert.Equal(t, int((5 * time.Minute).Seconds()), *out.TTLSeconds)
+	// An absolute deadline, not a countdown: contract v2.15 #107 replaced
+	// ttl_seconds because a number computed at the server and rendered after
+	// the round trip is already wrong, and wrong in the customer's favour
+	// right up to the moment the seats go.
+	assert.Equal(t, "2026-03-01T10:10:00Z", out.ExpiresAt)
+	assert.Equal(t, fixedNow.Format(time.RFC3339), out.ServerTime)
 }
 
 func TestGetStatus_AtMaxAttempts_CannotRetry(t *testing.T) {
@@ -88,26 +92,27 @@ func TestGetStatus_AtMaxAttempts_CannotRetry(t *testing.T) {
 	assert.False(t, *out.CanRetry)
 }
 
-// The TTL elapsed and the grace period is running. Reporting EXPIRED here
-// would be the "jangan PHP" failure: a callback may still arrive and confirm,
-// and the customer would have been told their seats were gone.
-func TestGetStatus_PendingCancellation_IsPendingWithZeroTTL(t *testing.T) {
+// The deadline has passed and the grace period is running. Reporting EXPIRED
+// here would be the "jangan PHP" failure: a callback may still arrive and
+// confirm, and the customer would have been told their seats were gone.
+func TestGetStatus_PendingCancellation_IsStillPending(t *testing.T) {
 	h := newHarness(t)
 	out := statusOf(t, h, heldBooking(entity.StatusPendingCancellation))
 
 	assert.Equal(t, dto.StatusPending, out.Status)
-	require.NotNil(t, out.TTLSeconds)
-	assert.Equal(t, 0, *out.TTLSeconds)
+	assert.NotEmpty(t, out.ExpiresAt)
 	assert.Empty(t, out.ExpiredAt)
 }
 
-func TestGetStatus_AwaitingPayment_IsPendingWithRemainingTTL(t *testing.T) {
+// expires_at and server_time travel together: the pair is what lets a client
+// with a skewed clock draw a correct countdown, which is the whole reason
+// #107 moved the arithmetic to the client.
+func TestGetStatus_AwaitingPayment_ReportsTheDeadlineAndTheServerClock(t *testing.T) {
 	h := newHarness(t)
 	out := statusOf(t, h, heldBooking(entity.StatusAwaitingPayment))
 
 	assert.Equal(t, dto.StatusPending, out.Status)
-	require.NotNil(t, out.TTLSeconds)
-	assert.Equal(t, 300, *out.TTLSeconds)
+	assert.Equal(t, "2026-03-01T10:10:00Z", out.ExpiresAt)
 	assert.Equal(t, fixedNow.Format(time.RFC3339), out.ServerTime)
 }
 
@@ -127,17 +132,19 @@ func TestGetStatus_NonPaymentStatuses_StillAnswer(t *testing.T) {
 	}
 }
 
-// A countdown is never negative: the client renders it directly, and "-12s"
-// would reach a customer's screen.
-func TestGetStatus_PastDeadline_TTLIsZeroNotNegative(t *testing.T) {
+// A deadline in the past is reported AS IT IS, not clamped to now. Clamping
+// was what ttl_seconds had to do, and it hid the one case the client needs to
+// tell apart: a window that has genuinely run out while a callback is still
+// in flight. The client clamps its own countdown at zero.
+func TestGetStatus_PastDeadline_IsReportedUnchanged(t *testing.T) {
 	h := newHarness(t)
 	b := heldBooking(entity.StatusAwaitingPayment)
 	past := fixedNow.Add(-30 * time.Second)
 	b.PaymentExpiresAt = &past
 
 	out := statusOf(t, h, b)
-	require.NotNil(t, out.TTLSeconds)
-	assert.Equal(t, 0, *out.TTLSeconds)
+	assert.Equal(t, past.UTC().Format(time.RFC3339), out.ExpiresAt)
+	assert.Equal(t, fixedNow.Format(time.RFC3339), out.ServerTime)
 }
 
 func TestGetStatus_UnknownBooking_Is404(t *testing.T) {

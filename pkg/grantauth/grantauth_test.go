@@ -1,357 +1,348 @@
-package grantauth
+package grantauth_test
 
 import (
-	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/hex"
-	"errors"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
+	"time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"github.com/alicebob/miniredis/v2"
+	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/apperror"
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/grantauth"
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/rediskeys"
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/token"
 )
 
-const testPepper = "test-device-pepper"
+var pepper = []byte("test-pepper")
 
-type fakeStore struct {
-	fields map[string]string
-	err    error
-	calls  int
-	gotTok string
+const jwtSecret = "test-jwt-secret"
+
+const device = "d3f1a9c4b70e42f88a1c5e6072b9d4af"
+
+type rig struct {
+	mr       *miniredis.Miniredis
+	handler  http.Handler
+	got      *grantauth.Grant
+	sessions *token.Issuer
 }
 
-func (s *fakeStore) Grant(_ context.Context, token string) (map[string]string, error) {
-	s.calls++
-	s.gotTok = token
-	if s.err != nil {
-		return nil, s.err
-	}
-	return s.fields, nil
-}
+func newRig(t *testing.T) *rig { return newRigWith(t, issuer(t)) }
 
-func accountGrant() map[string]string {
-	return map[string]string{
-		FieldEventID:    "EV-1",
-		FieldBookingID:  "RB-00912",
-		FieldQueueToken: "qt-1",
-		FieldAccountID:  "ACC-1",
-	}
-}
-
-func guestGrant(deviceID string) map[string]string {
-	return map[string]string{
-		FieldEventID:    "EV-1",
-		FieldBookingID:  "RB-00912",
-		FieldQueueToken: "qt-1",
-		FieldDeviceHash: DeviceHash(testPepper, deviceID),
-	}
-}
-
-func newVerifier(t *testing.T, store Store) *Verifier {
+// newRigWith builds the middleware with a given session verifier, so one test
+// can pass nil and check that the guard fails closed instead of skipping §8.17.
+func newRigWith(t *testing.T, sessions *token.Issuer) *rig {
 	t.Helper()
-	v, err := NewVerifier(store, testPepper)
-	require.NoError(t, err)
-	return v
+	mr := miniredis.RunT(t)
+	rdb := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
+	r := &rig{mr: mr, sessions: sessions}
+	next := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		g, ok := grantauth.FromContext(req.Context())
+		if ok {
+			r.got = &g
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	r.handler = grantauth.Middleware(rdb, grantauth.Config{DevicePepper: pepper, Sessions: sessions})(next)
+	return r
 }
 
-func assertAppError(t *testing.T, err error, status int, code string) {
+func issuer(t *testing.T) *token.Issuer {
 	t.Helper()
-	require.Error(t, err)
-	var appErr *apperror.AppError
-	require.True(t, errors.As(err, &appErr), "expected *apperror.AppError, got %T", err)
-	assert.Equal(t, status, appErr.HTTPStatus)
-	assert.Equal(t, code, appErr.ErrorCode)
+	iss, err := token.NewIssuer(jwtSecret, "rusuh-user", time.Hour)
+	if err != nil {
+		t.Fatalf("issuer: %v", err)
+	}
+	return iss
 }
 
-// ── NewVerifier ───────────────────────────────────────────────────────────────
-
-// Without the pepper the device check cannot run, so every guest would be
-// rejected while the service reported itself healthy. Refusing to build is the
-// only safe behaviour.
-func TestNewVerifier_RequiresPepper(t *testing.T) {
-	_, err := NewVerifier(&fakeStore{}, "")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "DEVICE_PEPPER")
+// bearerFor mints a valid session for accountID, as §1.3 would.
+func (r *rig) bearerFor(t *testing.T, accountID string) string {
+	t.Helper()
+	raw, _, err := r.sessions.Issue(accountID, accountID+"@example.com", true)
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	return "Bearer " + raw
 }
 
-func TestNewVerifier_RequiresStore(t *testing.T) {
-	_, err := NewVerifier(nil, testPepper)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "store")
+func (r *rig) guestGrant(token string) {
+	r.mr.HSet(rediskeys.Grant(token),
+		rediskeys.FieldEventID, "evt_a", rediskeys.FieldBookingID, "RB-1", rediskeys.FieldQueueToken, "qt_1",
+		rediskeys.FieldDeviceHash, hmacHex(pepper, device))
 }
 
-// ── DeviceHash ────────────────────────────────────────────────────────────────
-
-// The raw device id is never stored: it links one device's visits, so a Redis
-// dump must not yield a cross-event correlator.
-func TestDeviceHash_IsHexHMACSHA256(t *testing.T) {
-	got := DeviceHash(testPepper, "device-1")
-	assert.Len(t, got, 64)
-	_, err := hex.DecodeString(got)
-	require.NoError(t, err)
-	assert.Equal(t, strings.ToLower(got), got)
-	assert.NotContains(t, got, "device-1")
+func (r *rig) accountGrant(token string) {
+	r.mr.HSet(rediskeys.Grant(token),
+		rediskeys.FieldEventID, "evt_a", rediskeys.FieldBookingID, "RB-2", rediskeys.FieldQueueToken, "qt_2",
+		rediskeys.FieldAccountID, "acc_1")
 }
 
-func TestDeviceHash_IsStableAndKeyed(t *testing.T) {
-	assert.Equal(t, DeviceHash(testPepper, "device-1"), DeviceHash(testPepper, "device-1"))
-	assert.NotEqual(t, DeviceHash(testPepper, "device-1"), DeviceHash(testPepper, "device-2"))
-	// Keyed by the pepper, which is what makes a rotation invalidate every
-	// live binding at once - and why it may only happen between sales.
-	assert.NotEqual(t, DeviceHash(testPepper, "device-1"), DeviceHash("other-pepper", "device-1"))
+func (r *rig) call(t *testing.T, headers map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/events/evt_a/tickets", nil)
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	rec := httptest.NewRecorder()
+	r.handler.ServeHTTP(rec, req)
+	return rec
 }
 
-// ── Verify: token ─────────────────────────────────────────────────────────────
-
-// A missing header is a distinct code from an invalid one: the client's fix is
-// different, and the store is not consulted at all.
-func TestVerify_MissingHeader_IsGrantTokenMissing(t *testing.T) {
-	store := &fakeStore{}
-
-	_, err := newVerifier(t, store).Verify(context.Background(), "", "device-1")
-	assertAppError(t, err, http.StatusUnauthorized, apperror.CodeGrantTokenMissing)
-	assert.Equal(t, 0, store.calls)
+func hmacHex(key []byte, msg string) string {
+	m := hmac.New(sha256.New, key)
+	m.Write([]byte(msg))
+	return hex.EncodeToString(m.Sum(nil))
 }
 
-// Unknown, expired and revoked are one answer: telling them apart maps which
-// grants are live.
-func TestVerify_UnknownGrant_IsGrantTokenInvalid(t *testing.T) {
-	store := &fakeStore{err: ErrNotFound}
-
-	_, err := newVerifier(t, store).Verify(context.Background(), "tok-1", "device-1")
-	assertAppError(t, err, http.StatusUnauthorized, apperror.CodeGrantTokenInvalid)
-}
-
-// The token is resolved BEFORE the device is considered. A device check
-// against an unknown grant would answer DEVICE_MISMATCH and so confirm that
-// some other grant exists for that device.
-func TestVerify_UnknownGrantNeverReportsDeviceMismatch(t *testing.T) {
-	store := &fakeStore{err: ErrNotFound}
-
-	// No device id at all, and a wrong one: both must read as an invalid
-	// grant, never as a device problem.
-	for _, device := range []string{"", "someone-elses-device"} {
-		_, err := newVerifier(t, store).Verify(context.Background(), "tok-1", device)
-		assertAppError(t, err, http.StatusUnauthorized, apperror.CodeGrantTokenInvalid)
+func assertError(t *testing.T, rec *httptest.ResponseRecorder, status int, code string) {
+	t.Helper()
+	if rec.Code != status {
+		t.Fatalf("status = %d, want %d (body %s)", rec.Code, status, rec.Body.String())
+	}
+	var body struct {
+		Meta struct {
+			ErrorCode string `json:"error_code"`
+		} `json:"meta"`
+		Data map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body is not the contract envelope: %v (%s)", err, rec.Body.String())
+	}
+	if body.Meta.ErrorCode != code {
+		t.Fatalf("error_code = %q, want %q", body.Meta.ErrorCode, code)
+	}
+	if body.Data == nil {
+		t.Fatal("data must be {} on an error, not null or missing")
 	}
 }
 
-// A broken Redis is NOT an invalid grant. Answering 401 would log customers
-// out of a paid-for seat during an infrastructure blip.
-func TestVerify_StoreFailure_Is503NotUnauthorized(t *testing.T) {
-	store := &fakeStore{err: errors.New("dial tcp: connection refused")}
-
-	_, err := newVerifier(t, store).Verify(context.Background(), "tok-1", "device-1")
-	require.Error(t, err)
-
-	var appErr *apperror.AppError
-	require.True(t, errors.As(err, &appErr))
-	assert.Equal(t, http.StatusServiceUnavailable, appErr.HTTPStatus)
-	assert.NotEqual(t, apperror.CodeGrantTokenInvalid, appErr.ErrorCode)
-	// The driver's message must not reach the client.
-	assert.NotContains(t, appErr.Message, "connection refused")
+func TestARequestWithoutAGrantTokenIsRejectedAsMissing(t *testing.T) {
+	r := newRig(t)
+	assertError(t, r.call(t, map[string]string{grantauth.HeaderDeviceID: device}), http.StatusUnauthorized, grantauth.CodeGrantTokenMissing)
 }
 
-// booking_id is what the payment and booking endpoints bind on. A hash without
-// it was written by a producer that predates ADR-006 §8.13 - failing closed
-// beats letting the request match a NULL column.
-func TestVerify_GrantWithoutBookingID_IsInvalid(t *testing.T) {
-	fields := accountGrant()
-	delete(fields, FieldBookingID)
-	store := &fakeStore{fields: fields}
-
-	_, err := newVerifier(t, store).Verify(context.Background(), "tok-1", "")
-	assertAppError(t, err, http.StatusUnauthorized, apperror.CodeGrantTokenInvalid)
+func TestAnUnknownGrantTokenIsRejectedAsInvalid(t *testing.T) {
+	r := newRig(t)
+	assertError(t, r.call(t, map[string]string{grantauth.HeaderGrantToken: "gt_nope", grantauth.HeaderDeviceID: device}),
+		http.StatusUnauthorized, grantauth.CodeGrantTokenInvalid)
 }
 
-// An empty map would be indistinguishable from a grant with no fields, which
-// is exactly why the store contract says to return ErrNotFound. Belt and
-// braces: an empty map still fails closed here.
-func TestVerify_EmptyHash_IsInvalid(t *testing.T) {
-	store := &fakeStore{fields: map[string]string{}}
-
-	_, err := newVerifier(t, store).Verify(context.Background(), "tok-1", "device-1")
-	assertAppError(t, err, http.StatusUnauthorized, apperror.CodeGrantTokenInvalid)
+func TestAGuestGrantWithoutADeviceIDIsABadRequest(t *testing.T) {
+	r := newRig(t)
+	r.guestGrant("gt_guest")
+	assertError(t, r.call(t, map[string]string{grantauth.HeaderGrantToken: "gt_guest"}), http.StatusBadRequest, grantauth.CodeDeviceIDRequired)
 }
 
-// ── Verify: account grants ────────────────────────────────────────────────────
+func TestAGuestGrantFromAnotherDeviceIsRejected(t *testing.T) {
+	r := newRig(t)
+	r.guestGrant("gt_guest")
+	assertError(t, r.call(t, map[string]string{grantauth.HeaderGrantToken: "gt_guest", grantauth.HeaderDeviceID: "another-device-0001"}),
+		http.StatusUnauthorized, grantauth.CodeDeviceMismatch)
+}
 
-// Account-bound grants are valid from ANY device: the account is what binds
-// them, and on §4/§5 no Authorization header is sent to compare against.
-func TestVerify_AccountGrant_IsValidFromAnyDevice(t *testing.T) {
-	store := &fakeStore{fields: accountGrant()}
-	v := newVerifier(t, store)
-
-	for _, device := range []string{"", "device-1", "a-completely-different-device"} {
-		g, err := v.Verify(context.Background(), "tok-1", device)
-		require.NoError(t, err, device)
-		assert.Equal(t, "tok-1", g.Token)
-		assert.Equal(t, "RB-00912", g.BookingID)
-		assert.Equal(t, "EV-1", g.EventID)
-		assert.Equal(t, "qt-1", g.QueueToken)
-		assert.Equal(t, "ACC-1", g.AccountID)
-		assert.False(t, g.IsGuest())
+func TestAGuestGrantFromItsOwnDevicePassesWithEveryField(t *testing.T) {
+	r := newRig(t)
+	r.guestGrant("gt_guest")
+	rec := r.call(t, map[string]string{grantauth.HeaderGrantToken: "gt_guest", grantauth.HeaderDeviceID: device})
+	if rec.Code != http.StatusNoContent || r.got == nil {
+		t.Fatalf("status = %d, grant in context = %v; want the request to reach the handler", rec.Code, r.got != nil)
+	}
+	want := grantauth.Grant{Token: "gt_guest", EventID: "evt_a", BookingID: "RB-1", QueueToken: "qt_1", DeviceHash: hmacHex(pepper, device)}
+	if *r.got != want {
+		t.Fatalf("grant = %+v, want %+v", *r.got, want)
 	}
 }
 
-// The raw token travels onward: repositories match it against
-// bookings.grant_token, so it is the ownership key and not just a credential.
-func TestVerify_CarriesTheRawTokenOnward(t *testing.T) {
-	store := &fakeStore{fields: accountGrant()}
-
-	g, err := newVerifier(t, store).Verify(context.Background(), "tok-abc", "")
-	require.NoError(t, err)
-	assert.Equal(t, "tok-abc", g.Token)
-	assert.Equal(t, "tok-abc", store.gotTok)
+// No X-Device-Id, because the account is what binds an account grant
+// (ADR-006 §8.9) - but the session for that account is now required (§8.17).
+func TestALoggedInGrantPassesWithItsOwnSessionAndNoDeviceID(t *testing.T) {
+	r := newRig(t)
+	r.accountGrant("gt_acc")
+	rec := r.call(t, map[string]string{
+		grantauth.HeaderGrantToken:    "gt_acc",
+		grantauth.HeaderAuthorization: r.bearerFor(t, "acc_1"),
+	})
+	if rec.Code != http.StatusNoContent || r.got == nil || r.got.AccountID != "acc_1" || r.got.DeviceHash != "" {
+		t.Fatalf("status = %d, grant = %+v; want a pass with account acc_1", rec.Code, r.got)
+	}
 }
 
-// ── Verify: guest grants ──────────────────────────────────────────────────────
-
-func TestVerify_GuestGrant_MatchingDevice_IsValid(t *testing.T) {
-	store := &fakeStore{fields: guestGrant("device-1")}
-
-	g, err := newVerifier(t, store).Verify(context.Background(), "tok-1", "device-1")
-	require.NoError(t, err)
-	assert.True(t, g.IsGuest())
-	assert.Empty(t, g.AccountID)
-	assert.Equal(t, DeviceHash(testPepper, "device-1"), g.DeviceHash)
+// §8.17: a leaked or copied grant is not enough to buy in someone's name.
+func TestALoggedInGrantWithoutASessionIsUnauthorized(t *testing.T) {
+	r := newRig(t)
+	r.accountGrant("gt_acc")
+	assertError(t, r.call(t, map[string]string{grantauth.HeaderGrantToken: "gt_acc"}),
+		http.StatusUnauthorized, grantauth.CodeUnauthorized)
+	if r.got != nil {
+		t.Fatal("the handler must not be reached")
+	}
 }
 
-func TestVerify_GuestGrant_WrongDevice_IsDeviceMismatch(t *testing.T) {
-	store := &fakeStore{fields: guestGrant("device-1")}
-
-	_, err := newVerifier(t, store).Verify(context.Background(), "tok-1", "device-2")
-	assertAppError(t, err, http.StatusUnauthorized, apperror.CodeDeviceMismatch)
+// Another account's session is perfectly valid and still wrong: the token is
+// not the problem, the pairing is, so the client logs in as the right account
+// rather than refreshing.
+func TestAnotherAccountsSessionIsUnauthorized(t *testing.T) {
+	r := newRig(t)
+	r.accountGrant("gt_acc")
+	assertError(t, r.call(t, map[string]string{
+		grantauth.HeaderGrantToken:    "gt_acc",
+		grantauth.HeaderAuthorization: r.bearerFor(t, "acc_someone_else"),
+	}), http.StatusUnauthorized, grantauth.CodeUnauthorized)
 }
 
-// A guest with no X-Device-Id cannot be checked at all. That is a 400 with its
-// own code rather than a 401: the client omitted a required header, which is a
-// different fix from "your grant is wrong".
-func TestVerify_GuestGrant_NoDeviceID_IsDeviceIDRequired(t *testing.T) {
-	store := &fakeStore{fields: guestGrant("device-1")}
-
-	_, err := newVerifier(t, store).Verify(context.Background(), "tok-1", "")
-	assertAppError(t, err, http.StatusBadRequest, apperror.CodeDeviceIDRequired)
+func TestAnExpiredSessionIsTokenExpired(t *testing.T) {
+	r := newRig(t)
+	r.accountGrant("gt_acc")
+	// A separate issuer whose tokens are born expired, so no clock is faked.
+	past, err := token.NewIssuer(jwtSecret, "rusuh-user", time.Nanosecond)
+	if err != nil {
+		t.Fatalf("issuer: %v", err)
+	}
+	raw, _, err := past.Issue("acc_1", "a@example.com", true)
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	assertError(t, r.call(t, map[string]string{
+		grantauth.HeaderGrantToken:    "gt_acc",
+		grantauth.HeaderAuthorization: "Bearer " + raw,
+	}), http.StatusUnauthorized, apperror.CodeTokenExpired)
 }
 
-// Rotating the pepper invalidates every live binding at once, which is why it
-// may only happen between sales.
-func TestVerify_GuestGrant_RotatedPepper_FailsEveryBinding(t *testing.T) {
-	store := &fakeStore{fields: guestGrant("device-1")}
-	v, err := NewVerifier(store, "a-rotated-pepper")
-	require.NoError(t, err)
-
-	_, err = v.Verify(context.Background(), "tok-1", "device-1")
-	assertAppError(t, err, http.StatusUnauthorized, apperror.CodeDeviceMismatch)
+func TestAForgedOrMalformedSessionIsTokenInvalid(t *testing.T) {
+	other, err := token.NewIssuer("a-different-signing-key", "rusuh-user", time.Hour)
+	if err != nil {
+		t.Fatalf("issuer: %v", err)
+	}
+	forged, _, err := other.Issue("acc_1", "a@example.com", true)
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	for name, header := range map[string]string{
+		"signed with another key": "Bearer " + forged,
+		"not a jwt":               "Bearer not.a.jwt",
+		"empty after the scheme":  "Bearer ",
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newRig(t)
+			r.accountGrant("gt_acc")
+			rec := r.call(t, map[string]string{
+				grantauth.HeaderGrantToken:    "gt_acc",
+				grantauth.HeaderAuthorization: header,
+			})
+			// "Bearer " with nothing after it reads as no header at all.
+			want := apperror.CodeTokenInvalid
+			if header == "Bearer " {
+				want = grantauth.CodeUnauthorized
+			}
+			assertError(t, rec, http.StatusUnauthorized, want)
+		})
+	}
 }
 
-// A grant that is neither account- nor device-bound cannot be trusted as a
-// guest grant: with no stored hash to compare, the comparison must not pass.
-func TestVerify_GuestGrantWithNoDeviceHash_IsMismatch(t *testing.T) {
-	fields := guestGrant("device-1")
-	delete(fields, FieldDeviceHash)
-	store := &fakeStore{fields: fields}
+// The scheme is case-insensitive (RFC 7235), and another scheme reads as absent.
+func TestTheBearerSchemeIsCaseInsensitiveAndOtherSchemesDoNotCount(t *testing.T) {
+	r := newRig(t)
+	r.accountGrant("gt_acc")
+	raw := r.bearerFor(t, "acc_1")[len("Bearer "):]
+	rec := r.call(t, map[string]string{
+		grantauth.HeaderGrantToken:    "gt_acc",
+		grantauth.HeaderAuthorization: "bEaReR " + raw,
+	})
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d; want the lower-case scheme accepted", rec.Code)
+	}
 
-	_, err := newVerifier(t, store).Verify(context.Background(), "tok-1", "device-1")
-	assertAppError(t, err, http.StatusUnauthorized, apperror.CodeDeviceMismatch)
+	r2 := newRig(t)
+	r2.accountGrant("gt_acc")
+	assertError(t, r2.call(t, map[string]string{
+		grantauth.HeaderGrantToken:    "gt_acc",
+		grantauth.HeaderAuthorization: "Basic " + raw,
+	}), http.StatusUnauthorized, grantauth.CodeUnauthorized)
 }
 
-// ── context ───────────────────────────────────────────────────────────────────
-
-func TestContext_RoundTrip(t *testing.T) {
-	g := Grant{Token: "tok-1", BookingID: "RB-00912"}
-
-	got, ok := FromContext(NewContext(context.Background(), g))
-	require.True(t, ok)
-	assert.Equal(t, g, got)
+// A guest grant ignores Authorization entirely (§8.17). A token sent beside one
+// is not an error; it is simply not what binds the grant.
+func TestAGuestGrantIgnoresAnyAuthorizationHeader(t *testing.T) {
+	r := newRig(t)
+	r.guestGrant("gt_guest")
+	rec := r.call(t, map[string]string{
+		grantauth.HeaderGrantToken:    "gt_guest",
+		grantauth.HeaderDeviceID:      device,
+		grantauth.HeaderAuthorization: r.bearerFor(t, "acc_someone_else"),
+	})
+	if rec.Code != http.StatusNoContent || r.got == nil {
+		t.Fatalf("status = %d; want a guest grant to pass regardless of Authorization", rec.Code)
+	}
 }
 
-// A handler reached without the guard must be able to tell: it is a wiring
-// bug, and answering 401 would send the client off chasing its own headers.
-func TestFromContext_Absent(t *testing.T) {
-	_, ok := FromContext(context.Background())
-	assert.False(t, ok)
+// Fail closed. A guard that skips the check when misconfigured restores
+// exactly the gap §8.17 closes, on the path where a leaked grant is worth most.
+func TestWithoutASessionVerifierAnAccountGrantIs503NotAPass(t *testing.T) {
+	r := newRigWith(t, nil)
+	r.accountGrant("gt_acc")
+	rec := r.call(t, map[string]string{grantauth.HeaderGrantToken: "gt_acc"})
+	if rec.Code != http.StatusServiceUnavailable || r.got != nil {
+		t.Fatalf("status = %d, reached handler = %v; want 503 and no pass", rec.Code, r.got != nil)
+	}
 }
 
-// ── Middleware ────────────────────────────────────────────────────────────────
-
-func TestMiddleware_PassesTheGrantToTheHandler(t *testing.T) {
-	store := &fakeStore{fields: accountGrant()}
-	var seen Grant
-	var ok bool
-
-	h := newVerifier(t, store).Middleware(func(w http.ResponseWriter, _ *http.Request, _ error) {
-		t.Fatal("onError must not be called for a valid grant")
-	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seen, ok = FromContext(r.Context())
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	r := httptest.NewRequest(http.MethodGet, "/payments/RB-00912/status", nil)
-	r.Header.Set(HeaderGrantToken, "tok-1")
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, r)
-
-	require.Equal(t, http.StatusOK, w.Code)
-	require.True(t, ok)
-	assert.Equal(t, "tok-1", seen.Token)
-	assert.Equal(t, "RB-00912", seen.BookingID)
+// The session only CHECKS: attribution still comes from the grant hash, which
+// admission-ctl wrote. v2.3 took it from the header and a stale header meant a
+// booking attributed to the wrong account.
+func TestTheGrantNotTheSessionCarriesTheAccountID(t *testing.T) {
+	r := newRig(t)
+	r.accountGrant("gt_acc")
+	rec := r.call(t, map[string]string{
+		grantauth.HeaderGrantToken:    "gt_acc",
+		grantauth.HeaderAuthorization: r.bearerFor(t, "acc_1"),
+	})
+	if rec.Code != http.StatusNoContent || r.got == nil {
+		t.Fatalf("status = %d; want a pass", rec.Code)
+	}
+	want := grantauth.Grant{Token: "gt_acc", EventID: "evt_a", BookingID: "RB-2", QueueToken: "qt_2", AccountID: "acc_1"}
+	if *r.got != want {
+		t.Fatalf("grant = %+v, want %+v", *r.got, want)
+	}
 }
 
-// The guard reads both headers itself, so handlers never touch them.
-func TestMiddleware_ReadsBothHeaders(t *testing.T) {
-	store := &fakeStore{fields: guestGrant("device-1")}
-	reached := false
-
-	h := newVerifier(t, store).Middleware(func(w http.ResponseWriter, _ *http.Request, err error) {
-		t.Fatalf("unexpected error: %v", err)
-	})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { reached = true }))
-
-	r := httptest.NewRequest(http.MethodPost, "/payments/RB-00912", nil)
-	r.Header.Set(HeaderGrantToken, "tok-1")
-	r.Header.Set(HeaderDeviceID, "device-1")
-	h.ServeHTTP(httptest.NewRecorder(), r)
-
-	assert.True(t, reached)
+func TestAGrantWithBothOrNeitherIdentityOrWithoutAQueueTokenIsRejectedAsInvalid(t *testing.T) {
+	r := newRig(t)
+	r.mr.HSet(rediskeys.Grant("gt_both"), rediskeys.FieldEventID, "evt_a", rediskeys.FieldBookingID, "RB-3",
+		rediskeys.FieldQueueToken, "qt_3", rediskeys.FieldAccountID, "acc_1", rediskeys.FieldDeviceHash, hmacHex(pepper, device))
+	r.mr.HSet(rediskeys.Grant("gt_none"), rediskeys.FieldEventID, "evt_a", rediskeys.FieldBookingID, "RB-4",
+		rediskeys.FieldQueueToken, "qt_4")
+	r.mr.HSet(rediskeys.Grant("gt_noqt"), rediskeys.FieldEventID, "evt_a", rediskeys.FieldBookingID, "RB-5",
+		rediskeys.FieldDeviceHash, hmacHex(pepper, device))
+	for _, tok := range []string{"gt_both", "gt_none", "gt_noqt"} {
+		t.Run(tok, func(t *testing.T) {
+			assertError(t, r.call(t, map[string]string{grantauth.HeaderGrantToken: tok, grantauth.HeaderDeviceID: device}),
+				http.StatusUnauthorized, grantauth.CodeGrantTokenInvalid)
+		})
+	}
 }
 
-// A rejected request never reaches the handler, and the error is handed to the
-// service's own renderer so this package stays free of a response envelope.
-func TestMiddleware_RejectedRequestStopsThere(t *testing.T) {
-	store := &fakeStore{err: ErrNotFound}
-	var gotErr error
-
-	h := newVerifier(t, store).Middleware(func(w http.ResponseWriter, _ *http.Request, err error) {
-		gotErr = err
-		w.WriteHeader(http.StatusUnauthorized)
-	})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		t.Fatal("handler must not run for a rejected grant")
-	}))
-
-	r := httptest.NewRequest(http.MethodGet, "/payments/RB-00912/status", nil)
-	r.Header.Set(HeaderGrantToken, "tok-1")
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, r)
-
-	assert.Equal(t, http.StatusUnauthorized, w.Code)
-	assertAppError(t, gotErr, http.StatusUnauthorized, apperror.CodeGrantTokenInvalid)
+func TestRedisBeingDownIsA503NeverAPass(t *testing.T) {
+	r := newRig(t)
+	r.guestGrant("gt_guest")
+	r.mr.SetError("connection refused")
+	rec := r.call(t, map[string]string{grantauth.HeaderGrantToken: "gt_guest", grantauth.HeaderDeviceID: device})
+	if rec.Code != http.StatusServiceUnavailable || r.got != nil {
+		t.Fatalf("status = %d, reached handler = %v; want 503 and no pass", rec.Code, r.got != nil)
+	}
 }
 
-// ── field names ───────────────────────────────────────────────────────────────
-
-// The hash fields are fixed by ADR-006 §8.13(a). There is deliberately no
-// "token" field - that is the key's own name - and no "rebinds" field, because
-// §8.9 removed rebinding entirely.
-func TestHashFieldNamesAreFixed(t *testing.T) {
-	assert.Equal(t, "event_id", FieldEventID)
-	assert.Equal(t, "booking_id", FieldBookingID)
-	assert.Equal(t, "queue_token", FieldQueueToken)
-	assert.Equal(t, "account_id", FieldAccountID)
-	assert.Equal(t, "device_hash", FieldDeviceHash)
-	assert.Equal(t, "X-Grant-Token", HeaderGrantToken)
-	assert.Equal(t, "X-Device-Id", HeaderDeviceID)
+func TestDeviceHashIsTheHexHMACQueueJoinStores(t *testing.T) {
+	if got, want := grantauth.DeviceHash(pepper, device), hmacHex(pepper, device); got != want {
+		t.Fatalf("DeviceHash = %q, want %q", got, want)
+	}
+	if got := grantauth.DeviceHash(pepper, ""); got != "" {
+		t.Fatalf("an empty device id must hash to empty, got %q", got)
+	}
 }

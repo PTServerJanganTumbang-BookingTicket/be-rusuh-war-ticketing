@@ -2,8 +2,12 @@ package config
 
 // Config is the root configuration for the application.
 type Config struct {
-	App App
-	Log Log
+	App     App
+	Log     Log
+	DB      DB
+	Redis   Redis
+	Grant   Grant
+	Booking Booking
 }
 
 // App holds general application settings.
@@ -16,4 +20,32 @@ type App struct {
 type Log struct {
 	Level  string // "debug", "info", "warn", "error"
 	Format string // "json", "text"
+}
+
+// DB is the Aurora writer: every booking read and write uses it (docs/05-booking/README.md §3 rule 5).
+type DB struct {
+	URL      string
+	MaxConns int32
+}
+
+// Redis is the ElastiCache cluster (grant hashes, stock).
+type Redis struct {
+	Addr     string
+	Password string
+	Cluster  bool
+}
+
+// Grant configures pkg/grantauth.
+type Grant struct {
+	DevicePepper []byte // DEVICE_PEPPER, the same value queue's join uses
+	// JWTSecret is the account-session signing key, the same one user-service
+	// issues with. ADR-006 §8.17 has the guard verify the session behind an
+	// account grant, so without this every logged-in booking call answers 503.
+	JWTSecret string // JWT_SECRET
+}
+
+// Booking holds the purchase rules and the e-ticket link key.
+type Booking struct {
+	MaxTicketsPerTransaction int    // BR-01
+	ETicketSigningKey        []byte // ETICKET_SIGNING_KEY, the same key notification and user-service use
 }

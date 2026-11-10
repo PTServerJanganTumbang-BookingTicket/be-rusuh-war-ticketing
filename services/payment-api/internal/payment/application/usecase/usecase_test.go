@@ -119,11 +119,9 @@ func (b *fakeBreaker) RecordFailure(ctx context.Context) error {
 }
 
 type fakeCredentials struct {
-	settleFn     func(ctx context.Context, in portout.SettleInput) error
-	unscheduleFn func(ctx context.Context, eventID, bookingID string) error
-	lastSettle   portout.SettleInput
-	settleCalls  int
-	unschedCalls int
+	settleFn    func(ctx context.Context, in portout.SettleInput) error
+	lastSettle  portout.SettleInput
+	settleCalls int
 }
 
 func (c *fakeCredentials) SettleEngagement(ctx context.Context, in portout.SettleInput) error {
@@ -131,14 +129,6 @@ func (c *fakeCredentials) SettleEngagement(ctx context.Context, in portout.Settl
 	c.lastSettle = in
 	if c.settleFn != nil {
 		return c.settleFn(ctx, in)
-	}
-	return nil
-}
-
-func (c *fakeCredentials) UnscheduleExpiry(ctx context.Context, eventID, bookingID string) error {
-	c.unschedCalls++
-	if c.unscheduleFn != nil {
-		return c.unscheduleFn(ctx, eventID, bookingID)
 	}
 	return nil
 }

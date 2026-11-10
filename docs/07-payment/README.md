@@ -40,7 +40,7 @@ flowchart LR
     end
 
     DB[(Aurora<br/>bookings · booking_items<br/>payment_events · tickets<br/>nik_claims · outbox)]
-    RDS[(Redis<br/>grant: · payment:breaker:*<br/>token: · acct: · settled: · expiries:)]
+    RDS[(Redis<br/>grant: · payment:breaker:*<br/>token: · acct: · settled:)]
 
     WEB -->|X-Grant-Token<br/>+ X-Device-Id for guests| GRD --> H
     MID -->|signature_key in body| H
@@ -55,20 +55,30 @@ flowchart LR
 ## 2. Credential model
 
 ADR-005 §17 gives four credentials four slots, and they are not
-interchangeable. Only one of them reaches §5:
+interchangeable. Two of them reach these endpoints:
 
-| Credential | Slot | Sent to §5? |
+| Credential | Slot | Sent here? |
 |---|---|---|
-| Account session | `Authorization: Bearer` | **No** |
-| Grant | `X-Grant-Token` | **Yes** — this is the credential here |
+| Grant | `X-Grant-Token` | **Always** — this is the credential that authorises |
+| Account session | `Authorization: Bearer` | **Only when the grant names an account**, and then required (§8.17) |
 | Waiting-room token | `queue_token` cookie / `X-Queue-Token` | No |
 | E-ticket token | `?t=` | No |
 
-`Authorization` identifies an **account**; it says nothing about whether that
-account is holding seats. The grant says exactly that and nothing else, which
-is why it is the one credential these endpoints accept: a logged-in customer
-with no grant must not be able to pay for a booking, and a guest with a grant
-must be able to.
+The grant is what authorises: it says the bearer holds seats, which is the only
+question these endpoints ask. `Authorization` answers a different one — *who*
+the bearer is — and on its own it would let a logged-in customer with no grant
+pay for a booking, which must not happen.
+
+So why is it required at all? Because a grant that names an account is a
+bearer token for someone's identity as well as their seats. ADR-006 §8.17
+closed that: when `grant:{token}` carries `account_id`, the guard also
+verifies the session in `Authorization` and that its subject is that same
+account. A grant copied out of someone's browser is then worth nothing without
+their session, and the purchase stays attributed to the account the grant
+names — read from the hash, never from the header, so a stale header cannot
+attribute a booking to the wrong account. A **guest** grant carries
+`device_hash` instead and no `Authorization` is read: there is no account to
+check, and the device binding (§8.9) is what holds.
 
 A valid grant proves the bearer holds **a** slot — not that the slot belongs to
 the `booking_id` in the URL. Every query therefore binds both
@@ -150,21 +160,25 @@ virtual account.
 | Redis | `payment:breaker:state`, `payment:breaker:failures` | this service | Distinct from `dukcapil:breaker:state`: one upstream being down says nothing about the other |
 | Redis | `token:{uuid}`, `acct:{ev}:{account_id}` | queue-service | Deleted here on settlement |
 | Redis | `settled:{uuid}` | this service | The §3.3 tombstone. Holds the booking id and nothing else |
-| Redis | `expiries:{ev}` | booking-service | `ZREM` on settlement, so the sweep stops re-reading a confirmed booking |
-| Aurora | `bookings`, `booking_items`, `payment_events`, `tickets`, `nik_claims`, `outbox` | this service | Migration `0006_booking_domain` |
+| Aurora | `bookings`, `booking_items`, `payment_events`, `tickets`, `nik_claims`, `outbox` | this service | Migrations `0006`–`0010` (booking domain) and `0011` (`payment_events`) |
 
-## 7. Migration 0006
+## 7. Schema
 
-`migrations/0006_booking_domain.up.sql` adds everything this service needs that
-was not already there:
+Almost everything this service reads was already added by the booking domain's
+migrations. Only one table is this service's own:
 
-| Object | Why payment-api needs it |
-|---|---|
-| `bookings.grant_token` + partial unique index | The ownership key every query binds on |
-| `booking_items` | One row per NIK (BR-02). The authority on price, and what tickets are issued from |
-| `payment_events` with `gateway_event_id UNIQUE` | The webhook's idempotency guard, and where a charge response is stored for replay |
-| `nik_claims` | Released on expiry, or BR-02 would block the customer from ever buying again |
-| `tickets.booking_item_id` + partial unique index | The double-QR guard. 0002 had only `booking_id`, so two attempts for one booking did not collide |
+| Object | Migration | Why payment-api needs it |
+|---|---|---|
+| `payment_events` with `gateway_event_id UNIQUE` | `0011_payment_events` | The webhook's idempotency guard, and where a charge response is stored for replay |
+| `bookings.grant_token` + partial unique index | `0006`–`0010` | The ownership key every query binds on |
+| `booking_items` | `0006`–`0010` | One row per NIK (BR-02). The authority on price, and what tickets are issued from |
+| `nik_claims` | `0006`–`0010` | Released on expiry, or BR-02 would block the customer from ever buying again |
+| `tickets.booking_item_id` + partial unique index | `0006`–`0010` | The double-QR guard: an index on `booking_id` alone would not collide across two attempts for one booking |
+| Partial index on `bookings (payment_expires_at)` | `0011_payment_events` | ADR-006 §8.12(c) moved the deadline sweep off `expiries:{ev}` and onto this index, so nothing in Redis has to be kept in step with a booking's deadline. `0007` and `0009` did the same for the `GRANTED` and `SELECTING` deadlines |
+
+`booking_items` deliberately carries **no** per-seat email: migration `0010`
+dropped `holder_email`, and §8.15 sends every e-ticket of a booking to
+`bookings.contact_email`.
 
 The pipeline deliberately does **not** run migrations (see the note in
 `.github/workflows/cicd.yml`): the schema is applied by hand, and a service

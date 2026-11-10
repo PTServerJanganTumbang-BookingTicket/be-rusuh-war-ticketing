@@ -26,7 +26,8 @@ func TestRegisterHealthCheck_CustomPath(t *testing.T) {
 	meta := body["meta"].(map[string]any)
 	assert.Equal(t, float64(http.StatusOK), meta["code"])
 	assert.Equal(t, "ok", meta["message"])
-	assert.Nil(t, body["data"])
+	assert.Equal(t, map[string]any{}, body["data"], "contract: data is {} when empty, never null")
+	assert.NotEmpty(t, meta["server_time"], "contract: server_time on every response (BR-10)")
 }
 
 func TestRegisterHealthCheck_DefaultPath(t *testing.T) {

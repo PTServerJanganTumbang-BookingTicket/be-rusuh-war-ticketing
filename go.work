@@ -2,10 +2,13 @@ go 1.26.10
 
 use (
 	./pkg
+	./services/admission-ctl
 	./services/booking
 	./services/nik-verify
 	./services/notification
 	./services/outbox-publisher
 	./services/payment-api
+	./services/queue
+	./services/sse-server
 	./services/user
 )

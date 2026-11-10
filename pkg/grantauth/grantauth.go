@@ -1,212 +1,222 @@
-// Package grantauth verifies the grant credential that guards every endpoint
-// in API contract §4 (booking) and §5 (payment).
+// Package grantauth checks the grant on every booking and payment endpoint (api-contracts §4, §5).
 //
-// Three separate credentials exist in this system and they are deliberately
-// not interchangeable (ADR-005 "Empat kredensial, empat slot"):
+// X-Grant-Token proves the caller holds a slot, and for a guest X-Device-Id proves it is the device that
+// received it (ADR-006 §8.9, no rebind). The middleware reads grant:<token> (written by admission-ctl,
+// ADR-006 §8.13) and puts the Grant in the request context.
 //
-//   - Authorization: Bearer — the account session. NOT sent to §4/§5 at all.
-//   - X-Grant-Token          — proves the holder owns a slot. What this package checks.
-//   - queue_token cookie     — proves a position in line. Waiting room only.
+// A grant belonging to a logged-in account additionally requires Authorization: Bearer for the SAME
+// account (ADR-006 §8.17, contract v2.20). A leaked or copied grant must not be enough to buy in
+// someone's name. The session only CHECKS: bookings.account_id still comes from the grant, so a dead
+// session is a visible error rather than the wrong attribution.
 //
-// A valid grant proves the bearer holds *a* slot. It does NOT prove the slot
-// belongs to the booking_id in the URL, so every caller must still bind the row
-// in SQL (WHERE id = $1 AND grant_token = $2). This package does the credential
-// half; the ownership half is the repository's.
+// It does not decide access alone: the hash can outlive its booking, so every use case also checks the
+// booking row (docs/05-booking/README.md §3).
 package grantauth
 
 import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"net/http"
+	"strings"
 
+	goredis "github.com/redis/go-redis/v9"
+
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/apinizer"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/apperror"
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/rediskeys"
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/token"
 )
 
-// Header names. X-Device-Id is required of guests only; see Grant.IsGuest.
+// Contract codes (api-contracts Appendix A).
 const (
-	HeaderGrantToken = "X-Grant-Token"
-	HeaderDeviceID   = "X-Device-Id"
+	CodeGrantTokenMissing = "GRANT_TOKEN_MISSING"
+	CodeGrantTokenInvalid = "GRANT_TOKEN_INVALID"
+	CodeDeviceIDRequired  = "DEVICE_ID_REQUIRED"
+	CodeDeviceMismatch    = "DEVICE_MISMATCH"
+	// CodeUnauthorized is Appendix A's UNAUTHORIZED for an account grant whose
+	// Authorization header is missing or belongs to another account. TOKEN_EXPIRED
+	// and TOKEN_INVALID are apperror's: they are the same two codes §1.4 uses, and
+	// one definition per wire string is the point.
+	CodeUnauthorized = "UNAUTHORIZED"
 )
 
-// Redis hash fields of grant:{token}, fixed by ADR-006 §8.13(a).
-//
-// Exactly one of FieldAccountID or FieldDeviceHash is written; the other is
-// absent, never empty. That is what makes DEVICE_MISMATCH a guest-only
-// condition — an account grant travels between devices by design, because the
-// account is what binds it.
-//
-// There is deliberately no "token" field (that is the key's own name) and no
-// "rebinds" field (ADR-006 §8.9 removed rebinding entirely).
+// Request headers.
 const (
-	FieldEventID    = "event_id"
-	FieldBookingID  = "booking_id"
-	FieldQueueToken = "queue_token"
-	FieldAccountID  = "account_id"
-	FieldDeviceHash = "device_hash"
+	HeaderGrantToken    = "X-Grant-Token"
+	HeaderDeviceID      = "X-Device-Id"
+	HeaderAuthorization = "Authorization"
 )
 
-// Grant is a verified grant credential.
+// Grant is the content of grant:<token>. Exactly one of AccountID (logged-in) and DeviceHash (guest) is set.
 type Grant struct {
-	// Token is the raw X-Grant-Token value. Repositories match it against
-	// bookings.grant_token; it is the ownership key, so it travels onward.
-	Token string
-
+	Token      string
 	EventID    string
 	BookingID  string
 	QueueToken string
-
-	// Exactly one of these is set, mirroring the hash.
 	AccountID  string
 	DeviceHash string
 }
 
-// IsGuest reports whether this grant is bound to a device rather than an
-// account. Only guests are subject to the device check.
-func (g Grant) IsGuest() bool { return g.AccountID == "" }
-
-// Store reads the grant hash. Implemented by a Redis adapter; an interface so
-// that callers can be tested without a Redis.
-type Store interface {
-	// Grant returns the fields of grant:{token}. A missing or expired key must
-	// return ErrNotFound rather than an empty map, so that "revoked" and
-	// "Redis is broken" cannot be confused.
-	Grant(ctx context.Context, token string) (map[string]string, error)
-}
-
-// ErrNotFound reports that grant:{token} does not exist — unknown, expired, or
-// revoked at a terminal state. All three are one answer to the caller, because
-// telling them apart maps which grants are live.
-var ErrNotFound = errors.New("grantauth: grant not found")
-
-// Verifier checks grant credentials.
-type Verifier struct {
-	store  Store
-	pepper []byte
-}
-
-// NewVerifier builds a Verifier. The pepper is DEVICE_PEPPER and is required
-// whenever any guest grant exists, which in practice is always: without it the
-// device check cannot run and every guest would be rejected.
+// Config holds the device pepper, the same DEVICE_PEPPER queue's join uses, and the session verifier
+// for ADR-006 §8.17.
 //
-// DEVICE_PEPPER is NOT the NIK pepper and not JWT_SECRET. It may be rotated
-// between sales but never during one — rotation invalidates every live binding
-// at once (api-contracts §9).
-func NewVerifier(store Store, pepper string) (*Verifier, error) {
-	if store == nil {
-		return nil, errors.New("grantauth: store is required")
-	}
-	if pepper == "" {
-		return nil, errors.New("grantauth: DEVICE_PEPPER is required: without it every guest grant fails the device check")
-	}
-	return &Verifier{store: store, pepper: []byte(pepper)}, nil
-}
-
-// DeviceHash is HMAC-SHA256(pepper, deviceID), hex encoded.
-//
-// The raw device id is never stored. It is a quasi-identifier — it links one
-// device's visits — so a Redis dump must not yield a cross-event correlator
-// (api-contracts §9).
-func DeviceHash(pepper, deviceID string) string {
-	m := hmac.New(sha256.New, []byte(pepper))
-	m.Write([]byte(deviceID))
-	return hex.EncodeToString(m.Sum(nil))
-}
-
-// Verify checks the grant token and, for guests, the device binding.
-//
-// Order matters and is not arbitrary: the token is resolved before the device
-// is considered, because a device check against an unknown grant would answer
-// DEVICE_MISMATCH and so confirm that some *other* grant exists for that
-// device. Unknown grant is always GRANT_TOKEN_INVALID.
-func (v *Verifier) Verify(ctx context.Context, grantToken, deviceID string) (Grant, error) {
-	if grantToken == "" {
-		return Grant{}, apperror.
-			ErrUnauthorized("X-Grant-Token is required").
-			WithCode(apperror.CodeGrantTokenMissing)
-	}
-
-	fields, err := v.store.Grant(ctx, grantToken)
-	if errors.Is(err, ErrNotFound) {
-		// Unknown, expired, or revoked. One answer for all three.
-		return Grant{}, apperror.
-			ErrUnauthorized("grant is not valid").
-			WithCode(apperror.CodeGrantTokenInvalid)
-	}
-	if err != nil {
-		// A broken Redis is NOT an invalid grant. Answering 401 here would log
-		// customers out of a paid-for seat during an infrastructure blip.
-		return Grant{}, apperror.ErrServiceUnavailable("cannot verify grant right now")
-	}
-
-	g := Grant{
-		Token:      grantToken,
-		EventID:    fields[FieldEventID],
-		BookingID:  fields[FieldBookingID],
-		QueueToken: fields[FieldQueueToken],
-		AccountID:  fields[FieldAccountID],
-		DeviceHash: fields[FieldDeviceHash],
-	}
-
-	// booking_id is what §4/§5 bind on. A hash without it is a malformed grant
-	// written by a producer that predates ADR-006 §8.13, not a client problem —
-	// fail closed rather than let the request match a NULL column.
-	if g.BookingID == "" {
-		return Grant{}, apperror.
-			ErrUnauthorized("grant is not valid").
-			WithCode(apperror.CodeGrantTokenInvalid)
-	}
-
-	if !g.IsGuest() {
-		// Account-bound: valid from any device. On §4/§5 no Authorization is
-		// sent, so there is no Bearer to compare account_id against; ownership
-		// comes from the SQL clause instead (ADR-006 §8.9).
-		return g, nil
-	}
-
-	if deviceID == "" {
-		return Grant{}, apperror.
-			ErrBadRequest("X-Device-Id is required for guest checkout").
-			WithCode(apperror.CodeDeviceIDRequired)
-	}
-	// Constant time: this value can be retried from a script, and a
-	// byte-by-byte comparison that exits early leaks the correct prefix.
-	want := DeviceHash(string(v.pepper), deviceID)
-	if !hmac.Equal([]byte(want), []byte(g.DeviceHash)) {
-		return Grant{}, apperror.
-			ErrUnauthorized("grant was issued to a different device").
-			WithCode(apperror.CodeDeviceMismatch)
-	}
-	return g, nil
+// Sessions is required: without it an account grant cannot be checked, and the middleware answers 503
+// rather than letting the request through. Failing closed is the whole point of §8.17 — a guard that
+// skips the check when misconfigured is the hole it was written to close. Guest grants never touch it.
+type Config struct {
+	DevicePepper []byte
+	Sessions     *token.Issuer
 }
 
 type ctxKey struct{}
 
-// NewContext stores a verified grant.
-func NewContext(ctx context.Context, g Grant) context.Context {
+// ErrMissing is the 401 for a request without X-Grant-Token.
+func ErrMissing() error {
+	return apperror.ErrUnauthorized("X-Grant-Token wajib").WithCode(CodeGrantTokenMissing)
+}
+
+// ErrInvalid is the 401 for a grant that is unknown, expired, malformed, or no longer usable (its booking ended, or it
+// belongs to another event). One answer for all of them: the client gets a fresh state from GET /queue/me.
+func ErrInvalid() error {
+	return apperror.ErrUnauthorized("Grant tidak dikenal atau kedaluwarsa").WithCode(CodeGrantTokenInvalid)
+}
+
+// Middleware verifies the grant and calls next with the Grant in the context. Checks, in order:
+// missing header → 401 GRANT_TOKEN_MISSING; no hash, or a hash with both or neither identity → 401
+// GRANT_TOKEN_INVALID; guest without X-Device-Id → 400 DEVICE_ID_REQUIRED; guest from another device →
+// 401 DEVICE_MISMATCH; account grant without a Bearer for the same account → 401 UNAUTHORIZED /
+// TOKEN_EXPIRED / TOKEN_INVALID (§8.17). Redis unreachable → 503: no credential check, no access.
+//
+// The session is checked LAST, after grant and device, as §8.17 specifies: the weaker credential
+// cannot be used to probe the stronger one, and a guest never needs a session at all.
+func Middleware(rdb goredis.UniversalClient, cfg Config) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			g, err := verify(r, rdb, cfg)
+			if err != nil {
+				apinizer.WriteError(w, err)
+				return
+			}
+			next.ServeHTTP(w, r.WithContext(WithGrant(r.Context(), g)))
+		})
+	}
+}
+
+func verify(r *http.Request, rdb goredis.UniversalClient, cfg Config) (Grant, error) {
+	token := r.Header.Get(HeaderGrantToken)
+	if token == "" {
+		return Grant{}, ErrMissing()
+	}
+	h, err := rdb.HGetAll(r.Context(), rediskeys.Grant(token)).Result()
+	if err != nil {
+		slog.Warn("grantauth: cannot read the grant", slog.Any("err", err))
+		return Grant{}, apperror.ErrServiceUnavailable("Layanan sedang sibuk, coba lagi").WithCode(apinizer.ErrorCodeInternal)
+	}
+	invalid := ErrInvalid()
+	if len(h) == 0 {
+		return Grant{}, invalid
+	}
+	g := Grant{
+		Token:      token,
+		EventID:    h[rediskeys.FieldEventID],
+		BookingID:  h[rediskeys.FieldBookingID],
+		QueueToken: h[rediskeys.FieldQueueToken],
+		AccountID:  h[rediskeys.FieldAccountID],
+		DeviceHash: h[rediskeys.FieldDeviceHash],
+	}
+	if g.EventID == "" || g.BookingID == "" || g.QueueToken == "" || (g.AccountID == "") == (g.DeviceHash == "") {
+		// admission-ctl writes all three ids and exactly one identity; anything else is a bug or tampering.
+		slog.Error("grantauth: malformed grant hash", slog.Bool("account", g.AccountID != ""), slog.Bool("device", g.DeviceHash != ""))
+		return Grant{}, invalid
+	}
+	if g.DeviceHash != "" {
+		device := r.Header.Get(HeaderDeviceID)
+		if device == "" {
+			return Grant{}, apperror.ErrBadRequest("X-Device-Id wajib untuk pembeli tamu").WithCode(CodeDeviceIDRequired)
+		}
+		if subtle.ConstantTimeCompare([]byte(g.DeviceHash), []byte(DeviceHash(cfg.DevicePepper, device))) != 1 {
+			return Grant{}, apperror.ErrUnauthorized("Grant terdaftar di perangkat lain").WithCode(CodeDeviceMismatch)
+		}
+		// A guest grant ignores Authorization entirely (§8.17): a token sent
+		// alongside one is not an error, it is simply not what binds the grant.
+		return g, nil
+	}
+	if err := checkSession(r, g, cfg); err != nil {
+		return Grant{}, err
+	}
+	return g, nil
+}
+
+// checkSession enforces ADR-006 §8.17 for an account grant.
+//
+// It verifies the session and nothing else: the account id used for attribution is already on the
+// grant, written by admission-ctl from the queue token. v2.3 took it from the header instead, and a
+// stale header meant a booking attributed to the wrong account; here a stale session is a 401 the
+// client can act on by refreshing (§1.4).
+func checkSession(r *http.Request, g Grant, cfg Config) error {
+	if cfg.Sessions == nil {
+		// Fail closed. Letting the request through would silently restore
+		// exactly the gap §8.17 closes, and would do it on the path where a
+		// leaked grant is worth the most.
+		slog.Error("grantauth: no session verifier configured; cannot check an account grant",
+			slog.String("account_id", g.AccountID))
+		return apperror.ErrServiceUnavailable("Layanan sedang sibuk, coba lagi").WithCode(apinizer.ErrorCodeInternal)
+	}
+	raw, ok := bearer(r.Header.Get(HeaderAuthorization))
+	if !ok {
+		return apperror.ErrUnauthorized("Authorization wajib untuk grant milik akun").WithCode(CodeUnauthorized)
+	}
+	claims, err := cfg.Sessions.Verify(raw)
+	switch {
+	case errors.Is(err, token.ErrExpired):
+		return apperror.ErrUnauthorized("Sesi kedaluwarsa, muat ulang lalu coba lagi").WithCode(apperror.CodeTokenExpired)
+	case err != nil:
+		return apperror.ErrUnauthorized("Sesi tidak sah").WithCode(apperror.CodeTokenInvalid)
+	}
+	// Another account's valid session answers UNAUTHORIZED, not TOKEN_INVALID:
+	// the token is fine, it is the pairing that is wrong, and the client's fix
+	// is to log in as the right account rather than to refresh.
+	if subtle.ConstantTimeCompare([]byte(claims.Subject), []byte(g.AccountID)) != 1 {
+		slog.Warn("grantauth: session does not match the grant's account")
+		return apperror.ErrUnauthorized("Sesi bukan milik akun pemegang grant").WithCode(CodeUnauthorized)
+	}
+	return nil
+}
+
+// bearer extracts the token from an Authorization header, case-insensitively on the scheme as RFC 7235
+// requires. An empty header and a header with another scheme both read as absent.
+func bearer(header string) (string, bool) {
+	const prefix = "bearer "
+	if len(header) <= len(prefix) || !strings.EqualFold(header[:len(prefix)], prefix) {
+		return "", false
+	}
+	raw := strings.TrimSpace(header[len(prefix):])
+	return raw, raw != ""
+}
+
+// WithGrant returns ctx carrying g, as the middleware does. For handler tests.
+func WithGrant(ctx context.Context, g Grant) context.Context {
 	return context.WithValue(ctx, ctxKey{}, g)
 }
 
-// FromContext returns the grant placed by Middleware.
+// FromContext returns the Grant the middleware stored.
 func FromContext(ctx context.Context) (Grant, bool) {
 	g, ok := ctx.Value(ctxKey{}).(Grant)
 	return g, ok
 }
 
-// Middleware verifies the grant and stores it on the request context. onError
-// renders an *apperror.AppError in the service's own envelope, so this package
-// does not depend on a response writer.
-func (v *Verifier) Middleware(onError func(http.ResponseWriter, *http.Request, error)) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			g, err := v.Verify(r.Context(), r.Header.Get(HeaderGrantToken), r.Header.Get(HeaderDeviceID))
-			if err != nil {
-				onError(w, r, err)
-				return
-			}
-			next.ServeHTTP(w, r.WithContext(NewContext(r.Context(), g)))
-		})
+// DeviceHash is HMAC-SHA256(pepper, deviceID) in hex: the same value queue's join stores as device_hash.
+// An empty device id hashes to empty, which matches no stored hash.
+func DeviceHash(pepper []byte, deviceID string) string {
+	if deviceID == "" {
+		return ""
 	}
+	m := hmac.New(sha256.New, pepper)
+	m.Write([]byte(deviceID))
+	return hex.EncodeToString(m.Sum(nil))
 }

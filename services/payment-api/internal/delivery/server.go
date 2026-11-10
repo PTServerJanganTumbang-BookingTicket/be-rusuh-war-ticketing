@@ -6,11 +6,13 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"net/http"
+	"time"
 
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/apinizer"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/grantauth"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/idgen"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/pgutil"
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/token"
 	paymentcfg "github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/payment-api/internal/config"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/payment-api/internal/payment/application/usecase"
 	paymenthttp "github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/payment-api/internal/payment/infrastructure/http"
@@ -61,14 +63,20 @@ func New(ctx context.Context, cfg paymentcfg.Config) (*Server, error) {
 		ServerKey:           cfg.Midtrans.ServerKey,
 	})
 
-	verifier, err := grantauth.NewVerifier(paymentredis.NewGrantStore(rdb), cfg.App.DevicePepper)
+	// Verify-only: payment-api never issues a session, so the TTL here is
+	// irrelevant and only has to be positive. Same construction as queue's.
+	sessions, err := token.NewIssuer(cfg.App.JWTSecret, "rusuh-user", time.Hour)
 	if err != nil {
 		pool.Close()
 		_ = rdb.Close()
 		return nil, err
 	}
-	guard := verifier.Middleware(func(w http.ResponseWriter, _ *http.Request, err error) {
-		paymenthttp.WriteError(w, err)
+	// The shared guard, the same one booking mounts: X-Grant-Token, then the
+	// guest device binding, then the account session (ADR-006 §8.9, §8.13,
+	// §8.17). It reads grant:{token} itself through pkg/rediskeys.
+	guard := grantauth.Middleware(rdb, grantauth.Config{
+		DevicePepper: []byte(cfg.App.DevicePepper),
+		Sessions:     sessions,
 	})
 
 	mux := http.NewServeMux()

@@ -25,10 +25,14 @@ type Bank struct {
 	IconURL string `json:"icon_url"`
 }
 
-// TTL is the countdown block shared by initiate and status.
+// TTL is the deadline block on §5.2.
+//
+// No ttl_seconds: contract v2.15 removed it from every endpoint that had one.
+// It was a second source for one number and stale the moment the response left
+// the server. The client counts down from ExpiresAt using ServerTime to correct
+// its own clock drift (BR-10).
 type TTL struct {
 	ExpiresAt  string `json:"expires_at"`
-	TTLSeconds int    `json:"ttl_seconds"`
 	ServerTime string `json:"server_time"`
 }
 
@@ -57,13 +61,15 @@ type RetryResponse struct {
 // StatusResponse is GET /payments/{booking_id}/status (§5.4).
 //
 // Fields are omitempty because the contract returns a different subset per
-// status: PENDING carries ttl_seconds, PAID carries paid_at and redirect_url,
+// status: PENDING carries expires_at, PAID carries paid_at and redirect_url,
 // EXPIRED carries expired_at, FAILED carries reason, can_retry, attempt and
 // payment_expires_at.
 type StatusResponse struct {
-	Status           string `json:"status"`
-	ServerTime       string `json:"server_time,omitempty"`
-	TTLSeconds       *int   `json:"ttl_seconds,omitempty"`
+	Status     string `json:"status"`
+	ServerTime string `json:"server_time,omitempty"`
+	// ExpiresAt is the payment deadline, on PENDING only (v2.15). It replaced
+	// ttl_seconds: the client derives the countdown from it and ServerTime.
+	ExpiresAt        string `json:"expires_at,omitempty"`
 	PaidAt           string `json:"paid_at,omitempty"`
 	RedirectURL      string `json:"redirect_url,omitempty"`
 	ExpiredAt        string `json:"expired_at,omitempty"`

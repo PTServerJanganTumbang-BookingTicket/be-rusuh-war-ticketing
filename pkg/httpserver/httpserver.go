@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -17,8 +18,9 @@ import (
 // blocks until a SIGINT or SIGTERM is received. It then attempts a graceful
 // shutdown within five seconds.
 //
-// onStart is called just before ListenAndServe; use it to emit a startup log
-// line with any service-specific fields (e.g. mode or feature flags).
+// onStart is called once the port is bound, so the server already accepts
+// connections when it runs; use it to emit a startup log line with any
+// service-specific fields (e.g. mode or feature flags).
 func Run(port int, handler http.Handler, onStart func()) {
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", port),
@@ -26,10 +28,18 @@ func Run(port int, handler http.Handler, onStart func()) {
 		Handler:           handler,
 	}
 
+	// Bind before onStart: calling it before ListenAndServe let callers (and
+	// tests) observe "started" while the port was not yet listening.
+	ln, err := net.Listen("tcp", srv.Addr)
+	if err != nil {
+		slog.Error("Failed to start", slog.Any("err", err))
+		os.Exit(1)
+	}
+	onStart()
+
 	go func() {
-		onStart()
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			slog.Error("Failed to start", slog.Any("err", err))
+		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+			slog.Error("Failed to serve", slog.Any("err", err))
 			os.Exit(1)
 		}
 	}()

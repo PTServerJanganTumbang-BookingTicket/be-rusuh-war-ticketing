@@ -78,7 +78,7 @@ func (u *fakeUsecase) HandleNotification(ctx context.Context, n dto.Notification
 func testGuard(g grantauth.Grant) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			next.ServeHTTP(w, r.WithContext(grantauth.NewContext(r.Context(), g)))
+			next.ServeHTTP(w, r.WithContext(grantauth.WithGrant(r.Context(), g)))
 		})
 	}
 }

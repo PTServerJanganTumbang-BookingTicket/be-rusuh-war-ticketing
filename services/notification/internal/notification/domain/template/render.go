@@ -77,8 +77,15 @@ func (r *Renderer) Render(envelope events.Envelope) (Recipient, Rendered, error)
 		if err := json.Unmarshal(envelope.Payload, &p); err != nil {
 			return Recipient{}, Rendered{}, fmt.Errorf("decode %s: %w", envelope.Type, err)
 		}
-		// FR-26: the e-ticket goes to the NIK holder, not the buyer.
-		rec := Recipient{Email: p.HolderEmail, Locale: p.Locale.Normalize()}
+		// ADR-006 §8.15 (FR-26 as amended): every e-ticket of a booking goes to
+		// the BUYER's address, who forwards the links. LegacyHolderEmail is the
+		// fallback for rows queued before that change and still on the queue -
+		// delivering one to the old address beats not delivering it.
+		to := p.ContactEmail
+		if to == "" {
+			to = p.LegacyHolderEmail
+		}
+		rec := Recipient{Email: to, Locale: p.Locale.Normalize()}
 		out, err := r.renderFor(envelope.Type, rec.Locale, map[string]any{
 			"TicketID":    p.TicketID,
 			"EventName":   p.EventName,

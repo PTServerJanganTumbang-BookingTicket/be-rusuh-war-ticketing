@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log/slog"
 	"os"
 
@@ -22,7 +23,14 @@ func main() {
 
 	logger.Setup(cfg.Log.Level, cfg.Log.Format)
 
-	httpserver.Run(cfg.App.Port, delivery.New(cfg), func() {
+	handler, deps, err := delivery.New(context.Background(), cfg)
+	if err != nil {
+		slog.Error("Failed to start", slog.Any("err", err))
+		os.Exit(1)
+	}
+	defer deps.Close()
+
+	httpserver.Run(cfg.App.Port, handler, func() {
 		slog.Info("Server starting", slog.Int("port", cfg.App.Port))
 	})
 }

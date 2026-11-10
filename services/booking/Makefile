@@ -8,16 +8,7 @@ mock-install:
 	go install go.uber.org/mock/mockgen@latest
 
 mock:
-	@echo "Generating mocks..."
-	$(MOCKGEN) \
-		-source=internal/booking/port/inbound/booking.go \
-		-destination=$(MOCK_DIR)/booking/port/inbound/booking_mock.go \
-		-package=mock_inbound
-	$(MOCKGEN) \
-		-source=internal/booking/port/outbound/booking.go \
-		-destination=$(MOCK_DIR)/booking/port/outbound/booking_mock.go \
-		-package=mock_outbound
-	@echo "Done."
+	@echo "No mocks: tests use fakes, miniredis and pkg/pgtest (docs/DEVELOPMENT-FLOW.md)."
 
 mod-tidy:
 	go mod tidy

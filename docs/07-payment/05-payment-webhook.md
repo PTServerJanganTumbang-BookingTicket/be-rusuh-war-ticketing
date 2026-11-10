@@ -71,7 +71,6 @@ sequenceDiagram
     H->>DB: COMMIT
 
     opt applied confirm, post-commit, best effort
-        H->>R: ZREM expiries:{ev} {booking_id}
         H->>R: DEL acct:{ev}:{account_id}, DEL token:{uuid},<br/>SET settled:{uuid} = booking_id EX tombstone
     end
     H-->>M: 200 Callback processed
@@ -222,8 +221,9 @@ RETURNING id
 
 - One ticket per `booking_item`, which is one row per NIK (BR-02).
 - `ON CONFLICT … DO NOTHING` is the double-QR guard. The partial unique index
-  added in migration `0006` is what makes it possible: `0002` had only
-  `booking_id`, so two attempts for one booking did not collide.
+  on `tickets(booking_item_id)` is what makes it possible: an index on
+  `booking_id` alone would not have collided across two attempts for one
+  booking.
 - `RETURNING id` is what makes the call safe to repeat — only rows actually
   inserted come back, so exactly as many e-ticket emails are queued as tickets
   created. A seat that already had a ticket is skipped and deliberately not
@@ -231,8 +231,13 @@ RETURNING id
 - `qr_nonce` is 256 bits of `crypto/rand`, and deliberately not derived from the
   ticket id or the NIK: a QR is screenshotted, forwarded and photographed, so it
   must be unguessable and must carry no identity (ADR-005 §8).
-- One email per **holder**, not one per purchase: FR-26 requires the ticket to
-  reach each holder, which is why `holder_email` is per seat.
+- One email per **seat**, all of them to `bookings.contact_email`. FR-26 wants
+  every e-ticket delivered; ADR-006 §8.15 settled where to. `booking_items`
+  never collected a per-seat address and migration `0010` dropped the column,
+  so the buyer's address is the only one that exists and they forward each link
+  on. `tickets.holder_email` survives and is filled with `contact_email`: the
+  seat is bound by its NIK (BR-02), which is what decides who may enter — the
+  address never did.
 
 Every outbox row is written in the same transaction as the state change it
 describes. That is the whole point of the pattern: no instant exists at which a
@@ -245,7 +250,6 @@ Best effort, after the commit, and **only** for an applied confirm:
 
 | Op | Why |
 |---|---|
-| `ZREM expiries:{ev} {booking_id}` | Harmless if missed — the sweep re-reads the booking and finds it `CONFIRMED` — but leaving it costs a wasted row read every tick for the rest of the sale |
 | `DEL acct:{ev}:{account_id}` | BR-07 allows one **active** engagement, and a confirmed purchase is not active. A customer who wants a second pair of tickets must not be locked out |
 | `DEL token:{uuid}` | The engagement is over |
 | `SET settled:{uuid} = {booking_id}` with a TTL | The §3.3 tombstone: it stops a guest who refreshes between settlement and the e-ticket email from being shown an expiry screen. Telling someone who just paid that their session died is the "jangan PHP" failure in its purest form, and it is factually wrong rather than merely unhelpful |
@@ -294,12 +298,12 @@ with an alarm on every execution before production.
 |---|---|---|
 | Aurora | `payment_events` | INSERT (first statement, `UNIQUE` guard) |
 | Aurora | `bookings` | SELECT … FOR UPDATE, then UPDATE per action |
-| Aurora | `booking_items` | SELECT (seats, holder emails) |
+| Aurora | `booking_items` | SELECT (seats: id, category, price, NIK hmac and mask) |
 | Aurora | `tickets` | INSERT … ON CONFLICT DO NOTHING |
 | Aurora | `nik_claims` | DELETE on expiry |
 | Aurora | `outbox` | INSERT — `ticket.issue`, `payment.failed_notice`, `booking.expired` |
 | Aurora | `events` | SELECT (name, date, venue for the email; best effort) |
-| Redis | `expiries:{ev}`, `acct:*`, `token:*`, `settled:*` | Post-commit, confirm only |
+| Redis | `acct:*`, `token:*`, `settled:*` | Post-commit, confirm only |
 
 ## 12. Responses and errors
 
@@ -357,15 +361,15 @@ Implemented in `internal/payment/domain/valueobject/{signature,transition,order_
 - [x] unit: tickets are one per `booking_item`, idempotent per seat, and a seat
       already issued is skipped and not re-emailed
 - [x] unit: the e-ticket payload carries the nonce and **not** the NIK hash
-- [x] unit: expired notice reaches the buyer and every distinct holder, with
-      blanks dropped
+- [x] unit: expired notice reaches the buyer alone, and reads no per-seat
+      address (§8.15)
 - [x] unit: credential cleanup runs only for an applied confirm, and a Redis
       failure never fails the webhook
 - [x] unit (handler): every outcome answers 200 with an identical body; an
       unparseable body is a 200 and is never processed; the literal
       `/payments/webhook` route beats `POST /payments/{booking_id}`
 - [ ] integration (Midtrans sandbox): pay a real VA and confirm one ticket per
-      seat and one email per holder
+      seat and one email per seat, all to `contact_email`
 - [ ] integration: redeliver the same notification three times and confirm one
       ticket per seat
 

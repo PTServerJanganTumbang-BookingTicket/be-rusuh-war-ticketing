@@ -76,7 +76,6 @@ type BookingItem struct {
 	UnitPrice    int64
 	NIKHmac      string
 	NIKMasked    string
-	HolderEmail  string
 }
 
 // Ticket is an issued ticket row.

@@ -27,6 +27,15 @@ type App struct {
 	// NOT the NIK pepper and NOT JWT_SECRET. It may be rotated between sales
 	// but never during one: rotation invalidates every live binding at once.
 	DevicePepper string
+
+	// JWTSecret verifies the account session on a grant that carries an
+	// account_id (ADR-006 §8.17). The SAME secret user-service signs with:
+	// payment-api only verifies, it never issues.
+	//
+	// Required, because the guard fails closed without it: an account grant
+	// would answer 503 rather than skip the check, and skipping it is the hole
+	// §8.17 closes.
+	JWTSecret string
 }
 
 // Log holds configuration for structured logging.

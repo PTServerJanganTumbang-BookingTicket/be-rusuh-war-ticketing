@@ -16,6 +16,7 @@ func Load() (Config, error) {
 			Env:          envutil.Env("APP_ENV", "local"),
 			Port:         envutil.EnvInt("APP_PORT", 8085),
 			DevicePepper: os.Getenv("DEVICE_PEPPER"),
+			JWTSecret:    os.Getenv("JWT_SECRET"),
 		},
 		Log: Log{
 			Level:  envutil.Env("LOG_LEVEL", "info"),
@@ -67,6 +68,11 @@ func (c Config) validate() error {
 		// would reject all valid callbacks and confirm no booking ever - while
 		// the service still reported healthy.
 		return fmt.Errorf("MIDTRANS_SERVER_KEY is required and has no default: without it every notification fails signature verification")
+	}
+	if c.App.JWTSecret == "" {
+		// Without it every logged-in customer gets 503 at the payment step,
+		// because the guard refuses to skip the §8.17 session check.
+		return fmt.Errorf("JWT_SECRET is required and has no default: without it no account grant can be verified")
 	}
 	if c.App.DevicePepper == "" {
 		return fmt.Errorf("DEVICE_PEPPER is required and has no default: without it every guest grant fails the device check")

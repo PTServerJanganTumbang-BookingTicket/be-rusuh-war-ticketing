@@ -165,8 +165,6 @@ type ICredentialStore interface {
 	// guest who refreshes between settlement and the e-ticket email from seeing
 	// an expiry screen (api-contracts §3.3).
 	SettleEngagement(ctx context.Context, in SettleInput) error
-	// UnscheduleExpiry removes the booking from the sweep's scheduler ZSET.
-	UnscheduleExpiry(ctx context.Context, eventID, bookingID string) error
 }
 
 // SettleInput is the credential cleanup for one confirmed booking.

@@ -49,7 +49,6 @@ func TestHandleNotification_Settlement_Confirms(t *testing.T) {
 
 	require.NoError(t, h.uc.HandleNotification(context.Background(), settlement()))
 
-	assert.Equal(t, 1, h.creds.unschedCalls)
 	require.Equal(t, 1, h.creds.settleCalls)
 	assert.Equal(t, "EV-1", h.creds.lastSettle.EventID)
 	assert.Equal(t, "RB-00912", h.creds.lastSettle.BookingID)
@@ -189,7 +188,6 @@ func TestHandleNotification_NonConfirmActions_LeaveCredentialsAlone(t *testing.T
 
 			require.NoError(t, h.uc.HandleNotification(context.Background(), settlement()))
 			assert.Equal(t, 0, h.creds.settleCalls)
-			assert.Equal(t, 0, h.creds.unschedCalls)
 		})
 	}
 }
@@ -217,9 +215,6 @@ func TestHandleNotification_LateSettlement_StillSucceedsAndSkipsCleanup(t *testi
 func TestHandleNotification_CleanupFailure_DoesNotFailTheWebhook(t *testing.T) {
 	h := newHarness(t)
 	h.creds.settleFn = func(context.Context, portout.SettleInput) error {
-		return errors.New("redis: connection refused")
-	}
-	h.creds.unscheduleFn = func(context.Context, string, string) error {
 		return errors.New("redis: connection refused")
 	}
 	h.repo.notifyFn = func(context.Context, portout.NotificationInput) (portout.NotificationOutcome, error) {
