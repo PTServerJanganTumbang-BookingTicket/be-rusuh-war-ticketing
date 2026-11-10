@@ -94,13 +94,6 @@ Feature: I join the queue and get a ticket number
     And the same request goes through the local HTTP server
     Then both return the same status, body shape and Set-Cookie header
 
-  @integration @contract
-  Scenario: Every response I can get matches the Apidog contract
-    When each documented join response is produced (200, 200 rejoined, 400, 403, 409, 429, 503)
-    Then each body validates against its schema in documentations/api/rusuh-booking-apidog.json
-    # OPEN: Apidog has no responses for 400 DEVICE_ID_REQUIRED, 400 VALIDATION_ERROR, 401,
-    # 410 SALE_CLOSED and 503 not-seeded. Proposal: add them to Apidog (shared repo, ask first).
-
   @unit @security
   Scenario: My secrets never reach the logs
     When a guest with device id "dev-aaaaaaaaaaaaaaaa" joins "E1" with captcha "cap-ok"

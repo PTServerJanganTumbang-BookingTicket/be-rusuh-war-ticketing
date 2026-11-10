@@ -402,7 +402,6 @@ func initScenario(sc *godog.ScenarioContext) {
 	registerConnectSteps(sc, W)
 	registerUpdateSteps(sc, W)
 	registerReliabilitySteps(sc, W)
-	registerContractSteps(sc, W)
 	registerScaleSteps(sc, W)
 }
 

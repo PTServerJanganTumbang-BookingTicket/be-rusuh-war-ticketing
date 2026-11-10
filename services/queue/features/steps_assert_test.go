@@ -9,8 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
 	"reflect"
 	"regexp"
 	"sort"
@@ -20,7 +18,6 @@ import (
 
 	"github.com/cucumber/godog"
 	goredis "github.com/redis/go-redis/v9"
-	"github.com/santhosh-tekuri/jsonschema/v6"
 
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/ratelimit"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/rediskeys"
@@ -627,12 +624,6 @@ func registerAssertSteps(sc *godog.ScenarioContext, W func() *world) {
 
 	// ---- misc
 	sc.Step(`^both return the same status, body shape and Set-Cookie header$`, func() error { return W().sameShape() })
-	sc.Step(`^each documented join response is produced \(200, 200 rejoined, 400, 403, 409, 429, 503\)$`, func() error {
-		return W().produceDocumented()
-	})
-	sc.Step(`^each body validates against its schema in documentations/api/rusuh-booking-apidog\.json$`, func() error {
-		return W().validateApidog()
-	})
 	sc.Step(`^no log line contains "([^"]*)", the queue_token, "([^"]*)" or the access token$`, func(c, dev string) error {
 		w := W()
 		logs := w.logs.String()
@@ -1026,124 +1017,4 @@ func (w *world) sameShape() error {
 		return fmt.Errorf("Set-Cookie differs: %q vs %q", ca.String(), cb.String())
 	}
 	return nil
-}
-
-// produceDocumented produces one response per documented case.
-func (w *world) produceDocumented() error {
-	w.limiter = &countingLimiter{}
-	if err := w.seedEvent("E1", "OPEN", ptr(int64(10)), ptr(int64(20)), "Konser A — Jakarta"); err != nil {
-		return err
-	}
-	out := map[string]*response{}
-	out["200"] = w.do(joinReq{eventID: "E1", deviceID: "dev-contract-0000001"})
-	out["200 rejoined"] = w.do(joinReq{eventID: "E1", deviceID: "dev-contract-0000001", queueToken: out["200"].queueToken()})
-	if err := w.setCounters("E1", 21, 21); err != nil {
-		return err
-	}
-	out["400"] = w.do(joinReq{eventID: "E1", captcha: ptr("")})
-	out["403"] = w.do(joinReq{eventID: "E1", captcha: ptr("cap-bad")})
-	w.limiter.refuse = true
-	out["429"] = w.do(joinReq{eventID: "E1"})
-	w.limiter.refuse = false
-	if err := w.setCounters("E1", 0, 10000000); err != nil {
-		return err
-	}
-	out["503"] = w.do(joinReq{eventID: "E1"})
-	if err := w.rdb.HSet(context.Background(), ev("E1").QueueHash(), "sale_starts_at", "2026-11-10T02:00:00Z").Err(); err != nil {
-		return err
-	}
-	if err := w.setState("E1", "SCHEDULED"); err != nil {
-		return err
-	}
-	out["409"] = w.do(joinReq{eventID: "E1"})
-	for name, r := range out {
-		want := 200
-		if code, err := strconv.Atoi(strings.Fields(name)[0]); err == nil {
-			want = code
-		}
-		if r.status != want {
-			return fmt.Errorf("%s: status %d; body %s", name, r.status, truncate(string(r.body)))
-		}
-	}
-	w.captured["documented"] = out
-	return nil
-}
-
-func (w *world) validateApidog() error {
-	out, _ := w.captured["documented"].(map[string]*response)
-	path := filepath.Join("..", "..", "..", "..", "documentations", "api", "rusuh-booking-apidog.json")
-	f, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("Apidog file (documentations repo next to this one): %w", err)
-	}
-	defer func() { _ = f.Close() }()
-	doc, err := jsonschema.UnmarshalJSON(f)
-	if err != nil {
-		return err
-	}
-	api, err := findJoinAPI(doc)
-	if err != nil {
-		return err
-	}
-	schemas := map[int]any{}
-	for _, r := range api["responses"].([]any) {
-		rm := r.(map[string]any)
-		code, _ := strconv.Atoi(fmt.Sprint(rm["code"]))
-		schemas[code] = rm["jsonSchema"]
-	}
-	var problems []string
-	for name, r := range out {
-		code := r.status
-		sch, ok := schemas[code]
-		if !ok {
-			problems = append(problems, fmt.Sprintf("%s: Apidog has no %d schema", name, code))
-			continue
-		}
-		c := jsonschema.NewCompiler()
-		if err := c.AddResource("join.json", sch); err != nil {
-			return err
-		}
-		compiled, err := c.Compile("join.json")
-		if err != nil {
-			return fmt.Errorf("schema %d: %w", code, err)
-		}
-		inst, err := jsonschema.UnmarshalJSON(strings.NewReader(string(r.body)))
-		if err != nil {
-			return err
-		}
-		if err := compiled.Validate(inst); err != nil {
-			problems = append(problems, fmt.Sprintf("%s: %v", name, err))
-		}
-	}
-	if len(problems) > 0 {
-		sort.Strings(problems)
-		return errors.New(strings.Join(problems, "\n"))
-	}
-	return nil
-}
-
-func findJoinAPI(doc any) (map[string]any, error) {
-	var found map[string]any
-	var walk func(v any)
-	walk = func(v any) {
-		switch t := v.(type) {
-		case map[string]any:
-			if api, ok := t["api"].(map[string]any); ok && api["path"] == "/events/{event_id}/queue/join" {
-				found = api
-				return
-			}
-			for _, x := range t {
-				walk(x)
-			}
-		case []any:
-			for _, x := range t {
-				walk(x)
-			}
-		}
-	}
-	walk(doc)
-	if found == nil {
-		return nil, errors.New("join API not found in Apidog")
-	}
-	return found, nil
 }

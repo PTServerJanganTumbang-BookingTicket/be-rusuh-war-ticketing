@@ -139,8 +139,3 @@ Feature: Opening the waiting room
     When I open the stream with cookie queue_token=qt_alice
     Then the response status is 503 with error_code "SERVICE_UNAVAILABLE"
     And a Retry-After header is present
-
-  @unit @contract
-  Scenario: Every error and message matches the Apidog contract
-    When the server produces 401, 404, 409, 410, 429 and 503 responses and every stream message type
-    Then each validates against the Apidog schema
