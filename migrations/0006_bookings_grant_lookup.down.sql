@@ -1,4 +1,4 @@
--- 0005_bookings_grant_lookup.down.sql
+-- 0006_bookings_grant_lookup.down.sql
 BEGIN;
 DROP INDEX IF EXISTS bookings_event_queue_token_key;
 DROP INDEX IF EXISTS bookings_grant_token_key;

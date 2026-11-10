@@ -94,8 +94,8 @@ The token expires at **event_date + 1 day, 00:00 Asia/Jakarta** (the gate opens 
 |---|---|---|---|
 | Redis | `grant:{token}` | HGETALL | via `pkg/grantauth` |
 | Aurora | `bookings` JOIN `events` | SELECT | writer; ownership clause |
-| Aurora | `booking_items` | SELECT | `0008` |
-| Aurora | `tickets` | SELECT | `0002` + `booking_item_id` (`0008`); written by the ticket issuer (07-payment / outbox) |
+| Aurora | `booking_items` | SELECT | `0009` |
+| Aurora | `tickets` | SELECT | `0002` + `booking_item_id` (`0009`); written by the ticket issuer (07-payment / outbox) |
 
 ## 5. Responses and errors
 

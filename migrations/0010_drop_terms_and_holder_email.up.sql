@@ -1,4 +1,4 @@
--- 0009_drop_terms_and_holder_email.up.sql
+-- 0010_drop_terms_and_holder_email.up.sql
 --
 --   * bookings.terms_version, bookings.terms_accepted_at and their check bookings_terms_required: consent (PDP and
 --     terms) is recorded at registration, not at POST /bookings (ADR-006 §8.16). Without dropping the check, the

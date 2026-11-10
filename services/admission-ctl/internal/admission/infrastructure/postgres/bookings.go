@@ -28,7 +28,7 @@ type Bookings struct{ db Querier }
 func NewBookings(db Querier) *Bookings { return &Bookings{db: db} }
 
 // CountSQL counts who is inside one event. The status list matches the predicate of
-// the partial index bookings_event_active_idx (migration 0006), so the planner can use it.
+// the partial index bookings_event_active_idx (migration 0007), so the planner can use it.
 // open: every active status. browsing: only GRANTED and SELECTING (ADR-006 §3.2).
 const CountSQL = `SELECT
     count(*),
@@ -79,7 +79,7 @@ func (b *Bookings) InsertGranted(ctx context.Context, g domain.Grant) (domain.Bo
 
 // SweepSQL lapses every GRANTED booking past its deadline in one compare-and-set UPDATE. A row another sweeper or
 // the booking service already moved no longer matches status = 'GRANTED', so exactly one caller gets it back.
-// The partial index bookings_granted_deadline_idx (migration 0006) finds the due rows without scanning the table.
+// The partial index bookings_granted_deadline_idx (migration 0007) finds the due rows without scanning the table.
 const SweepSQL = `UPDATE bookings SET status = 'LAPSED'
 WHERE status = 'GRANTED' AND booking_expires_at <= $1
 RETURNING id, event_id, COALESCE(queue_token, ''), COALESCE(grant_token, '')`
@@ -91,7 +91,7 @@ func (b *Bookings) LapseDue(ctx context.Context, now time.Time) ([]domain.Ended,
 
 // ExpireSelectingSQL ends every SELECTING booking past its 5-minute deadline: the customer opened the ticket page but
 // did not press Pay in time. Same compare-and-set shape as SweepSQL; the partial index bookings_selecting_deadline_idx
-// (migration 0008) finds the due rows. A SELECTING row holds no stock and no NIK, so nothing else is released.
+// (migration 0009) finds the due rows. A SELECTING row holds no stock and no NIK, so nothing else is released.
 const ExpireSelectingSQL = `UPDATE bookings SET status = 'EXPIRED'
 WHERE status = 'SELECTING' AND booking_expires_at <= $1
 RETURNING id, event_id, COALESCE(queue_token, ''), COALESCE(grant_token, '')`

@@ -272,7 +272,7 @@ the next tick's COUNT automatically, with no counter to decrement.
   writer is unreachable, the COUNT fails, the tick skips ADVANCE (the queue freezes, nothing is lost), and
   the INSERTs would have failed anyway.
 - **DECIDED (2026-11-08, ADR-006 §8.12): no `expiries:{ev}` ZSET.** The LAPSED sweep is one `UPDATE … WHERE status = 'GRANTED'
-  AND booking_expires_at <= now RETURNING …` on a partial index (migration `0006`). The deadline lives only in Aurora, so there is
+  AND booking_expires_at <= now RETURNING …` on a partial index (migration `0007`). The deadline lives only in Aurora, so there is
   no crash window between INSERT and `ZADD`, no stale score to rescore, and nothing to rebuild. Cost: one indexed query per tick,
   like the COUNT. The booking plan's `HELD` / `AWAITING_PAYMENT` sweeps are expected to follow the same pattern (open for that plan).
 - **DECIDED (2026-11-08, ADR-006 §8.12): `state`, `issued`, `full_booked_at` are fields of `queue:{ev}`;** `queue:{ev}:resume` is gone.
@@ -335,14 +335,14 @@ the next tick's COUNT automatically, with no counter to decrement.
 ## 8. Tasks
 
 - [x] `pkg/redisscript` + `advance_now_serving.lua` (ADR-006 §3.4) + Lua tests
-- [x] migration: `UNIQUE (event_id, queue_token)` (0005) + partial index on active statuses (0006)
+- [x] migration: `UNIQUE (event_id, queue_token)` (0006) + partial index on active statuses (0007)
 - [x] `services/admission-ctl` scaffold (module, `cmd/worker`, config; ECS task definition not yet)
 - [x] tick loop skeleton (500 ms ticker) with step functions and per-step metrics (metrics are log lines until the EMF adapter lands)
 - [x] postgres `AdmissionCounter.Count(ev)` on the writer pool (`CountAdmission`, plus idempotent `InsertGranted`)
 - [x] RECOVER → SNAPSHOT → COUNT → ADVANCE → FINISH, + `PendingGrants` gauge and alert
 - [x] grant copy into `token:{uuid}` (`/me` reads it) · ~~`free_slots` in the Lua + tick SCHEDULED events (§8.11)~~ **removed by §8.14**
 - [x] remove `free_slots*` from the Lua, its features and `pkg/rediskeys/fields.go`; update `admission_tick.feature` (SCHEDULED events stay ticked)
-- [x] migration `0006`: partial indexes on active statuses (COUNT) and on `booking_expires_at WHERE status = 'GRANTED'` (SWEEP)
+- [x] migration `0007`: partial indexes on active statuses (COUNT) and on `booking_expires_at WHERE status = 'GRANTED'` (SWEEP)
 - [x] SWEEP: GRANTED → LAPSED
 - [x] BROADCAST + heartbeat + `rate_per_min` ([§3.5](#35-rate_per_min), config `ETA_SEED_SLOT_MINUTES`)
 - [x] FULL_BOOKED → CLOSED + `sse-status` on each state change

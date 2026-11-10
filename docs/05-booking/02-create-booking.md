@@ -360,12 +360,12 @@ Integration (real Postgres + Redis cluster):
 ## 8. Tasks
 
 - [x] decide the two open items (§6): HTTP to `POST /nik/validate`; B4 without reconciliation, B5 before the load test
-- [x] migration `0009`: the terms columns, their check and `booking_items.holder_email` are gone (the HELD update
+- [x] migration `0010`: the terms columns, their check and `booking_items.holder_email` are gone (the HELD update
       writes neither)
 - [ ] move nik-verify's `valueobject.Normalize` / `IsValidFormat` to a shared `pkg` so booking and nik-verify use one rule
 - [ ] nik-verify client, `rediskeys` builder for `nik:used`, `hold_booking.lua` + `release_hold.lua`
       (`docs/lua-scripts.md`)
-- [ ] migration `0010` with the HELD → EXPIRED sweep: partial index `bookings (payment_expires_at) WHERE status = 'HELD'`
+- [ ] migration `0011` with the HELD → EXPIRED sweep: partial index `bookings (payment_expires_at) WHERE status = 'HELD'`
 - [ ] tests first, then the use case `CreateBooking`, the handler, and mounting `POST /bookings`
 - [ ] HELD sweep in admission-ctl
 - [ ] ticket page `account {email, nik_masked}` (01 §3.1 step 8)

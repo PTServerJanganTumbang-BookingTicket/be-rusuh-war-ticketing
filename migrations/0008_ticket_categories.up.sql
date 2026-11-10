@@ -1,4 +1,4 @@
--- 0007_ticket_categories.up.sql
+-- 0008_ticket_categories.up.sql
 --
 -- Ticket categories per event, read by GET /events/{event_id}/tickets (api-contracts §4.1,
 -- docs/05-booking/01-get-ticket-selection-page.md). One table holds capacity (impl-plan §2.2).

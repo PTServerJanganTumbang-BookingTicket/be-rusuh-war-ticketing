@@ -131,7 +131,7 @@ Full catalog: [`../redis-keys.md`](../redis-keys.md).
 | Redis | `token:{queue_token}` | HGETALL (rejoin), HSET + EXPIRE | `qt_` + ULID. Fields `ticket_no`, `event_id`, `joined_at`, `account_id` (logged in), `device_hash` (`HMAC(DEVICE_PEPPER, device id)`, whenever a device id is sent). TTL `SALE_WINDOW_SECONDS`. admission-ctl adds `grant_token`, `booking_id`, `booking_expires_at` when it grants (read by `/me`, not by join) |
 | Redis | `acct:{ev}:{account_id}` | GET, SET NX EX, WATCH/MULTI replace | logged-in only |
 | Redis | `queue:{ev}:by_ticket` | ZADD on issue; ZADD NX under WATCH on repair | score = `ticket_no` |
-| Aurora | `bookings` (migration `0005`: `grant_token`, `UNIQUE (event_id, queue_token)`) | SELECT on the writer | one read on a rejoin after the turn |
+| Aurora | `bookings` (migration `0006`: `grant_token`, `UNIQUE (event_id, queue_token)`) | SELECT on the writer | one read on a rejoin after the turn |
 
 Join never runs the admission Lua, never publishes and never writes to Aurora.
 

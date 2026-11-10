@@ -1,4 +1,4 @@
--- 0008_booking_domain.up.sql
+-- 0009_booking_domain.up.sql
 --
 -- What booking-service needs from Aurora for its endpoints (docs/05-booking/README.md §5, impl-plan §4.2):
 --   * booking_items  : one row per seat (BR-02), rendered by GET /bookings/{id}, written by POST /bookings.

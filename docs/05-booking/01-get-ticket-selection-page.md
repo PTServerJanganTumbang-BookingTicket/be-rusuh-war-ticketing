@@ -112,7 +112,7 @@ RETURNING id, event_id, grant_token
 - Credentials: the same as LAPSED today: keep `token:{uuid}` and `acct:{ev}:{id}`, so `/queue/me` answers `EXPIRED`
   and a rejoin finds the old engagement instead of a fresh place.
 - Metric `BookingsSelectingExpired` per row (next to `BookingsLapsed`), `SweepFailures` on a failed statement (as the LAPSED sweep).
-- Index: `bookings (booking_expires_at) WHERE status = 'SELECTING'` (`0008`).
+- Index: `bookings (booking_expires_at) WHERE status = 'SELECTING'` (`0009`).
 - The next tick's COUNT no longer sees the row, so its place goes to the next person (no counter to fix, ADR-006 §3).
 
 ```mermaid
@@ -138,7 +138,7 @@ sequenceDiagram
 | Redis | `stock:{ev}:{cat}` | MGET | read only; written by sale-ops seed and the hold Lua (B4) |
 | Aurora | `bookings` | UPDATE (claim), SELECT, UPDATE (sweep) | writer |
 | Aurora | `events` | SELECT | `0002` |
-| Aurora | `ticket_categories` | SELECT | `0007` |
+| Aurora | `ticket_categories` | SELECT | `0008` |
 
 ## 5. Responses and errors
 

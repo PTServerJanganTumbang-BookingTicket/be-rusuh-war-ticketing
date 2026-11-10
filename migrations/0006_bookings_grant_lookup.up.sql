@@ -1,11 +1,11 @@
--- 0005_bookings_grant_lookup.up.sql
+-- 0006_bookings_grant_lookup.up.sql
 --
 -- What queue-service (join) needs from `bookings` (04-queue README §5 step 2):
 --   * grant_token: admission-ctl writes it at GRANT; join's empty-queue wait
 --     (FR-05) and a rejoin read it back.
 --   * UNIQUE (event_id, queue_token): one engagement per queue_token per event,
 --     and the index join's lookup uses.
--- The admission count's partial index on active statuses landed in 0006 with
+-- The admission count's partial index on active statuses landed in 0007 with
 -- admission-ctl (bookings_store.feature, build step 2).
 
 BEGIN;

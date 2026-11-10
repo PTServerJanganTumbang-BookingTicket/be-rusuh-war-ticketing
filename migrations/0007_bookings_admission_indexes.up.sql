@@ -1,4 +1,4 @@
--- 0006_bookings_admission_indexes.up.sql
+-- 0007_bookings_admission_indexes.up.sql
 --
 -- What admission-ctl needs from `bookings` (bookings_store.feature, build step 2):
 --   * bookings_event_active_idx: the 500 ms admission COUNT (open, browsing) reads

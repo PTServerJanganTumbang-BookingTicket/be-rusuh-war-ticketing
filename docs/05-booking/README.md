@@ -82,9 +82,9 @@ keep its admission place for ever, so that sweep ships with the ticket page.
 
 | Migration | Adds |
 |---|---|
-| `0007_ticket_categories` | `ticket_categories` (price, capacity, `max_per_order`, `sort_order`, …) |
-| `0008_booking_domain` | `booking_items` (one row per seat, with the category name, price and masked NIK as bought), `nik_claims` (one NIK = one seat per event, a database rule), `tickets.booking_item_id` (one ticket per seat), the SELECTING deadline index, and email required **from HELD on** |
-| `0009_drop_terms_and_holder_email` | removes the terms columns and check from `bookings` and `holder_email` from `booking_items` (consent is recorded at registration; the buyer's email receives every e-ticket). `tickets.holder_email` stays: it is the e-ticket's address |
+| `0008_ticket_categories` | `ticket_categories` (price, capacity, `max_per_order`, `sort_order`, …) |
+| `0009_booking_domain` | `booking_items` (one row per seat, with the category name, price and masked NIK as bought), `nik_claims` (one NIK = one seat per event, a database rule), `tickets.booking_item_id` (one ticket per seat), the SELECTING deadline index, and email required **from HELD on** |
+| `0010_drop_terms_and_holder_email` | removes the terms columns and check from `bookings` and `holder_email` from `booking_items` (consent is recorded at registration; the buyer's email receives every e-ticket). `tickets.holder_email` stays: it is the e-ticket's address |
 
 ## 5. What is left
 

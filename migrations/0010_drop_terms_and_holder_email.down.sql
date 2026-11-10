@@ -1,6 +1,6 @@
--- 0009_drop_terms_and_holder_email.down.sql
+-- 0010_drop_terms_and_holder_email.down.sql
 --
--- Puts the columns back. The restored check (from 0008) fails while a HELD-or-later booking exists, because the
+-- Puts the columns back. The restored check (from 0009) fails while a HELD-or-later booking exists, because the
 -- dropped terms data cannot be recreated: deal with those rows first rather than invent consent.
 -- booking_items.holder_email comes back empty (NOT NULL with an empty default); nothing reads it.
 BEGIN;

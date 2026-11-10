@@ -1,6 +1,6 @@
--- 0008_booking_domain.down.sql
+-- 0009_booking_domain.down.sql
 --
--- Restores the 0004 checks. Fails while a row exists that only the 0008 rule allows (e.g. an EXPIRED booking
+-- Restores the 0004 checks. Fails while a row exists that only the 0009 rule allows (e.g. an EXPIRED booking
 -- without email): such rows must be dealt with first, rather than silently violating the old rule.
 BEGIN;
 ALTER TABLE bookings DROP CONSTRAINT IF EXISTS bookings_terms_required;

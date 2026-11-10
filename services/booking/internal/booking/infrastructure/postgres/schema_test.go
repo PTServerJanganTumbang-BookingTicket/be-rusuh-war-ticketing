@@ -90,7 +90,7 @@ func TestTheBookingMigrationsApplyAndTheirDownFilesReverseThem(t *testing.T) {
 			t.Fatalf("after the up migrations %s.%s is missing", tc.table, tc.column)
 		}
 	}
-	for _, f := range []string{"0009_drop_terms_and_holder_email.down.sql", "0008_booking_domain.down.sql", "0007_ticket_categories.down.sql"} {
+	for _, f := range []string{"0010_drop_terms_and_holder_email.down.sql", "0009_booking_domain.down.sql", "0008_ticket_categories.down.sql"} {
 		if _, err := pool.Exec(ctx, migration(t, f)); err != nil {
 			t.Fatalf("%s: %v", f, err)
 		}
@@ -102,7 +102,7 @@ func TestTheBookingMigrationsApplyAndTheirDownFilesReverseThem(t *testing.T) {
 			t.Fatalf("after the down migrations %s %s still exists", tc.table, tc.column)
 		}
 	}
-	for _, f := range []string{"0007_ticket_categories.up.sql", "0008_booking_domain.up.sql", "0009_drop_terms_and_holder_email.up.sql"} {
+	for _, f := range []string{"0008_ticket_categories.up.sql", "0009_booking_domain.up.sql", "0010_drop_terms_and_holder_email.up.sql"} {
 		if _, err := pool.Exec(ctx, migration(t, f)); err != nil {
 			t.Fatalf("re-applying %s after its down: %v", f, err)
 		}

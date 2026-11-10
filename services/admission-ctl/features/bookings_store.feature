@@ -2,11 +2,11 @@
 Feature: I get one booking per place, and counting who is inside stays fast
   As a customer, my place in line turns into exactly one booking, however often the controller retries.
   As everyone in the line, I need the "who is inside" count to stay fast with 200k bookings in the table.
-  Migration 0005 (built with join) already has UNIQUE (event_id, queue_token) and a unique grant_token.
-  Step 2 adds 0006: a partial index on the active statuses for the count, and one on booking_expires_at for GRANTED rows (the LAPSED sweep, ADR-006 §8.12).
+  Migration 0006 (built with join) already has UNIQUE (event_id, queue_token) and a unique grant_token.
+  Step 2 adds 0007: a partial index on the active statuses for the count, and one on booking_expires_at for GRANTED rows (the LAPSED sweep, ADR-006 §8.12).
   Tests run on a real Postgres (testcontainers) with every migration applied.
 
-  Sources: 05-admission-controller.md §3.1, §3.3 · 04-queue README §3.2, §5 step 2 · migrations/0005
+  Sources: 05-admission-controller.md §3.1, §3.3 · 04-queue README §3.2, §5 step 2 · migrations/0006
 
   Background:
     Given a Postgres database with all migrations applied
