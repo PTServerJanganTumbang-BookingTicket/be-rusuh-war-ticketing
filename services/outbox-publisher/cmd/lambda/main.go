@@ -38,6 +38,7 @@ func main() {
 		result, err := runner.DrainUntil(ctx, runner.DrainBudget())
 		slog.InfoContext(ctx, "drain complete",
 			slog.Int("published", result.Published),
+			slog.Int("dropped", result.Dropped),
 			slog.Int("skipped", result.Skipped),
 			slog.Int("failed", result.Failed),
 			slog.Int("remaining", result.Remaining),

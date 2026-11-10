@@ -2,23 +2,46 @@ name: Golang CI/CD
 
 on:
   push:
-    branches: [ "main", "cicd" ]
+    branches: [ "main", "cicd", "test-deployment" ]
   pull_request:
-    branches: [ "main", "cicd" ]
+    branches: [ "main", "cicd", "test-deployment" ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment.
+        type: choice
+        options: [prod]
+        default: prod
+      deploy_foundation:
+        description: >
+          Also deploy infra/foundation (VPC, Aurora, Redis, secrets).
+          Required on the very first deploy into an account.
+        type: boolean
+        default: false
+      cost_optimized:
+        description: >
+          POC cost mode. Aurora scales to 0 ACU and auto-pauses.
+        type: boolean
+        default: true
+      force_deploy:
+        description: >
+          Force deploy specific services regardless of changed files.
+          Comma-separated: booking,nik-verify,user,notification,outbox-publisher,all
+          Use "all" to redeploy everything. Useful for reruns.
+        type: string
+        default: ""
 
-# Cancel superseded runs on the same ref so rapid pushes don't stack deploys.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  # ---- Which modules changed? pkg fans out to every dependent service. ----
   detect-changes:
     name: Detect Changed Modules
     runs-on: ubuntu-latest
     permissions:
-      contents: read        # checkout
-      pull-requests: read   # dorny/paths-filter needs this to list PR changed files
+      contents: read
+      pull-requests: read
     outputs:
       modules: ${{ steps.set.outputs.modules }}
       booking: ${{ steps.filter.outputs.booking }}
@@ -27,6 +50,9 @@ jobs:
       notification: ${{ steps.filter.outputs.notification }}
       outbox_publisher: ${{ steps.filter.outputs.outbox_publisher }}
       pkg: ${{ steps.filter.outputs.pkg }}
+      infra: ${{ steps.filter.outputs.infra }}
+      api_gateway: ${{ steps.filter.outputs.api_gateway }}
+      migrations: ${{ steps.filter.outputs.migrations }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
@@ -56,20 +82,104 @@ jobs:
               - 'services/outbox-publisher/**'
               - 'pkg/**'
               - 'go.work'
+            infra:
+              - 'infra/foundation/**'
+            api_gateway:
+              - 'infra/api-gateway/**'
+            migrations:
+              - 'migrations/**'
+              - 'infra/migrator/**'
       - id: set
-        # Build the module matrix. A pkg change forces ALL service modules.
         run: |
+          FORCE="${{ inputs.force_deploy }}"
           mods=()
-          if [ "${{ steps.filter.outputs.pkg }}" = "true" ]; then mods+=("pkg"); fi
-          if [ "${{ steps.filter.outputs.booking }}" = "true" ]; then mods+=("services/booking"); fi
-          if [ "${{ steps.filter.outputs.user }}" = "true" ]; then mods+=("services/user"); fi
-          if [ "${{ steps.filter.outputs.nik_verify }}" = "true" ]; then mods+=("services/nik-verify"); fi
-          if [ "${{ steps.filter.outputs.notification }}" = "true" ]; then mods+=("services/notification"); fi
-          if [ "${{ steps.filter.outputs.outbox_publisher }}" = "true" ]; then mods+=("services/outbox-publisher"); fi
-          if [ ${#mods[@]} -eq 0 ]; then mods+=("pkg" "services/booking" "services/user" "services/nik-verify" "services/notification" "services/outbox-publisher"); fi   # fallback: run all
+
+          # force_deploy=all overrides path detection entirely
+          if [ "$FORCE" = "all" ]; then
+            mods=("pkg" "services/booking" "services/user" "services/nik-verify" "services/notification" "services/outbox-publisher")
+          else
+            if [ "${{ steps.filter.outputs.pkg }}" = "true" ]; then mods+=("pkg"); fi
+            if [ "${{ steps.filter.outputs.booking }}" = "true" ] || echo "$FORCE" | grep -q "booking"; then mods+=("services/booking"); fi
+            if [ "${{ steps.filter.outputs.user }}" = "true" ] || echo "$FORCE" | grep -q "user"; then mods+=("services/user"); fi
+            if [ "${{ steps.filter.outputs.nik_verify }}" = "true" ] || echo "$FORCE" | grep -q "nik-verify"; then mods+=("services/nik-verify"); fi
+            if [ "${{ steps.filter.outputs.notification }}" = "true" ] || echo "$FORCE" | grep -q "notification"; then mods+=("services/notification"); fi
+            if [ "${{ steps.filter.outputs.outbox_publisher }}" = "true" ] || echo "$FORCE" | grep -q "outbox-publisher"; then mods+=("services/outbox-publisher"); fi
+          fi
+
+          # Matrix must have at least one entry — fall back to pkg (fastest)
+          if [ ${#mods[@]} -eq 0 ]; then mods+=("pkg"); fi
           json=$(printf '%s\n' "${mods[@]}" | jq -R . | jq -cs .)
           echo "modules=$json" >> "$GITHUB_OUTPUT"
           echo "matrix: $json"
+
+  resolve-env:
+    name: Resolve Deploy Target
+    needs: detect-changes
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && (
+        github.ref == 'refs/heads/main' ||
+        github.ref == 'refs/heads/cicd' ||
+        github.ref == 'refs/heads/test-deployment'))
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.env.outputs.environment }}
+      booking: ${{ steps.env.outputs.booking }}
+      user: ${{ steps.env.outputs.user }}
+      nik_verify: ${{ steps.env.outputs.nik_verify }}
+      notification: ${{ steps.env.outputs.notification }}
+      outbox_publisher: ${{ steps.env.outputs.outbox_publisher }}
+      foundation_changed: ${{ needs.detect-changes.outputs.infra }}
+      api_gateway_changed: ${{ needs.detect-changes.outputs.api_gateway }}
+      any_service_changed: ${{ steps.env.outputs.any_service_changed }}
+    steps:
+      - id: env
+        env:
+          B: ${{ needs.detect-changes.outputs.booking }}
+          U: ${{ needs.detect-changes.outputs.user }}
+          N: ${{ needs.detect-changes.outputs.nik_verify }}
+          T: ${{ needs.detect-changes.outputs.notification }}
+          O: ${{ needs.detect-changes.outputs.outbox_publisher }}
+          FORCE: ${{ inputs.force_deploy }}
+        run: |
+          set -eu
+          environment="${{ inputs.environment || 'prod' }}"
+          echo "environment=$environment" >> "$GITHUB_OUTPUT"
+
+          # A service is "changed" if paths-filter detected it OR force_deploy includes it
+          is_changed() {
+            local flag="$1" name="$2"
+            [ "$flag" = "true" ] && { echo "true"; return; }
+            [ "$FORCE" = "all" ] && { echo "true"; return; }
+            echo "$FORCE" | grep -q "$name" && { echo "true"; return; }
+            echo "false"
+          }
+
+          b=$(is_changed "$B" "booking")
+          u=$(is_changed "$U" "user")
+          n=$(is_changed "$N" "nik-verify")
+          t=$(is_changed "$T" "notification")
+          o=$(is_changed "$O" "outbox-publisher")
+
+          echo "booking=$b"           >> "$GITHUB_OUTPUT"
+          echo "user=$u"              >> "$GITHUB_OUTPUT"
+          echo "nik_verify=$n"        >> "$GITHUB_OUTPUT"
+          echo "notification=$t"      >> "$GITHUB_OUTPUT"
+          echo "outbox_publisher=$o"  >> "$GITHUB_OUTPUT"
+
+          any=false
+          for f in "$b" "$u" "$n" "$t" "$o"; do
+            [ "$f" = "true" ] && any=true
+          done
+          echo "any_service_changed=$any" >> "$GITHUB_OUTPUT"
+
+          echo "environment        : $environment"
+          echo "booking            : $b"
+          echo "user               : $u"
+          echo "nik_verify         : $n"
+          echo "notification       : $t"
+          echo "outbox_publisher   : $o"
+          echo "any service changed: $any"
 
   golangci-lint:
     name: Lint (${{ matrix.module }})
@@ -77,6 +187,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         module: ${{ fromJSON(needs.detect-changes.outputs.modules) }}
     steps:
@@ -116,8 +227,6 @@ jobs:
       - name: Run tests with coverage
         working-directory: ${{ matrix.module }}
         run: go test -coverprofile=coverage.out ./...
-      # Unique file name per module (services/user -> services-user.out) so the
-      # single root Sonar scan can merge every profile without overwriting.
       - name: Name coverage report
         id: cov
         run: |
@@ -131,10 +240,6 @@ jobs:
           path: ${{ steps.cov.outputs.name }}.out
       - name: Check code coverage (80% gate)
         working-directory: ${{ matrix.module }}
-        # Gate on testable code only. Excluded from the denominator:
-        #   cmd/    — func main() + process wiring, not unit-testable
-        #   _mock/  — generated gomock code, never counts toward coverage
-        # The full profile is still uploaded above for Sonar; only the gate drops these.
         run: |
           grep -vE '/(cmd|_mock)/' coverage.out > coverage.gate.out || cp coverage.out coverage.gate.out
           coverage=$(go tool cover -func=coverage.gate.out | awk '/^total:/ {sub(/%/,"",$3); print $3}')
@@ -182,7 +287,9 @@ jobs:
     name: Sonarqube Checker
     needs: [golangci-lint, test, govulncheck]
     runs-on: ubuntu-latest
-    if: github.event_name != 'workflow_dispatch'
+    if: >-
+      github.event_name != 'workflow_dispatch' &&
+      vars.SONAR_HOST_URL != ''
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -193,20 +300,12 @@ jobs:
           pattern: coverage-*
           path: ./coverage
           merge-multiple: true
-      - name: Debug SonarQube config
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        run: |
-          echo "SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}"
-          echo "SONAR_TOKEN set: ${{ secrets.SONAR_TOKEN != '' }}"
-          echo "SONAR_TOKEN length: ${#SONAR_TOKEN}"
       - name: Collect coverage report paths
         id: cov
         run: |
           paths=$(ls coverage/*.out | paste -sd, -)
           echo "Coverage reports: $paths"
           echo "paths=$paths" >> "$GITHUB_OUTPUT"
-      # One scan for the whole monorepo, configured by the root sonar-project.properties.
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@2500896589ef8f7247069a56136f8dc177c27ccf # v5.2.0
         env:
@@ -216,196 +315,447 @@ jobs:
           args: >
             -Dsonar.go.coverage.reportPaths=${{ steps.cov.outputs.paths }}
 
-  deploy-booking:
-    name: Deploy booking → AWS Lambda (SAM)
-    needs: [detect-changes, sonarqube]
+  quality-gate:
+    name: Quality Gate
+    needs: [golangci-lint, test, govulncheck, sonarqube]
+    if: always()
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && needs.detect-changes.outputs.booking == 'true'
-    permissions:
-      id-token: write   # required for AWS OIDC
-      contents: read
-    defaults:
-      run:
-        working-directory: services/booking
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
-        with:
-          go-version: '1.26'
-          check-latest: true
-      - uses: aws-actions/setup-sam@819220f63fb333a9a394dd0a5cab2d8303fd3ca1 # v2.0.0
-        with:
-          use-installer: true
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
-        with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
-      - name: SAM build
-        run: sam build
-      - name: SAM deploy
+      - name: Require lint, test and vuln scan; tolerate a skipped Sonar
         run: |
-          sam deploy \
-            --stack-name rusuh-booking \
-            --resolve-s3 \
-            --capabilities CAPABILITY_IAM \
-            --no-confirm-changeset \
-            --no-fail-on-empty-changeset \
-            --region ${{ vars.AWS_REGION }}
+          set -eu
+          fail=0
+          check() {
+            case "$2" in
+              success|skipped) echo "ok      $1 ($2)" ;;
+              *)               echo "BLOCKED $1 ($2)"; fail=1 ;;
+            esac
+          }
+          check golangci-lint "${{ needs.golangci-lint.result }}"
+          check test          "${{ needs.test.result }}"
+          check govulncheck   "${{ needs.govulncheck.result }}"
+          check sonarqube     "${{ needs.sonarqube.result }}"
+          [ "$fail" -eq 0 ] || { echo "Quality gate failed; not deploying."; exit 1; }
 
-  deploy-user:
-    name: Deploy user → AWS Lambda (SAM)
-    needs: [detect-changes, sonarqube]
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && needs.detect-changes.outputs.user == 'true'
-    permissions:
-      id-token: write   # required for AWS OIDC
-      contents: read
-    defaults:
-      run:
-        working-directory: services/user
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
-        with:
-          go-version: '1.26'
-          check-latest: true
-      - uses: aws-actions/setup-sam@819220f63fb333a9a394dd0a5cab2d8303fd3ca1 # v2.0.0
-        with:
-          use-installer: true
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
-        with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
-      - name: SAM build
-        run: sam build
-      - name: SAM deploy
-        run: |
-          sam deploy \
-            --stack-name rusuh-user \
-            --resolve-s3 \
-            --capabilities CAPABILITY_IAM \
-            --no-confirm-changeset \
-            --no-fail-on-empty-changeset \
-            --region ${{ vars.AWS_REGION }}
-
-  deploy-nik-verify:
-    name: Deploy nik-verify → AWS Lambda (SAM)
-    needs: [detect-changes, sonarqube]
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && needs.detect-changes.outputs.nik_verify == 'true'
-    permissions:
-      id-token: write   # required for AWS OIDC
-      contents: read
-    defaults:
-      run:
-        working-directory: services/nik-verify
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
-        with:
-          go-version: '1.26'
-          check-latest: true
-      - uses: aws-actions/setup-sam@819220f63fb333a9a394dd0a5cab2d8303fd3ca1 # v2.0.0
-        with:
-          use-installer: true
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
-        with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
-      - name: SAM build
-        run: sam build
-      - name: SAM deploy
-        run: |
-          sam deploy \
-            --stack-name rusuh-nik-verify \
-            --resolve-s3 \
-            --capabilities CAPABILITY_IAM \
-            --no-confirm-changeset \
-            --no-fail-on-empty-changeset \
-            --region ${{ vars.AWS_REGION }}
-
-  deploy-notification:
-    name: Deploy notification → AWS Lambda (SAM)
-    needs: [detect-changes, sonarqube]
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && needs.detect-changes.outputs.notification == 'true'
-    permissions:
-      id-token: write   # required for AWS OIDC
-      contents: read
-    defaults:
-      run:
-        working-directory: services/notification
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
-        with:
-          go-version: '1.26'
-          check-latest: true
-      - uses: aws-actions/setup-sam@819220f63fb333a9a394dd0a5cab2d8303fd3ca1 # v2.0.0
-        with:
-          use-installer: true
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
-        with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
-      - name: SAM build
-        run: sam build
-      - name: SAM deploy
-        run: |
-          sam deploy \
-            --stack-name rusuh-notification \
-            --resolve-s3 \
-            --capabilities CAPABILITY_IAM \
-            --no-confirm-changeset \
-            --no-fail-on-empty-changeset \
-            --region ${{ vars.AWS_REGION }}
-
-  deploy-outbox-publisher:
-    name: Deploy outbox-publisher → AWS Lambda (SAM)
-    # Also gated on deploy-notification: this stack takes the notification
-    # queue's URL and ARN as parameters, so that stack has to exist first.
-    needs: [detect-changes, sonarqube, deploy-notification]
-    runs-on: ubuntu-latest
-    # always() keeps this running when deploy-notification was skipped because
-    # nothing in that service changed; the queue already exists in that case.
+  # ══════════════════════════════════════════════════════════════════════════
+  #  FOUNDATION (VPC, Aurora + RDS Proxy, Redis, secrets)
+  #
+  #  Deployed only when infra/foundation/** changes or when asked for by hand.
+  #  NOTE: Foundation uses plain CloudFormation (no SAM transform), so it is
+  #  NOT blocked by the SCP.
+  # ══════════════════════════════════════════════════════════════════════════
+  deploy-foundation:
+    name: Deploy foundation
+    needs: [resolve-env, quality-gate]
     if: >-
       always() &&
-      github.event_name == 'push' &&
-      needs.detect-changes.outputs.outbox_publisher == 'true' &&
-      needs.sonarqube.result != 'failure' &&
-      needs.deploy-notification.result != 'failure'
+      needs.quality-gate.result == 'success' &&
+      (needs.resolve-env.outputs.foundation_changed == 'true' ||
+       inputs.deploy_foundation == true)
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-env.outputs.environment }}
     permissions:
-      id-token: write   # required for AWS OIDC
+      id-token: write
       contents: read
-    defaults:
-      run:
-        working-directory: services/outbox-publisher
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
-        with:
-          go-version: '1.26'
-          check-latest: true
-      - uses: aws-actions/setup-sam@819220f63fb333a9a394dd0a5cab2d8303fd3ca1 # v2.0.0
-        with:
-          use-installer: true
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+      - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
-      - name: SAM build
-        run: sam build
-      - name: SAM deploy
+      - name: Deploy foundation stack
+        env:
+          ENV: ${{ needs.resolve-env.outputs.environment }}
+          COST_OPTIMIZED: ${{ (github.event_name == 'workflow_dispatch' && inputs.cost_optimized == false) && 'false' || 'true' }}
+          ENABLE_NAT: ${{ vars.ENABLE_NAT_GATEWAY || 'true' }}
+          SINGLE_AZ: ${{ vars.SINGLE_AZ || 'true' }}
+          DB_PUBLIC: ${{ vars.DB_PUBLICLY_ACCESSIBLE || 'true' }}
+          DB_ALLOWED_CIDR: ${{ secrets.DB_ALLOWED_CIDR }}
+          DB_MASTER_PASSWORD: ${{ secrets.DB_MASTER_PASSWORD }}
         run: |
-          sam deploy \
-            --stack-name rusuh-outbox-publisher \
-            --resolve-s3 \
-            --capabilities CAPABILITY_IAM \
-            --no-confirm-changeset \
+          set -euo pipefail
+          aws cloudformation deploy \
+            --template-file infra/foundation/template.yaml \
+            --stack-name "rusuh-${ENV}-foundation" \
+            --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset \
-            --region ${{ vars.AWS_REGION }}
+            --parameter-overrides \
+              "Environment=${ENV}" \
+              "EmailFromAddress=${{ vars.EMAIL_FROM_ADDRESS }}" \
+              "CostOptimized=${COST_OPTIMIZED}" \
+              "EnableNatGateway=${ENABLE_NAT}" \
+              "SingleAz=${SINGLE_AZ}" \
+              "DbPubliclyAccessible=${DB_PUBLIC}" \
+              "DbAllowedCidr=${DB_ALLOWED_CIDR}" \
+              "DatabasePassword=${DB_MASTER_PASSWORD}" \
+            --tags Project=rusuh ManagedBy=github-actions
+
+          aws cloudformation describe-stacks --stack-name "rusuh-${ENV}-foundation" \
+            --query 'Stacks[0].Outputs[?OutputKey==`CostMode`].OutputValue' --output text
+          echo -n "availability zone: "
+          aws cloudformation describe-stacks --stack-name "rusuh-${ENV}-foundation" \
+            --query 'Stacks[0].Outputs[?OutputKey==`DeploymentAz`].OutputValue' --output text
+          echo -n "database access: "
+          aws cloudformation describe-stacks --stack-name "rusuh-${ENV}-foundation" \
+            --query 'Stacks[0].Outputs[?OutputKey==`DbAccessMode`].OutputValue' --output text
+
+  # ══════════════════════════════════════════════════════════════════════════
+  #  PREFLIGHT - Check SSM parameters exist
+  # ══════════════════════════════════════════════════════════════════════════
+  preflight:
+    name: Preflight (SSM parameters)
+    needs: [resolve-env, quality-gate, deploy-foundation]
+    if: >-
+      always() &&
+      needs.quality-gate.result == 'success' &&
+      needs.deploy-foundation.result != 'failure' &&
+      needs.resolve-env.outputs.any_service_changed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Repository variables must be consistent
+        env:
+          DUKCAPIL_MODE: ${{ vars.DUKCAPIL_MODE || 'stub' }}
+          DUKCAPIL_BASE_URL: ${{ vars.DUKCAPIL_BASE_URL }}
+          DUKCAPIL_EXTRA_HEADER_NAME: ${{ vars.DUKCAPIL_EXTRA_HEADER_NAME }}
+          HAS_EXTRA_HEADER_VALUE: ${{ secrets.DUKCAPIL_EXTRA_HEADER_VALUE != '' }}
+          APP_BASE_URL: ${{ vars.APP_BASE_URL }}
+          NEEDS_NOTIFICATION: ${{ needs.resolve-env.outputs.notification }}
+        run: |
+          set -euo pipefail
+          fail=0
+
+          case "$DUKCAPIL_MODE" in
+            live)
+              if [ -z "$DUKCAPIL_BASE_URL" ]; then
+                echo "::error::DUKCAPIL_MODE is live but DUKCAPIL_BASE_URL is empty."
+                fail=1
+              fi
+              case "$DUKCAPIL_BASE_URL" in
+                */verify)
+                  echo "::error::DUKCAPIL_BASE_URL ends in /verify - remove it."
+                  fail=1
+                  ;;
+                */)
+                  echo "::error::DUKCAPIL_BASE_URL has trailing slash - remove it."
+                  fail=1
+                  ;;
+              esac
+              if [ -n "$DUKCAPIL_EXTRA_HEADER_NAME" ] && [ "$HAS_EXTRA_HEADER_VALUE" != "true" ]; then
+                echo "::error::DUKCAPIL_EXTRA_HEADER_NAME set but DUKCAPIL_EXTRA_HEADER_VALUE secret is empty."
+                fail=1
+              fi
+              ;;
+            stub)
+              echo "::warning::DUKCAPIL_MODE=stub - NIK verification is simulated."
+              ;;
+            *)
+              echo "::error::DUKCAPIL_MODE must be 'live' or 'stub', got '$DUKCAPIL_MODE'."
+              fail=1
+              ;;
+          esac
+
+          if [ "$NEEDS_NOTIFICATION" = "true" ] && [ -z "$APP_BASE_URL" ]; then
+            echo "::error::APP_BASE_URL is empty and notification is being deployed."
+            fail=1
+          fi
+
+          [ "$fail" -eq 0 ] || exit 1
+          echo "Repository variables OK."
+
+      - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Check SSM parameters exist
+        env:
+          ENV: ${{ needs.resolve-env.outputs.environment }}
+        run: |
+          set -euo pipefail
+          paths="
+            /rusuh/${ENV}/vpc/private-subnet-ids
+            /rusuh/${ENV}/vpc/lambda-security-group-ids
+            /rusuh/${ENV}/db/secret-arn
+            /rusuh/${ENV}/nik/pepper-secret-arn
+            /rusuh/${ENV}/nik/pepper-kms-key-arn
+            /rusuh/${ENV}/auth/jwt-secret-arn
+            /rusuh/${ENV}/dukcapil/api-key-secret-arn
+            /rusuh/${ENV}/redis/addr
+            /rusuh/${ENV}/ses/configuration-set
+            /rusuh/${ENV}/ses/from-address
+            /rusuh/${ENV}/sam/artifact-bucket
+          "
+
+          if [ "$ENV" != "prod" ]; then
+            echo "::error::Environment is '$ENV' but templates resolve /rusuh/prod/... by default."
+            exit 1
+          fi
+
+          missing=""
+          for pth in $paths; do
+            if aws ssm get-parameter --name "$pth" >/dev/null 2>&1; then
+              echo "  ok      $pth"
+            else
+              echo "  MISSING $pth"
+              missing="$missing $pth"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Missing SSM parameters:$missing"
+            echo "::error::Deploy foundation first (workflow_dispatch with deploy_foundation=true)."
+            exit 1
+          fi
+          echo "All infrastructure parameters present."
+
+  # ══════════════════════════════════════════════════════════════════════════
+  #  WAVE 1 — Using cfn-deploy (raw CloudFormation, no SAM transform)
+  #
+  #  This bypasses the SCP that blocks cloudformation:CreateChangeSet on
+  #  arn:aws:cloudformation:*:aws:transform/Serverless-2016-10-31
+  # ══════════════════════════════════════════════════════════════════════════
+  deploy-booking:
+    name: Deploy booking
+    needs: [resolve-env, preflight]
+    if: always() && needs.preflight.result == 'success' && needs.resolve-env.outputs.booking == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-env.outputs.environment }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/cfn-deploy
+        with:
+          service: booking
+          stack-name: rusuh-${{ needs.resolve-env.outputs.environment }}-booking
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          environment: ${{ needs.resolve-env.outputs.environment }}
+          parameter-overrides: >-
+            Environment=${{ needs.resolve-env.outputs.environment }}
+            EnableDirectApiAccess=${{ vars.ENABLE_DIRECT_API_ACCESS || 'false' }}
+
+  deploy-nik-verify:
+    name: Deploy nik-verify
+    needs: [resolve-env, preflight]
+    if: always() && needs.preflight.result == 'success' && needs.resolve-env.outputs.nik_verify == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-env.outputs.environment }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/cfn-deploy
+        with:
+          service: nik-verify
+          stack-name: rusuh-${{ needs.resolve-env.outputs.environment }}-nik-verify
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          environment: ${{ needs.resolve-env.outputs.environment }}
+          parameter-overrides: >-
+            Environment=${{ needs.resolve-env.outputs.environment }}
+            EnableDirectApiAccess=${{ vars.ENABLE_DIRECT_API_ACCESS || 'false' }}
+            DeployRevision=${{ github.sha }}
+            DukcapilMode=${{ vars.DUKCAPIL_MODE || 'stub' }}
+            DukcapilBaseUrl=${{ vars.DUKCAPIL_BASE_URL }}
+            DukcapilExtraHeaderName=${{ vars.DUKCAPIL_EXTRA_HEADER_NAME }}
+            DukcapilExtraHeaderValue=${{ secrets.DUKCAPIL_EXTRA_HEADER_VALUE }}
+
+  deploy-notification:
+    name: Deploy notification
+    needs: [resolve-env, preflight]
+    if: always() && needs.preflight.result == 'success' && needs.resolve-env.outputs.notification == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-env.outputs.environment }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/cfn-deploy
+        with:
+          service: notification
+          stack-name: rusuh-${{ needs.resolve-env.outputs.environment }}-notification
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          environment: ${{ needs.resolve-env.outputs.environment }}
+          parameter-overrides: >-
+            Environment=${{ needs.resolve-env.outputs.environment }}
+            DeployRevision=${{ github.sha }}
+            AppBaseUrl=${{ vars.APP_BASE_URL }}
+
+  # ══════════════════════════════════════════════════════════════════════════
+  #  WAVE 2 — Depends on Wave 1's SSM parameters
+  # ══════════════════════════════════════════════════════════════════════════
+  deploy-user:
+    name: Deploy user
+    needs: [resolve-env, preflight, deploy-nik-verify]
+    if: >-
+      always() && needs.preflight.result == 'success' &&
+      needs.deploy-nik-verify.result != 'failure' &&
+      needs.resolve-env.outputs.user == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-env.outputs.environment }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/cfn-deploy
+        with:
+          service: user
+          stack-name: rusuh-${{ needs.resolve-env.outputs.environment }}-user
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          environment: ${{ needs.resolve-env.outputs.environment }}
+          parameter-overrides: >-
+            Environment=${{ needs.resolve-env.outputs.environment }}
+            EnableDirectApiAccess=${{ vars.ENABLE_DIRECT_API_ACCESS || 'false' }}
+            DeployRevision=${{ github.sha }}
+            CookieDomain=${{ vars.COOKIE_DOMAIN }}
+
+  deploy-outbox-publisher:
+    name: Deploy outbox-publisher
+    needs: [resolve-env, preflight, deploy-notification]
+    if: >-
+      always() && needs.preflight.result == 'success' &&
+      needs.deploy-notification.result != 'failure' &&
+      needs.resolve-env.outputs.outbox_publisher == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-env.outputs.environment }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/cfn-deploy
+        with:
+          service: outbox-publisher
+          stack-name: rusuh-${{ needs.resolve-env.outputs.environment }}-outbox-publisher
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          environment: ${{ needs.resolve-env.outputs.environment }}
+          parameter-overrides: >-
+            Environment=${{ needs.resolve-env.outputs.environment }}
+            DeployRevision=${{ github.sha }}
+
+  # ══════════════════════════════════════════════════════════════════════════
+  #  UNIFIED API GATEWAY — Single entry point for frontend
+  #
+  #  Deploys after all HTTP services (booking, nik-verify, user) are up.
+  #  Creates routes that proxy to the individual Lambda functions.
+  # ══════════════════════════════════════════════════════════════════════════
+  deploy-api-gateway:
+    name: Deploy unified API gateway
+    needs: [resolve-env, deploy-booking, deploy-nik-verify, deploy-user]
+    if: >-
+      always() &&
+      needs.deploy-booking.result != 'failure' &&
+      needs.deploy-nik-verify.result != 'failure' &&
+      needs.deploy-user.result != 'failure' &&
+      (needs.resolve-env.outputs.any_service_changed == 'true' ||
+       needs.resolve-env.outputs.api_gateway_changed == 'true')
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-env.outputs.environment }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Deploy unified API gateway
+        env:
+          ENV: ${{ needs.resolve-env.outputs.environment }}
+        run: |
+          aws cloudformation deploy \
+            --template-file infra/api-gateway/template.yaml \
+            --stack-name "rusuh-${ENV}-api" \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides "Environment=${ENV}" \
+            --tags Project=rusuh ManagedBy=github-actions
+
+          echo "Unified API URL:"
+          aws cloudformation describe-stacks --stack-name "rusuh-${ENV}-api" \
+            --query 'Stacks[0].Outputs[?OutputKey==`ApiUrl`].OutputValue' --output text
+
+  # ══════════════════════════════════════════════════════════════════════════
+  #  SMOKE TEST
+  # ══════════════════════════════════════════════════════════════════════════
+  smoke:
+    name: Smoke test
+    needs: [resolve-env, deploy-booking, deploy-nik-verify, deploy-user, deploy-api-gateway]
+    if: >-
+      always() &&
+      needs.deploy-booking.result != 'failure' &&
+      needs.deploy-nik-verify.result != 'failure' &&
+      needs.deploy-user.result != 'failure' &&
+      needs.deploy-api-gateway.result != 'failure' &&
+      needs.resolve-env.outputs.any_service_changed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: GET /sys/ping on unified API
+        env:
+          ENV: ${{ needs.resolve-env.outputs.environment }}
+          DIRECT_ACCESS: ${{ vars.ENABLE_DIRECT_API_ACCESS || 'false' }}
+        run: |
+          set -euo pipefail
+          
+          # Test the unified API gateway (primary entry point)
+          url=$(aws cloudformation describe-stacks --stack-name "rusuh-${ENV}-api" \
+            --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue" \
+            --output text 2>/dev/null || true)
+          
+          if [ -n "$url" ] && [ "$url" != "None" ]; then
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "${url}/sys/ping" || echo 000)
+            if [ "$code" = "200" ]; then
+              echo "✓ unified-api /sys/ping -> 200"
+            else
+              echo "✗ unified-api /sys/ping -> $code"
+              exit 1
+            fi
+          else
+            echo "✗ Unified API stack not found"
+            exit 1
+          fi
+          
+          # Only test individual service endpoints if direct access is enabled
+          if [ "$DIRECT_ACCESS" = "true" ]; then
+            echo ""
+            echo "Testing direct service endpoints (ENABLE_DIRECT_API_ACCESS=true)..."
+            fail=0
+            for svc in booking nik-verify user; do
+              url=$(aws cloudformation describe-stacks --stack-name "rusuh-${ENV}-${svc}" \
+                --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue" \
+                --output text 2>/dev/null || true)
+              if [ -z "$url" ] || [ "$url" = "None" ]; then
+                echo "  skip  $svc (no direct endpoint)"
+                continue
+              fi
+              code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "${url}/sys/ping" || echo 000)
+              if [ "$code" = "200" ]; then
+                echo "  ✓ $svc -> 200"
+              else
+                echo "  ✗ $svc -> $code"
+                fail=1
+              fi
+            done
+            [ "$fail" -eq 0 ] || exit 1
+          else
+            echo ""
+            echo "Direct service endpoints disabled (ENABLE_DIRECT_API_ACCESS=false)"
+            echo "All traffic should go through the unified API."
+          fi

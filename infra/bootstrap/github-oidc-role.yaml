@@ -1,0 +1,465 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  rusuh CD bootstrap — the GitHub Actions OIDC provider and the deploy role.
+
+  THIS IS THE ONE STACK CI CANNOT DEPLOY ITSELF. It creates the role the
+  pipeline assumes, so it has to exist before the pipeline can do anything.
+  Deploy it once, by hand, with credentials that can create IAM roles:
+
+    aws cloudformation deploy \
+      --template-file infra/bootstrap/github-oidc-role.yaml \
+      --stack-name rusuh-cd-bootstrap \
+      --capabilities CAPABILITY_NAMED_IAM \
+      --parameter-overrides GitHubRepo=<owner>/<repo>
+
+  Then put the RoleArn output into the repository secret AWS_DEPLOY_ROLE_ARN.
+
+Parameters:
+  GitHubRepo:
+    Type: String
+    Description: owner/repo, e.g. PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing
+
+  AllowedBranch:
+    Type: String
+    Default: main
+    Description: >
+      Branch allowed to assume the role via the ref-form subject claim.
+
+      This covers jobs that do NOT declare an environment. Every deploy job in
+      this pipeline does declare one, so for them AllowedEnvironment is the
+      claim that matters - read its description.
+
+  AllowedEnvironment:
+    Type: String
+    Default: prod
+    Description: >
+      GitHub Environment allowed to assume the role.
+
+      A job that declares `environment: X` gets the subject claim
+      repo:<owner>/<repo>:environment:X. That REPLACES the ref form; it is not
+      added to it. So a trust policy that only lists the branch form rejects
+      every such job with:
+
+        Not authorized to perform sts:AssumeRoleWithWebIdentity
+
+      Because the environment claim carries no branch, trusting it moves the
+      branch restriction out of this policy and into GitHub: set the
+      environment's deployment branch policy to the deploy branch, or any
+      branch that can run a job naming this environment obtains these
+      credentials. infra/bootstrap/configure-github.sh does that.
+
+  SubClaimPrefix:
+    Type: String
+    Default: ""
+    Description: >
+      Literal prefix of the OIDC subject claim. Empty means repo:<GitHubRepo>.
+
+      GitHub's IMMUTABLE SUBJECT CLAIMS change this. When a repository has them
+      enabled, the subject embeds numeric owner and repository IDs:
+
+        repo:my-org@342404453/my-repo@1442410470:environment:prod
+
+      instead of
+
+        repo:my-org/my-repo:environment:prod
+
+      The IDs survive renames, which is the point - but the name-only form then
+      never matches, and the only symptom is:
+
+        Not authorized to perform sts:AssumeRoleWithWebIdentity
+
+      which says nothing about subjects. Nothing in the repository hints that
+      the feature is on. Ask GitHub before guessing:
+
+        gh api repos/<owner>/<repo>/actions/oidc/customization/sub
+
+      If use_immutable_subject is true, paste its sub_claim_prefix here
+      verbatim. Note the delimiter is "@"; earlier documentation said "-".
+
+  CreateOidcProvider:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: >
+      The GitHub OIDC provider is account-global. Set false if another stack
+      in this account already created it, or this stack will fail with
+      EntityAlreadyExists.
+
+      Changing true -> false on an existing stack stops managing the provider;
+      DeletionPolicy: Retain keeps the provider itself alive. Without that
+      policy the provider would be deleted and every GitHub-federated role in
+      the account would fail with "The web identity token provided could not
+      be validated".
+
+      Check what exists before choosing:  aws iam list-open-id-connect-providers
+
+Conditions:
+  ShouldCreateProvider: !Equals [!Ref CreateOidcProvider, "true"]
+  HasSubPrefix: !Not [!Equals [!Ref SubClaimPrefix, ""]]
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: ShouldCreateProvider
+    # Retain, because this resource is account-global and conditional - a
+    # combination that bites.
+    #
+    # Flipping CreateOidcProvider to false removes the resource from the
+    # stack, and without Retain CloudFormation DELETES the provider. Every
+    # role in the account that federates GitHub then breaks at once, with
+    # "The web identity token provided could not be validated" - an error that
+    # points at the token, not at the stack update that caused it.
+    #
+    # With Retain, false means "stop managing it", which is what the parameter
+    # actually promises.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      # GitHub rotates this; IAM no longer validates it for this provider, but
+      # the field is still required.
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: rusuh-github-deploy
+      Description: Assumed by GitHub Actions to deploy the rusuh stacks
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - ShouldCreateProvider
+                - !Ref GitHubOidcProvider
+                - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                # A list here means "any of", and both forms are needed:
+                #   environment:  what every deploy job presents, because each
+                #                 declares `environment: prod`
+                #   ref:          what a job WITHOUT an environment presents
+                #
+                # Still exact strings, never `repo:owner/repo:*` - the
+                # wildcard form also matches pull_request and fork refs, which
+                # is how a fork PR ends up holding deploy credentials.
+                #
+                # The prefix is SubClaimPrefix when given, because a repo with
+                # immutable subject claims presents IDs rather than names, and
+                # repo:<owner>/<repo> would silently never match.
+                token.actions.githubusercontent.com:sub:
+                  - !If
+                    - HasSubPrefix
+                    - !Sub ${SubClaimPrefix}:environment:${AllowedEnvironment}
+                    - !Sub repo:${GitHubRepo}:environment:${AllowedEnvironment}
+                  - !If
+                    - HasSubPrefix
+                    - !Sub ${SubClaimPrefix}:ref:refs/heads/${AllowedBranch}
+                    - !Sub repo:${GitHubRepo}:ref:refs/heads/${AllowedBranch}
+
+      Policies:
+        # ── CloudFormation and the SAM artifact buckets ──────────────────────
+        - PolicyName: DeployStacks
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: CloudFormationOnRusuhStacks
+                Effect: Allow
+                Action:
+                  - cloudformation:CreateStack
+                  - cloudformation:UpdateStack
+                  - cloudformation:DeleteStack
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:DescribeStackResource
+                  - cloudformation:DescribeStackResources
+                  - cloudformation:GetTemplate
+                  - cloudformation:GetTemplateSummary
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:ListStackResources
+                  - cloudformation:ValidateTemplate
+                  - cloudformation:TagResource
+                Resource:
+                  - !Sub arn:${AWS::Partition}:cloudformation:*:${AWS::AccountId}:stack/rusuh-*/*
+                  # sam deploy --resolve-s3 keeps its artifact bucket in a
+                  # stack of its own, created on first use per region. Without
+                  # this the deploy fails before it touches any rusuh stack:
+                  #
+                  #   not authorized to perform cloudformation:CreateChangeSet
+                  #   on resource: .../stack/aws-sam-cli-managed-default/*
+                  #
+                  # Named exactly, not a wildcard: this is one known SAM
+                  # bootstrap stack, and the scoping above is the point of
+                  # this statement.
+                  #
+                  # To drop it, give the sam-deploy action an artifact-bucket
+                  # input instead - it then passes --s3-bucket and no managed
+                  # stack is created. Worth doing eventually: the managed
+                  # bucket has no lifecycle rule, so build artifacts
+                  # accumulate indefinitely.
+                  - !Sub arn:${AWS::Partition}:cloudformation:*:${AWS::AccountId}:stack/aws-sam-cli-managed-default/*
+              # SAM needs this one unscoped; it is read-only metadata.
+              - Sid: CloudFormationTransform
+                Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                  - cloudformation:ListStacks
+                  - cloudformation:CreateChangeSet
+                Resource:
+                  - !Sub arn:${AWS::Partition}:cloudformation:*:aws:transform/Serverless-2016-10-31
+              # Wildcarded actions, tightly scoped resources - a deliberate
+              # trade, and the opposite of the statement this replaces.
+              #
+              # That one listed twelve named actions and was still wrong twice:
+              # CloudFormation's S3 handler reads back far more of a bucket's
+              # configuration than the template sets (ACL, versioning,
+              # notification, CORS, ownership controls, object lock, logging,
+              # replication, request payment, tiering...), and `aws
+              # cloudformation deploy --tags` makes it tag every resource, so
+              # s3:PutBucketTagging is needed for a bucket the template never
+              # mentions tags on. Each omission costs a full deploy, a
+              # rollback, and a cleanup.
+              #
+              # Enumerating that list is a losing game whose only prize is a
+              # longer list. The control that actually matters is below: these
+              # permissions reach exactly two bucket name patterns and nothing
+              # else in the account.
+              - Sid: SamArtifactBuckets
+                Effect: Allow
+                Action:
+                  - s3:CreateBucket
+                  - s3:DeleteBucket
+                  - s3:Get*
+                  - s3:Put*
+                  - s3:List*
+                  - s3:DeleteObject
+                  - s3:DeleteObjectVersion
+                  - s3:DeleteBucketPolicy
+                Resource:
+                  - !Sub arn:${AWS::Partition}:s3:::aws-sam-cli-managed-*
+                  - !Sub arn:${AWS::Partition}:s3:::aws-sam-cli-managed-*/*
+                  - !Sub arn:${AWS::Partition}:s3:::rusuh-*
+                  - !Sub arn:${AWS::Partition}:s3:::rusuh-*/*
+
+        # ── The resources the stacks create ─────────────────────────────────
+        #
+        # Deliberately NOT scoped by resource for most of these. Creating a
+        # VPC or an Aurora cluster needs ec2:*/rds:* actions that do not accept
+        # a resource ARN at create time, so a scoped policy here would simply
+        # fail. The containment is the branch-scoped trust policy above and the
+        # rusuh-* naming, not these action lists.
+        #
+        # Splitting this into a narrow service-deploy role and a separate,
+        # rarely-used foundation role is the right move before production.
+        - PolicyName: ManageServiceResources
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: Serverless
+                Effect: Allow
+                Action:
+                  - lambda:*
+                  - apigateway:*
+                  - sqs:*
+                  - events:*
+                  - scheduler:*
+                  - logs:*
+                Resource: "*"
+              - Sid: Foundation
+                Effect: Allow
+                Action:
+                  - ec2:*
+                  - rds:*
+                  - elasticache:*
+                  - ses:*
+                Resource: "*"
+              - Sid: SecretsAndKeys
+                Effect: Allow
+                Action:
+                  - secretsmanager:CreateSecret
+                  - secretsmanager:UpdateSecret
+                  - secretsmanager:DescribeSecret
+                  - secretsmanager:TagResource
+                  - secretsmanager:GetRandomPassword
+                  - secretsmanager:PutSecretValue
+                  - secretsmanager:DeleteSecret
+                  - secretsmanager:GetResourcePolicy
+                  - kms:CreateKey
+                  - kms:CreateAlias
+                  - kms:DeleteAlias
+                  - kms:DescribeKey
+                  - kms:TagResource
+                  - kms:PutKeyPolicy
+                  - kms:EnableKeyRotation
+                  - kms:DisableKeyRotation
+                  - kms:ScheduleKeyDeletion
+                  - kms:ListAliases
+                Resource: "*"
+
+              # Creating a key is not the same as being allowed to USE it, and
+              # the two live in different statements for a reason: the actions
+              # above manage key metadata, these encrypt and decrypt data.
+              #
+              # Needed because NikPepperSecret sets KmsKeyId to the pepper's
+              # CMK. On CreateSecret, Secrets Manager calls KMS *on behalf of
+              # this role*, so the role must hold GenerateDataKey and Decrypt
+              # on that key or the create fails with:
+              #
+              #   "Access to KMS is not allowed" (AccessDenied)
+              #
+              # which names neither the key nor the missing action.
+              #
+              # Scoped by ViaService rather than by key ARN, because the key is
+              # created by the same stack that uses it - its ARN does not exist
+              # when this policy is written. ViaService means these permissions
+              # only apply when KMS is called through Secrets Manager, not when
+              # this role calls KMS directly, so the role still cannot read an
+              # arbitrary CMK in the account.
+              #
+              # StringLike with a wildcard region, NOT StringEquals with
+              # ${AWS::Region}: this bootstrap stack may live in a different
+              # region from the one being deployed to.
+              - Sid: UseCustomerKeysThroughSecretsManager
+                Effect: Allow
+                Action:
+                  - kms:GenerateDataKey
+                  - kms:GenerateDataKeyWithoutPlaintext
+                  - kms:Encrypt
+                  - kms:Decrypt
+                  - kms:ReEncryptFrom
+                  - kms:ReEncryptTo
+                  - kms:CreateGrant
+                Resource: "*"
+                Condition:
+                  StringLike:
+                    kms:ViaService: secretsmanager.*.amazonaws.com
+              # GetSecretValue is required because the service templates inject
+              # DATABASE_URL, JWT_SECRET, DUKCAPIL_API_KEY and NIK_PEPPER via
+              # {{resolve:secretsmanager:...}}, and CloudFormation resolves
+              # those using THIS role's permissions.
+              #
+              # This is a deliberate weakening, recorded rather than hidden.
+              # The pepper is the one that matters: ADR-005 section 8 gives it
+              # no rotation path, so a leak is permanent, and it now passes
+              # through CloudFormation and lands in the function's environment.
+              # The pre-production fix is to fetch it at runtime in Go and
+              # remove it from the template, after which this statement should
+              # be narrowed to the three rotatable secrets.
+              - Sid: ReadRusuhSecretsForDynamicReferences
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  - !Sub arn:${AWS::Partition}:secretsmanager:*:${AWS::AccountId}:secret:rusuh-*
+
+              - Sid: Migrator
+                Effect: Allow
+                Action:
+                  - codebuild:CreateProject
+                  - codebuild:UpdateProject
+                  - codebuild:DeleteProject
+                  - codebuild:BatchGetProjects
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                Resource:
+                  - !Sub arn:${AWS::Partition}:codebuild:*:${AWS::AccountId}:project/rusuh-*
+
+        # ── IAM, for the execution roles SAM generates ──────────────────────
+        # ── SSM Parameter Store ─────────────────────────────────────────────
+        #
+        # The foundation publishes twelve parameters under /rusuh/, and every
+        # service template resolves its infrastructure from them with
+        # AWS::SSM::Parameter::Value<...>. That resolution happens at deploy
+        # time using THIS identity, not the Lambda's, so without these the
+        # service stacks cannot be created either.
+        #
+        # Omitting this was a real failure, not a theoretical one: the
+        # foundation got as far as SsmEmailFromAddress and stopped with
+        # "Access denied for operation 'PutParameter'", then could not roll
+        # back - DeleteParameter was denied too, leaving ROLLBACK_FAILED.
+        - PolicyName: ManageSsmParameters
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: WriteRusuhParameters
+                Effect: Allow
+                Action:
+                  - ssm:PutParameter
+                  - ssm:DeleteParameter
+                  - ssm:DeleteParameters
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:GetParameterHistory
+                  - ssm:AddTagsToResource
+                  - ssm:RemoveTagsFromResource
+                  - ssm:ListTagsForResource
+                  - ssm:LabelParameterVersion
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:parameter/rusuh/*
+              - Sid: DescribeParametersIsAccountWide
+                Effect: Allow
+                # ssm:DescribeParameters does not support resource-level
+                # permissions - it is a list operation and takes "*" or
+                # nothing. The write actions above are what is actually
+                # scoped; this only allows enumerating names.
+                Action: ssm:DescribeParameters
+                Resource: "*"
+
+        - PolicyName: ManageExecutionRoles
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ServiceLinkedRoles
+                Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:GetRole
+                  - iam:TagRole
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:GetRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                  - iam:UpdateAssumeRolePolicy
+                Resource:
+                  # SAM names generated roles after the stack, so rusuh-*
+                  # covers them. The wildcard tail catches SAM's own suffixes.
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/rusuh-*
+              - Sid: PassRoleToServices
+                Effect: Allow
+                Action: iam:PassRole
+                Resource:
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/rusuh-*
+                Condition:
+                  StringEquals:
+                    iam:PassedToService:
+                      - lambda.amazonaws.com
+                      - codebuild.amazonaws.com
+                      - rds.amazonaws.com
+              - Sid: CreateServiceLinkedRoles
+                Effect: Allow
+                Action: iam:CreateServiceLinkedRole
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    iam:AWSServiceName:
+                      - rds.amazonaws.com
+                      - elasticache.amazonaws.com
+                      - ops.apigateway.amazonaws.com
+
+Outputs:
+  RoleArn:
+    Description: Set this as the repository secret AWS_DEPLOY_ROLE_ARN
+    Value: !GetAtt DeployRole.Arn

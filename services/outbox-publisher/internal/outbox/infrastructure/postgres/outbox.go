@@ -44,7 +44,7 @@ func NewOutboxRepository(pool DBConn) portout.IOutboxRepository {
 const claimUnpublished = `
 SELECT id, aggregate_id, type, payload, created_at
   FROM outbox
- WHERE published_at IS NULL
+ WHERE published_at IS NULL AND dropped_at IS NULL
  ORDER BY created_at, id
  FOR UPDATE SKIP LOCKED
  LIMIT $1
@@ -119,6 +119,25 @@ func (r *OutboxRepository) MarkPublished(ctx context.Context, ids []string) erro
 	return nil
 }
 
+// MarkDropped retires rows the publisher refused to send.
+//
+// published_at stays NULL on purpose. A dropped row was never published, and
+// recording it as published would hide the drop from anyone auditing what the
+// system actually delivered - which is the one question this table exists to
+// answer.
+func (r *OutboxRepository) MarkDropped(ctx context.Context, ids []string, reason string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	_, err := r.pool.Exec(ctx,
+		`UPDATE outbox SET dropped_at = now(), drop_reason = $2 WHERE id = ANY($1)`,
+		ids, reason)
+	if err != nil {
+		return fmt.Errorf("outbox: mark dropped: %w", err)
+	}
+	return nil
+}
+
 // CountUnpublished is the OutboxLag metric.
 //
 // Served by the partial index on published_at IS NULL, so it costs the size of
@@ -126,7 +145,7 @@ func (r *OutboxRepository) MarkPublished(ctx context.Context, ids []string) erro
 func (r *OutboxRepository) CountUnpublished(ctx context.Context) (int, error) {
 	var count int
 	if err := r.pool.QueryRow(ctx,
-		`SELECT count(*) FROM outbox WHERE published_at IS NULL`).Scan(&count); err != nil {
+		`SELECT count(*) FROM outbox WHERE published_at IS NULL AND dropped_at IS NULL`).Scan(&count); err != nil {
 		return 0, fmt.Errorf("outbox: count: %w", err)
 	}
 	return count, nil

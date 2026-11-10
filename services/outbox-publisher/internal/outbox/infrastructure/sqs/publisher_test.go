@@ -40,12 +40,49 @@ func TestPublish_OK(t *testing.T) {
 	err := publisher.Publish(context.Background(), env)
 	require.NoError(t, err)
 	assert.Equal(t, "https://sqs.example.com/queue", *captured.QueueUrl)
-	assert.Equal(t, "agg-1", *captured.MessageGroupId)
-	assert.Equal(t, "ob-1", *captured.MessageDeduplicationId)
 	// MessageAttributes must carry the event type
 	typeAttr, ok := captured.MessageAttributes["type"]
 	require.True(t, ok)
 	assert.Equal(t, string(events.TypeAccountVerify), *typeAttr.StringValue)
+}
+
+// ── FIFO-only parameters ──────────────────────────────────────────────────────
+//
+// SQS rejects MessageGroupId and MessageDeduplicationId on a standard queue
+// with InvalidParameterValue - it does not ignore them. Sending them
+// unconditionally made every publish fail against the standard queue this
+// system deploys, so this distinction is load-bearing, not cosmetic.
+
+func TestPublish_StandardQueue_OmitsFifoParameters(t *testing.T) {
+	var captured *awssqs.SendMessageInput
+	stub := &stubSQS{fn: func(_ context.Context, in *awssqs.SendMessageInput, _ ...func(*awssqs.Options)) (*awssqs.SendMessageOutput, error) {
+		captured = in
+		return &awssqs.SendMessageOutput{}, nil
+	}}
+	publisher := NewPublisher(stub, "https://sqs.ap-southeast-1.amazonaws.com/123/rusuh-prod-notification")
+	err := publisher.Publish(context.Background(), events.Envelope{
+		OutboxID: "ob-1", AggregateID: "agg-1", Type: events.TypeAccountVerify,
+	})
+	require.NoError(t, err)
+	assert.Nil(t, captured.MessageGroupId)
+	assert.Nil(t, captured.MessageDeduplicationId)
+}
+
+func TestPublish_FifoQueue_SetsFifoParameters(t *testing.T) {
+	var captured *awssqs.SendMessageInput
+	stub := &stubSQS{fn: func(_ context.Context, in *awssqs.SendMessageInput, _ ...func(*awssqs.Options)) (*awssqs.SendMessageOutput, error) {
+		captured = in
+		return &awssqs.SendMessageOutput{}, nil
+	}}
+	publisher := NewPublisher(stub, "https://sqs.ap-southeast-1.amazonaws.com/123/rusuh-prod-notification.fifo")
+	err := publisher.Publish(context.Background(), events.Envelope{
+		OutboxID: "ob-1", AggregateID: "agg-1", Type: events.TypeAccountVerify,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, captured.MessageGroupId)
+	require.NotNil(t, captured.MessageDeduplicationId)
+	assert.Equal(t, "agg-1", *captured.MessageGroupId)
+	assert.Equal(t, "ob-1", *captured.MessageDeduplicationId)
 }
 
 func TestPublish_SendError(t *testing.T) {

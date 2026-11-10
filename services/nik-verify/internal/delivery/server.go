@@ -49,7 +49,12 @@ func New(ctx context.Context, cfg config.Config) (*Server, error) {
 		return nil, err
 	}
 
-	var dukcapilAdapter = dukcapil.NewClient(cfg.Dukcapil.BaseURL, cfg.Dukcapil.APIKey, cfg.Dukcapil.Timeout)
+	var dukcapilAdapter = dukcapil.NewClient(
+		cfg.Dukcapil.BaseURL,
+		cfg.Dukcapil.APIKey,
+		cfg.Dukcapil.Timeout,
+		cfg.Dukcapil.ExtraHeaders,
+	)
 	if cfg.Dukcapil.IsStub() {
 		dukcapilAdapter = dukcapil.NewStubAdapter()
 	}

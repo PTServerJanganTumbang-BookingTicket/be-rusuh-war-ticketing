@@ -1,0 +1,83 @@
+version: 0.2
+
+# Applies every pending migrations/*.up.sql in filename order.
+#
+# DATABASE_URL arrives already resolved from Secrets Manager by CodeBuild
+# (see template.yaml EnvironmentVariables) and is masked in this log, so the
+# image needs neither the AWS CLI nor a JSON parser.
+#
+# The whole run happens in ONE psql session, which is what makes it safe:
+#
+#  * pg_advisory_lock is held for the SESSION, not the transaction, so it
+#    survives the COMMIT inside each migration file. Two concurrent builds
+#    therefore cannot both apply — the second waits, then finds every version
+#    already recorded and applies nothing.
+#  * ON_ERROR_STOP aborts the session at the first failing statement, so a
+#    broken migration stops the run instead of marking itself applied.
+#
+# Each migration file opens and closes its own transaction, so the
+# bookkeeping INSERT that follows it is a separate autocommit statement. The
+# gap is microseconds inside a single session; a crash in that window leaves
+# the migration applied but unrecorded, and the next run would re-apply it.
+# Migrations must therefore stay idempotent at the statement level
+# (IF NOT EXISTS / IF EXISTS), which is how they are already written.
+
+phases:
+  pre_build:
+    commands:
+      - set -eu
+      - psql --version
+      - |
+        echo "Connecting through the RDS Proxy (sslmode=require)..."
+        psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -tAc "SELECT 'connected to ' || current_database()"
+      - |
+        psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+          CREATE TABLE IF NOT EXISTS schema_migrations (
+            version    text PRIMARY KEY,
+            applied_at timestamptz NOT NULL DEFAULT now()
+          );"
+
+  build:
+    commands:
+      - |
+        set -eu
+        test -d migrations || { echo "no migrations/ directory in the bundle"; exit 1; }
+
+        # 8372261 is an arbitrary but FIXED key. Every migrator run must use
+        # the same one or the lock protects nothing.
+        SCRIPT=/tmp/apply.sql
+        printf "SELECT pg_advisory_lock(8372261);\n" > "$SCRIPT"
+
+        pending=0
+        for f in $(ls migrations/*.up.sql | sort); do
+          version=$(basename "$f" .up.sql)
+          applied=$(psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -tAc \
+            "SELECT 1 FROM schema_migrations WHERE version = '$version'")
+          if [ -n "$applied" ]; then
+            echo "skip   $version"
+            continue
+          fi
+          echo "apply  $version"
+          printf "\\\\echo '>>> %s'\n\\\\i %s\nINSERT INTO schema_migrations (version) VALUES ('%s');\n" \
+            "$version" "$f" "$version" >> "$SCRIPT"
+          pending=$((pending + 1))
+        done
+
+        printf "SELECT pg_advisory_unlock(8372261);\n" >> "$SCRIPT"
+
+        if [ "$pending" -eq 0 ]; then
+          echo "Schema already current; nothing to apply."
+          exit 0
+        fi
+
+        echo "Applying $pending migration(s) in a single session..."
+        psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$SCRIPT"
+
+  post_build:
+    commands:
+      # Runs even when the build phase failed, so the log always ends with the
+      # schema's actual state rather than just the error.
+      - |
+        echo "--- schema_migrations ---"
+        psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c \
+          "SELECT version, applied_at FROM schema_migrations ORDER BY version" || true

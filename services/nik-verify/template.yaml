@@ -3,30 +3,135 @@ Transform: AWS::Serverless-2016-10-31
 Description: rusuh-nik-verify — native Lambda handler (Option B) behind API Gateway HTTP API
 
 Parameters:
+  DeployRevision:
+    Type: String
+    Default: unset
+    Description: >
+      Commit SHA of the deploy that last touched this stack. Nothing reads it;
+      it exists to force an update.
+
+      CloudFormation does NOT detect changes behind a
+      {{resolve:secretsmanager:...}} dynamic reference. If the template text is
+      unchanged, the resource is not updated and the reference is never
+      re-resolved - so rotating a secret leaves every Lambda running the value
+      baked in at its last deploy, with no error anywhere and nothing in the
+      console to suggest it is stale.
+
+      Threading the commit SHA through makes every deploy a real change, so
+      the secrets are re-read each time. The cost is that no service deploy is
+      ever a no-op; that is the intended trade.
+
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues: [dev, prod]
+    Description: >
+      Suffixes every physical resource name. Without it the hardcoded names
+      below collide and two environments cannot share an account and region.
+
   VpcSubnetIds:
-    Type: List<AWS::EC2::Subnet::Id>
+    Type: AWS::SSM::Parameter::Value<List<AWS::EC2::Subnet::Id>>
+    Default: /rusuh/prod/vpc/private-subnet-ids
     Description: Private subnets with reachability to Aurora, Redis and the Dukcapil egress path
   SecurityGroupIds:
-    Type: List<AWS::EC2::SecurityGroup::Id>
+    Type: AWS::SSM::Parameter::Value<List<AWS::EC2::SecurityGroup::Id>>
+    Default: /rusuh/prod/vpc/lambda-security-group-ids
     Description: Security group permitting Aurora (5432) and Redis (6379) egress
   DatabaseSecretArn:
-    Type: String
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/db/secret-arn
     Description: Secrets Manager ARN holding the RDS Proxy connection string
   NikPepperSecretArn:
-    Type: String
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/nik/pepper-secret-arn
     Description: >
       Secrets Manager ARN holding the NIK HMAC pepper. This secret can never be
       rotated (ADR-005 §8) and must be the SAME value every service that hashes
       a NIK resolves. Back it up: losing it breaks BR-02 permanently.
+  NikPepperKmsKeyArn:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/nik/pepper-kms-key-arn
+    Description: >
+      CMK that encrypts the pepper secret. secretsmanager:GetSecretValue alone
+      raises AccessDeniedException on a CMK-encrypted secret, so kms:Decrypt on
+      this key is required as well - see the policy below.
+
   DukcapilApiKeySecretArn:
-    Type: String
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/dukcapil/api-key-secret-arn
     Description: Secrets Manager ARN holding the Dukcapil API key
+  DukcapilMode:
+    Type: String
+    Default: stub
+    AllowedValues: [live, stub]
+    Description: >
+      stub  - answer from the NIK itself, no network. The POC default: no
+              Dukcapil contract exists yet, so a deploy with nothing
+              configured still produces a working service.
+      live  - call a real HTTP endpoint - production Dukcapil, or a mock
+              server standing in for it. Requires DukcapilBaseUrl and a
+              populated rusuh-<env>/dukcapil-api-key secret.
+
+      The stub is NOT a blanket pass: a NIK ending 0000 is rejected and one
+      ending 9999 simulates an outage, so the fail-closed and rejection paths
+      stay reachable. It does verify every other NIK unconditionally, so this
+      default is a POC convenience and nothing more - a real environment must
+      pass live.
+
+      Choosing stub also sets APP_ENV away from "production", because the
+      service refuses stub mode in production on purpose - see the Environment
+      block below.
+
   DukcapilBaseUrl:
     Type: String
-    Description: Dukcapil API base URL
-  RedisAddr:
+    Default: ""
+    Description: >
+      Base URL of the Dukcapil API, or of a mock server standing in for it.
+      The client appends /verify, so pass the origin with no trailing slash:
+      https://m1.apidog.com/mock/12345, not .../mock/12345/.
+
+      Required when DukcapilMode is live, which the Rules section below
+      enforces at deploy time rather than letting it surface as a 502 on the
+      first request.
+
+  DukcapilExtraHeaderName:
     Type: String
+    Default: ""
+    Description: >
+      One extra request header sent on every Dukcapil call, for whatever
+      fronts the endpoint in this environment and authenticates the caller its
+      own way. An Apidog cloud mock wants "apidogToken"; leave empty for a
+      real Dukcapil endpoint, which needs only X-Api-Key.
+
+  DukcapilExtraHeaderValue:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: >
+      Value for DukcapilExtraHeaderName. NoEcho keeps it out of stack events
+      and describe-stacks; it is still readable in the Lambda's environment,
+      like every other value here, so this is for gateway tokens and not for
+      anything whose disclosure matters.
+  RedisAddr:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/redis/addr
     Description: ElastiCache primary endpoint, host:port
+
+# Catches the misconfiguration at deploy time. Without this, live mode with an
+# empty base URL deploys cleanly and then fails in config.Load() on the first
+# invocation, which reads as a 502 with the reason buried in CloudWatch.
+Rules:
+  LiveModeRequiresBaseUrl:
+    RuleCondition: !Equals [!Ref DukcapilMode, live]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref DukcapilBaseUrl, ""]]
+        AssertDescription: >
+          DukcapilBaseUrl must be set when DukcapilMode is live. Pass
+          DukcapilMode=stub for a POC deploy with no Dukcapil endpoint.
+
+Conditions:
+  IsDukcapilStub: !Equals [!Ref DukcapilMode, stub]
+  HasDukcapilExtraHeader: !Not [!Equals [!Ref DukcapilExtraHeaderName, ""]]
 
 Globals:
   Function:
@@ -42,7 +147,7 @@ Resources:
     Metadata:
       BuildMethod: makefile
     Properties:
-      FunctionName: rusuh-nik-verify
+      FunctionName: !Sub rusuh-${Environment}-nik-verify
       Handler: bootstrap
       CodeUri: .
       # Provisioned concurrency is set at T-30 per the ADR-005 runbook rather
@@ -52,14 +157,54 @@ Resources:
         SecurityGroupIds: !Ref SecurityGroupIds
       Environment:
         Variables:
-          APP_ENV: production
-          DUKCAPIL_MODE: live
+          DEPLOY_REVISION: !Ref DeployRevision
+          # The service refuses DUKCAPIL_MODE=stub while APP_ENV is
+          # "production" - "every NIK would verify". Deriving APP_ENV from the
+          # mode keeps that guard intact without making the operator remember
+          # the coupling: asking for stub is enough, and live still gets
+          # "production".
+          APP_ENV: !If [IsDukcapilStub, poc, production]
+          DUKCAPIL_MODE: !Ref DukcapilMode
+          # A JSON object of header name to value, or empty for none. Composed
+          # here rather than passed as JSON through the pipeline, because the
+          # deploy action word-splits its overrides and a braced, quoted value
+          # surviving that intact is luck rather than design.
+          DUKCAPIL_EXTRA_HEADERS: !If
+            - HasDukcapilExtraHeader
+            - !Sub '{"${DukcapilExtraHeaderName}":"${DukcapilExtraHeaderValue}"}'
+            - ""
           DUKCAPIL_BASE_URL: !Ref DukcapilBaseUrl
           DUKCAPIL_TIMEOUT_MS: "3000"
           DUKCAPIL_RATE_LIMIT_RPS: "40"
           DUKCAPIL_BURST_CAPACITY: "80"
           DUKCAPIL_BREAKER_FAILURE_THRESHOLD: "5"
           DUKCAPIL_BREAKER_OPEN_SECONDS: "30"
+          # ── Secrets, injected by CloudFormation at deploy time ──────────
+          # The Go config loaders read these as PLAIN environment variables
+          # (envutil.Env("DATABASE_URL") and friends) and validate() refuses to
+          # start without them, so granting IAM to read the secret is not
+          # enough - the value has to be here.
+          #
+          # Referenced by secret NAME, not by the ARN parameter above. The name
+          # is deterministic from Environment, so !Sub substitutes a plain
+          # parameter and the dynamic reference never depends on an
+          # SSM-resolved value. The ARN parameters are still used, for the IAM
+          # policies below.
+          #
+          # Resolved only on create/update: rotating a secret does NOT reach a
+          # running function until its stack is updated again.
+          DATABASE_URL: !Sub '{{resolve:secretsmanager:rusuh-${Environment}/database-url:SecretString:url}}'
+          # The pepper is a bare string, not JSON, so there is no key suffix.
+          #
+          # TODO(pre-production): this puts the pepper into the function's
+          # environment, where anyone with lambda:GetFunctionConfiguration can
+          # read it, and it requires the deploy role to read the secret. ADR-005
+          # section 8 has no rotation path, so a leak here is permanent. Before
+          # production, fetch it at runtime in Go and drop this variable.
+          NIK_PEPPER: !Sub '{{resolve:secretsmanager:rusuh-${Environment}/nik-pepper:SecretString}}'
+          # Unused in stub mode, where validate() does not require it, so a
+          # POC deploy works with the secret still at its REPLACE_ME placeholder.
+          DUKCAPIL_API_KEY: !Sub '{{resolve:secretsmanager:rusuh-${Environment}/dukcapil-api-key:SecretString:api_key}}'
           REDIS_ADDR: !Ref RedisAddr
           # Keep small: every warm container holds its own pool, and a few
           # hundred of them will exhaust Postgres. RDS Proxy fronts this.
@@ -74,6 +219,13 @@ Resources:
                 - !Ref DatabaseSecretArn
                 - !Ref NikPepperSecretArn
                 - !Ref DukcapilApiKeySecretArn
+            # Reading a CMK-encrypted secret takes TWO permissions. Without
+            # this one every NIK hash fails at runtime, not at deploy time.
+            - Effect: Allow
+              Action:
+                - kms:Decrypt
+              Resource:
+                - !Ref NikPepperKmsKeyArn
       Events:
         ValidateNik:
           Type: HttpApi
@@ -85,6 +237,30 @@ Resources:
           Properties:
             Path: /sys/ping
             Method: GET
+
+  # Declared explicitly because SAM does not create it: Lambda would, on first
+  # invoke, with retention set to NEVER EXPIRE. For a POC that is a slow leak
+  # of storage cost with no upside.
+  NikVerifyLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/rusuh-${Environment}-nik-verify
+      RetentionInDays: 14
+
+  # Published for services/user, which declares
+  #   NikVerifyBaseUrl: AWS::SSM::Parameter::Value<String>
+  # with this path as its Default. Writing it here is what lets the pipeline
+  # drop its read-the-output-and-pass-it-back step.
+  #
+  # Note the ordering this implies: nik-verify must deploy before user, which
+  # is why the pipeline still has two waves.
+  SsmBaseUrl:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /rusuh/${Environment}/nik-verify/base-url
+      Type: String
+      Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+      Description: Base URL of the nik-verify HTTP API
 
 Outputs:
   ApiUrl:

@@ -4,8 +4,49 @@ Plain SQL, applied in filename order against the shared Aurora PostgreSQL
 cluster described in ADR-005 §4. Each migration has an `.up.sql` and a
 `.down.sql`.
 
-No migration runner is committed yet — pick one before the first deploy and add
-it to CI. `golang-migrate` matches this naming convention as-is:
+## How these get applied
+
+By hand, with a SQL client. The CD pipeline deliberately does not run them —
+a POC decision recorded in `DEPLOY.md` — so the schema is whatever someone
+last executed against the database.
+
+Aurora has a public endpoint in the POC, so DBeaver connects to it directly;
+`DEPLOY.md` §"Connecting with DBeaver" has the host, credentials and SSL
+settings. Execute each file **as a script**, not statement by statement: every
+one of them opens and closes its own transaction, so running them a statement
+at a time breaks that guarantee.
+
+Order matters: 0001 creates `accounts`, and every later file has a foreign key
+to it. Running any of them first fails with `relation "accounts" does not
+exist`.
+
+| | Creates | |
+|---|---|---|
+| `0001_user_domain` | `accounts`, `consent_records`, `saved_niks`, `magic_tokens` | |
+| `0002_tickets_read_model` | `tickets`, `events` | FK → `accounts` |
+| `0003_outbox_and_refresh` | `outbox`, `refresh_tokens` | FK → `accounts` |
+| `0004_engagement_read_model` | `bookings`, `queue_entries` | FK → `accounts` |
+| `0005_outbox_drop_tracking` | adds `outbox.dropped_at`, `outbox.drop_reason` | needs `outbox` from `0003` |
+
+Every statement uses `IF NOT EXISTS`, so re-running a file is harmless. That
+is the only thing standing in for a migration runner, so keep it true: a
+migration written without `IF NOT EXISTS` becomes a file nobody can safely
+apply twice, and with no ledger there is no way to know whether it already ran.
+
+Two consequences of owning this by hand:
+
+- Nothing records what is applied. There is no `schema_migrations` table unless
+  someone creates one, so "does this environment have 0005?" is answered by
+  looking at the database.
+- A service deploy cannot tell. The pipeline reports success whether or not the
+  schema matches the code, so a missing table surfaces as a runtime 500 rather
+  than a failed release.
+
+`infra/migrator/` still holds a CodeBuild project that applies these in order
+from inside the VPC, with an advisory lock and a `schema_migrations` ledger. It
+is not wired into the pipeline; `DEPLOY.md` has the command to run it on demand
+and where to re-insert the job. `golang-migrate` also matches this naming
+convention as-is, if a runner is preferred later:
 
 ```bash
 migrate -path ./migrations -database "$DATABASE_URL" up

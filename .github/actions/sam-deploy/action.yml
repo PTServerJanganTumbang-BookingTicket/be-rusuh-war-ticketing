@@ -1,0 +1,169 @@
+name: SAM deploy
+description: >
+  Build and deploy one service stack. Factored out because five deploy jobs
+  otherwise repeat the same thirty lines, and a fix applied to four of them is
+  worse than no fix at all.
+
+inputs:
+  service:
+    description: Directory under services/
+    required: true
+  stack-name:
+    description: CloudFormation stack name
+    required: true
+  parameter-overrides:
+    description: Space-separated Key=Value pairs passed to sam deploy
+    required: false
+    default: ""
+  aws-region:
+    required: true
+  role-to-assume:
+    required: true
+  environment:
+    description: >
+      Environment name, used to locate the artifact bucket in SSM. Only needed
+      when artifact-bucket is not given.
+    required: false
+    default: prod
+
+  artifact-bucket:
+    description: >
+      S3 bucket for SAM build artifacts. Left empty, it is read from
+      /rusuh/<environment>/sam/artifact-bucket, which infra/foundation
+      publishes.
+
+      Never --resolve-s3: that keeps its bucket in a CloudFormation stack SAM
+      creates lazily on first use, and three services deploying in parallel
+      race to create it. It also has no lifecycle rule, so artifacts
+      accumulate forever.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+      with:
+        go-version: '1.26'
+        check-latest: true
+
+    - uses: aws-actions/setup-sam@f84ec7d548307efafe33230528756de3c5841a17 # v2
+      with:
+        use-installer: true
+
+    - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+      with:
+        role-to-assume: ${{ inputs.role-to-assume }}
+        aws-region: ${{ inputs.aws-region }}
+
+    # Vendor BEFORE sam build. This is what makes the monorepo work.
+    #
+    # Each service resolves the shared library through
+    #   replace .../pkg => ../../pkg
+    # and the template sets CodeUri to the service directory. `sam build` with
+    # BuildMethod: makefile runs CustomMakeBuilder:CopySource first - it copies
+    # CodeUri to a scratch directory and runs `make` in the COPY. ../../pkg
+    # points outside that copy, so the build fails with:
+    #
+    #   replacement directory ../../pkg does not exist
+    #
+    # No sam flag fixes this; the shared package is simply not inside CodeUri.
+    # `go mod vendor` resolves the replace here, in the real tree, and writes
+    # pkg's source into vendor/ - which lives inside CodeUri and is copied
+    # along with everything else. The build in the scratch directory then needs
+    # no path outside itself.
+    #
+    # GOWORK=off because go.work at the repo root is not in the copy either,
+    # and a workspace changes how vendoring resolves modules.
+    #
+    # Side benefit: the make step no longer downloads anything, so a slow or
+    # failing module proxy cannot break a deploy.
+    - name: Vendor the shared package into the service
+      shell: bash
+      working-directory: services/${{ inputs.service }}
+      env:
+        GOWORK: off
+      run: |
+        set -euo pipefail
+        go mod vendor
+
+        # Fail here rather than three minutes later inside sam build, where
+        # the error names a path instead of a cause.
+        pkg="github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg"
+        if ! grep -q "^# ${pkg} " vendor/modules.txt; then
+          echo "::error::vendor/modules.txt has no entry for ${pkg}."
+          echo "::error::The replace directive did not resolve - check go.mod in services/${{ inputs.service }}."
+          exit 1
+        fi
+        echo "vendored $(grep -c '^# ' vendor/modules.txt) modules, including the shared pkg"
+
+    # NOT --use-container: the on-host toolchain is already correct, and a
+    # container build adds minutes per service for no benefit now that the
+    # source is self-contained.
+    - name: SAM build
+      shell: bash
+      working-directory: services/${{ inputs.service }}
+      run: sam build
+
+    - name: SAM deploy
+      shell: bash
+      working-directory: services/${{ inputs.service }}
+      env:
+        STACK: ${{ inputs.stack-name }}
+        REGION: ${{ inputs.aws-region }}
+        BUCKET: ${{ inputs.artifact-bucket }}
+        ENVIRONMENT: ${{ inputs.environment }}
+        OVERRIDES: ${{ inputs.parameter-overrides }}
+      run: |
+        set -euo pipefail
+
+        # Resolve the artifact bucket from SSM when it was not passed in.
+        # Credentials are already configured by this point, and the foundation
+        # publishes the name, so nothing has to be threaded through the
+        # workflow or kept in a repo variable.
+        if [ -z "$BUCKET" ]; then
+          param="/rusuh/${ENVIRONMENT}/sam/artifact-bucket"
+          BUCKET=$(aws ssm get-parameter --name "$param" --region "$REGION" \
+                     --query Parameter.Value --output text 2>/dev/null || true)
+          if [ -z "$BUCKET" ] || [ "$BUCKET" = "None" ]; then
+            echo "::error::No artifact bucket. $param does not exist and none was passed."
+            echo "::error::It is created by infra/foundation - deploy that first."
+            exit 1
+          fi
+          echo "artifact bucket from SSM: $BUCKET"
+        fi
+
+        args=(
+          --stack-name "$STACK"
+          --region "$REGION"
+          --capabilities CAPABILITY_IAM
+          --no-confirm-changeset
+          # An empty changeset is the normal outcome of redeploying an
+          # unchanged service, not a failure.
+          --no-fail-on-empty-changeset
+          --tags "Project=rusuh" "ManagedBy=github-actions"
+        )
+
+        args+=(--s3-bucket "$BUCKET" --s3-prefix "$STACK")
+
+        # Drop pairs whose value is empty. Several overrides come from repo
+        # variables that are legitimately unset - DUKCAPIL_BASE_URL in stub
+        # mode, for instance - and word-splitting leaves those as a bare
+        # "Key=", which sam's parameter parser treats as malformed rather than
+        # as "use the template default". Omitting the key entirely is what we
+        # actually mean: take the template's Default on a first deploy, keep
+        # the current value on an update.
+        params=()
+        for pair in $OVERRIDES; do
+          case "$pair" in
+            *=) echo "skipping empty override: ${pair%=}" ;;
+            *)  params+=("$pair") ;;
+          esac
+        done
+
+        if [ ${#params[@]} -gt 0 ]; then
+          args+=(--parameter-overrides "${params[@]}")
+        fi
+
+        echo "sam deploy ${args[*]}"
+        sam deploy "${args[@]}"

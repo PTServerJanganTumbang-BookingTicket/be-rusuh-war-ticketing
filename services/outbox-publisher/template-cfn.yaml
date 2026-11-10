@@ -1,0 +1,160 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: rusuh-outbox-publisher — raw CloudFormation (no SAM transform, SCP workaround)
+
+Parameters:
+  DeployRevision:
+    Type: String
+    Default: unset
+
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues: [dev, prod]
+
+  LambdaS3Bucket:
+    Type: String
+    Description: S3 bucket containing the Lambda deployment package
+
+  LambdaS3Key:
+    Type: String
+    Description: S3 key of the Lambda deployment package (bootstrap.zip)
+
+  VpcSubnetIds:
+    Type: AWS::SSM::Parameter::Value<List<AWS::EC2::Subnet::Id>>
+    Default: /rusuh/prod/vpc/private-subnet-ids
+
+  SecurityGroupIds:
+    Type: AWS::SSM::Parameter::Value<List<AWS::EC2::SecurityGroup::Id>>
+    Default: /rusuh/prod/vpc/lambda-security-group-ids
+
+  DatabaseSecretArn:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/db/secret-arn
+
+  NotificationQueueArn:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/notification/queue-arn
+
+  NotificationQueueUrl:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/notification/queue-url
+
+  RedisAddr:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/redis/addr
+
+Resources:
+  # ============================================================================
+  # IAM Role for Lambda
+  # ============================================================================
+  OutboxPublisherFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub rusuh-${Environment}-outbox-publisher-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: SecretsAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref DatabaseSecretArn
+        - PolicyName: SQSAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource:
+                  - !Ref NotificationQueueArn
+        - PolicyName: CloudWatchLogs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/rusuh-${Environment}-outbox-publisher:*
+
+  # ============================================================================
+  # Lambda Function
+  # ============================================================================
+  OutboxPublisherFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub rusuh-${Environment}-outbox-publisher
+      Runtime: provided.al2023
+      Architectures:
+        - arm64
+      Handler: bootstrap
+      Role: !GetAtt OutboxPublisherFunctionRole.Arn
+      Timeout: 60
+      MemorySize: 512
+      ReservedConcurrentExecutions: 1
+      Code:
+        S3Bucket: !Ref LambdaS3Bucket
+        S3Key: !Ref LambdaS3Key
+      VpcConfig:
+        SubnetIds: !Ref VpcSubnetIds
+        SecurityGroupIds: !Ref SecurityGroupIds
+      Environment:
+        Variables:
+          DEPLOY_REVISION: !Ref DeployRevision
+          APP_ENV: production
+          DATABASE_URL: !Sub '{{resolve:secretsmanager:rusuh-${Environment}/database-url:SecretString:url}}'
+          REDIS_ADDR: !Ref RedisAddr
+          NOTIFICATION_QUEUE_URL: !Ref NotificationQueueUrl
+          PUBLISH_BATCH_SIZE: "500"
+          DRAIN_BUDGET_SECONDS: "45"
+          OUTBOX_LEASE_SECONDS: "30"
+          DATABASE_MAX_CONNS: "4"
+
+  # ============================================================================
+  # CloudWatch Log Group
+  # ============================================================================
+  OutboxPublisherLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/rusuh-${Environment}-outbox-publisher
+      RetentionInDays: 14
+
+  # ============================================================================
+  # EventBridge Schedule (replaces SAM Events.Schedule)
+  # ============================================================================
+  OutboxScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub rusuh-${Environment}-outbox-publisher-schedule
+      Description: Fallback drain; latency-sensitive effects run inline in their own services
+      ScheduleExpression: rate(1 minute)
+      State: ENABLED
+      Targets:
+        - Id: OutboxPublisherTarget
+          Arn: !GetAtt OutboxPublisherFunction.Arn
+
+  OutboxSchedulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref OutboxPublisherFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt OutboxScheduleRule.Arn
+
+Outputs:
+  FunctionArn:
+    Description: ARN of the outbox-publisher Lambda function
+    Value: !GetAtt OutboxPublisherFunction.Arn

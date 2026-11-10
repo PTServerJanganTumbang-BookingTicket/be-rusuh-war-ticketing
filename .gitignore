@@ -26,3 +26,9 @@ sonar-*.json
 
 # SAM
 .aws-sam/
+
+# Created by the deploy pipeline (.github/actions/sam-deploy) so that
+# `sam build` can copy a self-contained service directory. Not committed:
+# it is a build artifact, it duplicates pkg/, and a stale copy would shadow
+# the real source.
+services/*/vendor/

@@ -3,23 +3,55 @@ Transform: AWS::Serverless-2016-10-31
 Description: rusuh-outbox-publisher — drains the transactional outbox onto SQS
 
 Parameters:
+  DeployRevision:
+    Type: String
+    Default: unset
+    Description: >
+      Commit SHA of the deploy that last touched this stack. Nothing reads it;
+      it exists to force an update.
+
+      CloudFormation does NOT detect changes behind a
+      {{resolve:secretsmanager:...}} dynamic reference. If the template text is
+      unchanged, the resource is not updated and the reference is never
+      re-resolved - so rotating a secret leaves every Lambda running the value
+      baked in at its last deploy, with no error anywhere and nothing in the
+      console to suggest it is stale.
+
+      Threading the commit SHA through makes every deploy a real change, so
+      the secrets are re-read each time. The cost is that no service deploy is
+      ever a no-op; that is the intended trade.
+
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues: [dev, prod]
+    Description: >
+      Suffixes every physical resource name. Without it the hardcoded names
+      below collide and two environments cannot share an account and region.
+
   VpcSubnetIds:
-    Type: List<AWS::EC2::Subnet::Id>
+    Type: AWS::SSM::Parameter::Value<List<AWS::EC2::Subnet::Id>>
+    Default: /rusuh/prod/vpc/private-subnet-ids
     Description: Private subnets with reachability to Aurora and Redis
   SecurityGroupIds:
-    Type: List<AWS::EC2::SecurityGroup::Id>
+    Type: AWS::SSM::Parameter::Value<List<AWS::EC2::SecurityGroup::Id>>
+    Default: /rusuh/prod/vpc/lambda-security-group-ids
     Description: Security group permitting Aurora (5432) and Redis (6379) egress
   DatabaseSecretArn:
-    Type: String
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/db/secret-arn
     Description: Secrets Manager ARN holding the RDS Proxy connection string
   NotificationQueueArn:
-    Type: String
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/notification/queue-arn
     Description: ARN of the notification queue this publisher writes to
   NotificationQueueUrl:
-    Type: String
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/notification/queue-url
     Description: URL of the notification queue this publisher writes to
   RedisAddr:
-    Type: String
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/redis/addr
     Description: ElastiCache primary endpoint, host:port
 
 Globals:
@@ -36,7 +68,7 @@ Resources:
     Metadata:
       BuildMethod: makefile
     Properties:
-      FunctionName: rusuh-outbox-publisher
+      FunctionName: !Sub rusuh-${Environment}-outbox-publisher
       Handler: bootstrap
       CodeUri: .
       # One concurrent execution. More would not go faster — SKIP LOCKED lets
@@ -49,7 +81,23 @@ Resources:
         SecurityGroupIds: !Ref SecurityGroupIds
       Environment:
         Variables:
+          DEPLOY_REVISION: !Ref DeployRevision
           APP_ENV: production
+          # ── Secrets, injected by CloudFormation at deploy time ──────────
+          # The Go config loaders read these as PLAIN environment variables
+          # (envutil.Env("DATABASE_URL") and friends) and validate() refuses to
+          # start without them, so granting IAM to read the secret is not
+          # enough - the value has to be here.
+          #
+          # Referenced by secret NAME, not by the ARN parameter above. The name
+          # is deterministic from Environment, so !Sub substitutes a plain
+          # parameter and the dynamic reference never depends on an
+          # SSM-resolved value. The ARN parameters are still used, for the IAM
+          # policies below.
+          #
+          # Resolved only on create/update: rotating a secret does NOT reach a
+          # running function until its stack is updated again.
+          DATABASE_URL: !Sub '{{resolve:secretsmanager:rusuh-${Environment}/database-url:SecretString:url}}'
           REDIS_ADDR: !Ref RedisAddr
           NOTIFICATION_QUEUE_URL: !Ref NotificationQueueUrl
           PUBLISH_BATCH_SIZE: "500"
@@ -79,3 +127,12 @@ Resources:
           Properties:
             Schedule: rate(1 minute)
             Description: Fallback drain; latency-sensitive effects run inline in their own services
+
+  # Declared explicitly because SAM does not create it: Lambda would, on first
+  # invoke, with retention set to NEVER EXPIRE. For a POC that is a slow leak
+  # of storage cost with no upside.
+  OutboxPublisherLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/rusuh-${Environment}-outbox-publisher
+      RetentionInDays: 14

@@ -84,3 +84,43 @@ func TestLoad_RejectsNonPositiveRate(t *testing.T) {
 	_, err := Load()
 	assert.Error(t, err)
 }
+
+// ── parseExtraHeaders ────────────────────────────────────────────────────
+
+func TestParseExtraHeaders(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		raw     string
+		want    map[string]string
+		wantErr bool
+	}{
+		{name: "absent", raw: "", want: nil},
+		{name: "whitespace only", raw: "   ", want: nil},
+		{name: "empty object", raw: "{}", want: nil},
+		{
+			name: "one header",
+			raw:  `{"apidogToken":"SzO1NLPx"}`,
+			want: map[string]string{"apidogToken": "SzO1NLPx"},
+		},
+		{
+			name: "several headers",
+			raw:  `{"apidogToken":"t","X-Trace-Id":"abc"}`,
+			want: map[string]string{"apidogToken": "t", "X-Trace-Id": "abc"},
+		},
+		{name: "not JSON", raw: "apidogToken=t", wantErr: true},
+		{name: "not an object", raw: `["apidogToken"]`, wantErr: true},
+		{name: "non-string value", raw: `{"apidogToken":1}`, wantErr: true},
+		{name: "empty header name", raw: `{"":"t"}`, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseExtraHeaders(tc.raw)
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Nil(t, got)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}

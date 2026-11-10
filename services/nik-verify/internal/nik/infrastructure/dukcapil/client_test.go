@@ -25,13 +25,58 @@ func serveDukcapil(t *testing.T, status int, body any) *httptest.Server {
 	}))
 }
 
+// ── extra headers ──────────────────────────────────────────────────────────
+
+func TestVerifyNIK_SendsExtraHeaders(t *testing.T) {
+	var got http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(verifyResponse{Valid: true, Status: "ACTIVE"})
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL, "secret-key", 5*time.Second, map[string]string{
+		"apidogToken": "mock-token",
+		"X-Trace-Id":  "abc",
+	})
+	_, err := client.VerifyNIK(context.Background(), "1234567890123456")
+	require.NoError(t, err)
+
+	assert.Equal(t, "mock-token", got.Get("apidogToken"))
+	assert.Equal(t, "abc", got.Get("X-Trace-Id"))
+	// Still present: extras add, they do not replace.
+	assert.Equal(t, "secret-key", got.Get("X-Api-Key"))
+	assert.Equal(t, "application/json", got.Get("Content-Type"))
+}
+
+func TestVerifyNIK_ExtraHeadersCannotOverrideTheContract(t *testing.T) {
+	var got http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(verifyResponse{Valid: true})
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL, "real-key", 5*time.Second, map[string]string{
+		"X-Api-Key":    "hijacked",
+		"Content-Type": "text/plain",
+	})
+	_, err := client.VerifyNIK(context.Background(), "1234567890123456")
+	require.NoError(t, err)
+
+	assert.Equal(t, "real-key", got.Get("X-Api-Key"))
+	assert.Equal(t, "application/json", got.Get("Content-Type"))
+}
+
 // ── VerifyNIK ─────────────────────────────────────────────────────────────────
 
 func TestVerifyNIK_Valid(t *testing.T) {
 	srv := serveDukcapil(t, http.StatusOK, verifyResponse{Valid: true, Status: "ACTIVE", Ref: "ref-1"})
 	defer srv.Close()
 
-	client := NewClient(srv.URL, "secret-key", 5*time.Second)
+	client := NewClient(srv.URL, "secret-key", 5*time.Second, nil)
 	result, err := client.VerifyNIK(context.Background(), "1234567890123456")
 	require.NoError(t, err)
 	assert.True(t, result.Valid)
@@ -43,7 +88,7 @@ func TestVerifyNIK_InvalidNIK(t *testing.T) {
 	srv := serveDukcapil(t, http.StatusOK, verifyResponse{Valid: false, Status: "INACTIVE"})
 	defer srv.Close()
 
-	client := NewClient(srv.URL, "key", 5*time.Second)
+	client := NewClient(srv.URL, "key", 5*time.Second, nil)
 	result, err := client.VerifyNIK(context.Background(), "0000000000000000")
 	require.NoError(t, err)
 	assert.False(t, result.Valid)
@@ -54,7 +99,7 @@ func TestVerifyNIK_NotFound_Returns404(t *testing.T) {
 	srv := serveDukcapil(t, http.StatusNotFound, nil)
 	defer srv.Close()
 
-	client := NewClient(srv.URL, "key", 5*time.Second)
+	client := NewClient(srv.URL, "key", 5*time.Second, nil)
 	result, err := client.VerifyNIK(context.Background(), "bad")
 	require.NoError(t, err) // 404 → result with Valid=false, not an error
 	assert.False(t, result.Valid)
@@ -65,7 +110,7 @@ func TestVerifyNIK_ServerError(t *testing.T) {
 	srv := serveDukcapil(t, http.StatusInternalServerError, nil)
 	defer srv.Close()
 
-	client := NewClient(srv.URL, "key", 5*time.Second)
+	client := NewClient(srv.URL, "key", 5*time.Second, nil)
 	_, err := client.VerifyNIK(context.Background(), "nik")
 	assert.Error(t, err)
 }
@@ -74,7 +119,7 @@ func TestVerifyNIK_TooManyRequests(t *testing.T) {
 	srv := serveDukcapil(t, http.StatusTooManyRequests, nil)
 	defer srv.Close()
 
-	client := NewClient(srv.URL, "key", 5*time.Second)
+	client := NewClient(srv.URL, "key", 5*time.Second, nil)
 	_, err := client.VerifyNIK(context.Background(), "nik")
 	assert.Error(t, err)
 }
@@ -86,7 +131,7 @@ func TestVerifyNIK_BadJSON(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := NewClient(srv.URL, "key", 5*time.Second)
+	client := NewClient(srv.URL, "key", 5*time.Second, nil)
 	_, err := client.VerifyNIK(context.Background(), "nik")
 	assert.Error(t, err)
 }
@@ -96,7 +141,7 @@ func TestVerifyNIK_DefaultStatus_WhenEmpty(t *testing.T) {
 	srv := serveDukcapil(t, http.StatusOK, verifyResponse{Valid: true, Status: ""})
 	defer srv.Close()
 
-	client := NewClient(srv.URL, "key", 5*time.Second)
+	client := NewClient(srv.URL, "key", 5*time.Second, nil)
 	result, err := client.VerifyNIK(context.Background(), "nik")
 	require.NoError(t, err)
 	assert.Equal(t, "ACTIVE", result.Status)
@@ -109,7 +154,7 @@ func TestVerifyNIK_Timeout(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := NewClient(srv.URL, "key", 10*time.Millisecond)
+	client := NewClient(srv.URL, "key", 10*time.Millisecond, nil)
 	_, err := client.VerifyNIK(context.Background(), "nik")
 	assert.Error(t, err)
 }

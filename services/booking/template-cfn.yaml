@@ -1,0 +1,170 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: rusuh-booking — raw CloudFormation (no SAM transform, SCP workaround)
+
+Parameters:
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues: [dev, prod]
+    Description: Suffixes every physical resource name.
+
+  LambdaS3Bucket:
+    Type: String
+    Description: S3 bucket containing the Lambda deployment package
+
+  LambdaS3Key:
+    Type: String
+    Description: S3 key of the Lambda deployment package (bootstrap.zip)
+
+  EnableDirectApiAccess:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: >
+      Create a per-service API Gateway endpoint. Set to false when using the
+      unified API Gateway (rusuh-prod-api) as the single entry point.
+      Direct access is useful for debugging but exposes an additional endpoint.
+
+Conditions:
+  CreateDirectApi: !Equals [!Ref EnableDirectApiAccess, "true"]
+
+Resources:
+  # ============================================================================
+  # IAM Role for Lambda
+  # ============================================================================
+  BookingFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub rusuh-${Environment}-booking-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: CloudWatchLogs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/rusuh-${Environment}-booking:*
+
+  # ============================================================================
+  # Lambda Function
+  # ============================================================================
+  BookingFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub rusuh-${Environment}-booking
+      Runtime: provided.al2023
+      Architectures:
+        - arm64
+      Handler: bootstrap
+      Role: !GetAtt BookingFunctionRole.Arn
+      Timeout: 10
+      MemorySize: 256
+      Code:
+        S3Bucket: !Ref LambdaS3Bucket
+        S3Key: !Ref LambdaS3Key
+
+  # ============================================================================
+  # CloudWatch Log Group (explicit retention)
+  # ============================================================================
+  BookingLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/rusuh-${Environment}-booking
+      RetentionInDays: 14
+
+  # ============================================================================
+  # HTTP API (API Gateway v2) — ONLY if EnableDirectApiAccess is true
+  # ============================================================================
+  BookingApi:
+    Type: AWS::ApiGatewayV2::Api
+    Condition: CreateDirectApi
+    Properties:
+      Name: !Sub rusuh-${Environment}-booking-api
+      ProtocolType: HTTP
+      Description: HTTP API for booking service (direct access)
+
+  BookingApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: CreateDirectApi
+    Properties:
+      LogGroupName: !Sub /aws/apigateway/rusuh-${Environment}-booking-api
+      RetentionInDays: 14
+
+  BookingApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Condition: CreateDirectApi
+    Properties:
+      ApiId: !Ref BookingApi
+      StageName: $default
+      AutoDeploy: true
+      AccessLogSettings:
+        DestinationArn: !GetAtt BookingApiLogGroup.Arn
+        Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","routeKey":"$context.routeKey","status":"$context.status","protocol":"$context.protocol","responseLength":"$context.responseLength","integrationErrorMessage":"$context.integrationErrorMessage"}'
+
+  BookingLambdaIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Condition: CreateDirectApi
+    Properties:
+      ApiId: !Ref BookingApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt BookingFunction.Arn
+      PayloadFormatVersion: "2.0"
+
+  RouteCreateBooking:
+    Type: AWS::ApiGatewayV2::Route
+    Condition: CreateDirectApi
+    Properties:
+      ApiId: !Ref BookingApi
+      RouteKey: POST /bookings
+      Target: !Sub integrations/${BookingLambdaIntegration}
+
+  RouteGetBooking:
+    Type: AWS::ApiGatewayV2::Route
+    Condition: CreateDirectApi
+    Properties:
+      ApiId: !Ref BookingApi
+      RouteKey: GET /bookings/{booking_id}
+      Target: !Sub integrations/${BookingLambdaIntegration}
+
+  RouteHealthCheck:
+    Type: AWS::ApiGatewayV2::Route
+    Condition: CreateDirectApi
+    Properties:
+      ApiId: !Ref BookingApi
+      RouteKey: GET /sys/ping
+      Target: !Sub integrations/${BookingLambdaIntegration}
+
+  BookingFunctionDirectApiPermission:
+    Type: AWS::Lambda::Permission
+    Condition: CreateDirectApi
+    Properties:
+      FunctionName: !Ref BookingFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${BookingApi}/*/*
+
+Outputs:
+  ApiUrl:
+    Condition: CreateDirectApi
+    Description: Base URL of the booking HTTP API (direct access)
+    Value: !Sub "https://${BookingApi}.execute-api.${AWS::Region}.amazonaws.com"
+
+  FunctionArn:
+    Description: ARN of the booking Lambda function
+    Value: !GetAtt BookingFunction.Arn
+
+  FunctionName:
+    Description: Name of the booking Lambda function
+    Value: !Ref BookingFunction

@@ -2,6 +2,16 @@ AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: rusuh-booking — native Lambda handler (Option B) behind API Gateway HTTP API
 
+Parameters:
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues: [dev, prod]
+    Description: >
+      Suffixes every physical resource name. Without it the hardcoded names
+      below collide and two environments cannot share an account and region.
+
+
 Globals:
   Function:
     Timeout: 10
@@ -16,7 +26,7 @@ Resources:
     Metadata:
       BuildMethod: makefile
     Properties:
-      FunctionName: rusuh-booking
+      FunctionName: !Sub rusuh-${Environment}-booking
       Handler: bootstrap
       CodeUri: .
       Events:
@@ -35,6 +45,15 @@ Resources:
           Properties:
             Path: /sys/ping
             Method: GET
+
+  # Declared explicitly because SAM does not create it: Lambda would, on first
+  # invoke, with retention set to NEVER EXPIRE. For a POC that is a slow leak
+  # of storage cost with no upside.
+  BookingLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/rusuh-${Environment}-booking
+      RetentionInDays: 14
 
 Outputs:
   ApiUrl:

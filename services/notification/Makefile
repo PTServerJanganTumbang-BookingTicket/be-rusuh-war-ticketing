@@ -33,9 +33,15 @@ build: build-lambda
 build-lambda:
 	@env CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -tags lambda.norpc -o bin/bootstrap ./cmd/lambda
 
+# ARTIFACTS_DIR is quoted because SAM sets it to a path under the source
+# tree, and a developer checkout can sit anywhere - "Assessment 2026/..." for
+# instance. Unquoted, the space splits the -o argument in two and go reports
+#   package <second half> is not in std
+# which points at the toolchain rather than at the path. CI never sees it:
+# /home/runner/work/... has no spaces.
 # SAM makefile-builder target (used by template.yaml BuildMethod: makefile).
 build-NotificationFunction:
-	@env CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -tags lambda.norpc -o $(ARTIFACTS_DIR)/bootstrap ./cmd/lambda
+	@env CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -tags lambda.norpc -o "$(ARTIFACTS_DIR)/bootstrap" ./cmd/lambda
 
 test:
 	go test -v ./...

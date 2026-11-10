@@ -71,8 +71,9 @@ refused at startup.
 | `NIK_PEPPER` | yes, no default | KMS-managed secret. **Never rotated.** Must be the same value in every service that hashes a NIK. Back it up — losing it breaks BR-02 permanently. |
 | `DATABASE_URL` | yes | Shared Aurora, read-only use here. Front it with RDS Proxy. |
 | `REDIS_ADDR` | yes | Cache, limiter and breaker state. |
-| `DUKCAPIL_MODE` | no | `live` (default) or `stub`. `stub` is refused in production. |
-| `DUKCAPIL_BASE_URL`, `DUKCAPIL_API_KEY` | in live mode | |
+| `DUKCAPIL_MODE` | no | `live` or `stub`; `live` when the variable is absent. `stub` is refused in production, and the deployed value comes from the `DukcapilMode` stack parameter, which the POC defaults to `stub`. |
+| `DUKCAPIL_BASE_URL`, `DUKCAPIL_API_KEY` | in live mode | Base URL is an origin; the client appends `/verify`. |
+| `DUKCAPIL_EXTRA_HEADERS` | no | JSON object of header name to value, sent on every request alongside `X-Api-Key`. For gateways in front of Dukcapil that authenticate the caller their own way, e.g. `{"apidogToken":"..."}` for an Apidog mock. Cannot shadow `X-Api-Key` or `Content-Type`. |
 | `DUKCAPIL_TIMEOUT_MS` | no | 3000. Not optional in effect: without it a hung endpoint holds the invocation until the platform kills it and the breaker never sees a failure. |
 | `DUKCAPIL_RATE_LIMIT_RPS`, `DUKCAPIL_BURST_CAPACITY` | no | 40 / 80. Confirm the real contracted figure at T-7 per the ADR-005 runbook. |
 | `DUKCAPIL_BREAKER_FAILURE_THRESHOLD`, `DUKCAPIL_BREAKER_OPEN_SECONDS` | no | 5 / 30. |
