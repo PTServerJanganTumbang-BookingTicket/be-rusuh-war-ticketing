@@ -23,8 +23,8 @@ The wait-time estimate (FR-09) is not an endpoint: it's fields on join, `/me` an
 
 ## 0. The design in five rules
 
-1. **One writer.** Only admission-ctl grants, on a fixed 500 ms tick. Join never grants; on an empty
-   queue it just waits up to 1 s for the next tick to grant it (S2).
+1. **One writer.** Only admission-ctl grants, on a fixed 500 ms tick. Join never grants and never waits for
+   a grant: even with free places the caller joins, and the next tick admits them (no straight-in, S2, ADR-006 §8.14).
 2. **One broadcast.** Everyone receives the same bytes (`nowServing`, `state`, `ratePerMin`,
    `serverTime`). There is no per-customer push. When `nowServing ≥ ticket_no`, the client calls
    `/me` to collect its `grant_token` (S3). A named `status` event marks each sale-state change.
@@ -46,8 +46,8 @@ flowchart LR
     end
 
     subgraph Edge
-        APIGW[API Gateway<br/>api.rusuhtiket.com]
-        ALB[ALB<br/>events.rusuhtiket.com]
+        APIGW[API Gateway<br/>api.my-rusuh.my.id]
+        ALB[ALB<br/>events.my-rusuh.my.id]
     end
 
     subgraph Compute
@@ -98,7 +98,7 @@ sequenceDiagram
         CTL->>DB: COUNT open, browsing
         CTL->>R: EVALSHA advance_now_serving.lua
         CTL->>DB: INSERT bookings GRANTED (idempotent)
-        CTL->>R: HSET grant · ZADD expiries · ZREM by_ticket
+        CTL->>R: HSET grant · HSET token · ZREM by_ticket
         CTL->>R: PUBLISH sse-broadcast (after the INSERTs)
         R-->>SSE: nowServing, state, ratePerMin, serverTime
         SSE-->>C: data (same for everyone)
@@ -113,18 +113,19 @@ sequenceDiagram
 
 ## 3. State machines
 
-### 3.1 Sale state per event (`queue:{ev}:state`)
+### 3.1 Sale state per event (field `state` of `queue:{ev}`)
 
 ```mermaid
 stateDiagram-v2
     [*] --> SCHEDULED: sale-ops seed
     SCHEDULED --> OPEN: EventBridge at sale_starts_at
-    OPEN --> SOLD_OUT: total stock = 0
-    SOLD_OUT --> OPEN: stock returns from an expired booking
-    SOLD_OUT --> CLOSED: sold_out_at + 930 s
+    OPEN --> FULL_BOOKED: total stock = 0
+    FULL_BOOKED --> OPEN: stock returns from an expired booking
+    FULL_BOOKED --> CLOSED: full_booked_at + 930 s
     CLOSED --> [*]
 
-    note right of SCHEDULED: join returns 409
+    note right of SCHEDULED: join returns 409 SALE_NOT_OPEN
+    note right of FULL_BOOKED: join returns 409 FULL_BOOKED to new joiners, rejoiners keep their place
     note right of CLOSED: stream returns 410 Gone
 ```
 
@@ -172,19 +173,14 @@ If `05-booking/` ever adds one (e.g. HELD → SELECTING to change seats), revisi
 ## 4. Redis keyspace (queue domain)
 
 All names come from `pkg/rediskeys` (impl-plan §3.1). Never hand-write a key string.
+**The full list (type, TTL, writer, readers, meaning) is in [`../redis-keys.md`](../redis-keys.md)**,
+kept in step with the code by a test in `pkg/rediskeys`. In short:
 
-| Key | Type | Writer | Readers |
-|---|---|---|---|
-| `queue:{ev}:state` | string | sale-ops, advance Lua | all |
-| `queue:{ev}:issued` | counter | join | join, events |
-| `queue:{ev}` → `now_serving`, `rate_per_min` | hash | advance Lua, ctl | all |
-| `queue:{ev}:by_ticket` | zset (score = ticket_no). Score ≤ `now_serving` = **pending grant** | join (ZADD), ctl (ZREM after INSERT) | advance Lua, ctl RECOVER, me |
-| `stock:{ev}:{cat}` | counter | booking (`hold_booking.lua`), ctl sweeps | **advance Lua reads it directly** |
-| `token:{uuid}` | hash, EX sale window | join | me, stream, ctl |
-| `acct:{ev}:{account_id}` | string NX | join | join, me |
-| `grant:{token}` | hash, TTL from row deadline | ctl | me, booking (`pkg/grantauth`) |
-| `rl:join:{ip}`, `rl:sse:{ip}` | token bucket | join, stream | — |
-| pub/sub `sse-broadcast` · `sse-status` (state changes, incl. CLOSED) | channel | ctl | sse-server |
+| Group | Keys |
+|---|---|
+| Event (slot `{ev}`) | `queue:{ev}` (hash: `state`, `issued`, `now_serving`, `full_booked_at`, `rate_per_min`, `name`, `sale_starts_at`), `queue:{ev}:by_ticket` (score ≤ `now_serving` = **pending grant**), `stock:{ev}:{cat}`, `acct:{ev}:{account_id}` |
+| Customer (no tag) | `token:{queue_token}`, `grant:{grant_token}`, `rl:join:{ip}`, `rl:joinacct:{account_id}`, `rl:sse:{ip}` |
+| Channels | `sse-broadcast`, `sse-status` (state changes, incl. CLOSED) |
 
 **Removed** compared with ADR-005: `regrant:{ev}` (decision #1), `slots:open:{ev}` (S1), the
 `sse-grant` channel (S3), `pause:{ev}` + `pause:{ev}:grace_applied` (ADR-006 §4.3), `sse-sold-out`
@@ -206,7 +202,7 @@ Each step is demoable alone.
 5. **04 serving**, then **03 me**
 6. **02 sse-server:** snapshot + broadcast fan-out (no per-token routing)
 7. **Wait-time estimate (§8):** `rate_per_min` window in ctl; frontend rule from api-contracts §3.5
-8. Harden: sweep LAPSED, Turnstile, SOLD_OUT → CLOSED + `status` events
+8. Harden: sweep LAPSED, Turnstile, FULL_BOOKED → CLOSED + `status` events
 9. Load test: 300k synthetic joins + SSE fan-out (k6)
 
 ## 6. Decisions
@@ -228,7 +224,7 @@ folder for anything local.
 | 10 | POC lease | **Deferred** (§7). One task; ECS restarts it; deploy min 0 % / max 100 % | [05 §6](05-admission-controller.md#6-edge-cases-and-decisions) |
 | 11 | SSE connections per task · sharded pub/sub | Connections per task: **load-test output**. Classic `PUBLISH` behind an interface; sharded pub/sub **deferred** (§7) | [02 §6](02-queue-status-stream.md#6-edge-cases-and-decisions) |
 | S1 | Where admission counts come from | **Aurora COUNT each tick** (writer, partial index). Redis `slots:open` / `slots:browsing` removed, so booking, payment and webhook no longer touch queue counters | [05 §3.3](05-admission-controller.md#33-why-a-non-atomic-count-is-safe) |
-| S2 | Who grants | **admission-ctl only.** Empty-queue join waits ≤ 1 s for the next tick's grant, so FR-05 `granted: true` is kept. Webhook, outbox and cancel do nothing queue-related; the next tick uses the freed place | [01 §2](01-join-queue.md#2-flow) |
+| S2 | Who grants | **admission-ctl only.** Join answers at once, with no wait and no `granted` answer (no straight-in, ADR-006 §8.14; FR-05 is met by a waiting room of about one tick). Webhook, outbox and cancel do nothing queue-related; the next tick uses the freed place | [01 §2](01-join-queue.md#2-flow) |
 | S3 | How a customer learns it's their turn | **From the broadcast:** `nowServing ≥ ticket_no` → `GET /me`. The `grant` SSE event is removed | [02 §1](02-queue-status-stream.md#1-purpose) |
 | 12 | Wait-time estimate (FR-09) | **Frontend computes it** from `ratePerMin` (ctl: 60 s window while OPEN, seeded at T0): `ceil(position / ratePerMin)`, rounded **up**, shown as "± N menit". No estimate field in any API | [§8](#8-wait-time-estimate-fr-09) |
 | 13 | Admission pause (BR-13a, BR-22) | **Removed.** Breakers fail fast; the queue keeps moving; deadlines never shift | ADR-006 §4.3 |
@@ -269,7 +265,7 @@ Contract: api-contracts §3.5 · decision: ADR-006 §6.2.
 
 ```mermaid
 flowchart TD
-    A[ticket_no, nowServing, ratePerMin, state] --> B{state SOLD_OUT?}
+    A[ticket_no, nowServing, ratePerMin, state] --> B{state FULL_BOOKED?}
     B -->|yes| B1[Tiket sedang habis, no estimate]
     B -->|no| D{position = ticket_no − nowServing ≤ 0?}
     D -->|yes| D1[Giliran Anda sebentar lagi<br/>call GET /me]
@@ -298,7 +294,7 @@ Rounding up makes the estimate lean pessimistic, and the big steps stop it flick
 ```
 SSE default event:   {"nowServing":31604,"state":"OPEN","ratePerMin":318,"serverTime":"…"}
 /serving data:       {"now_serving":31600,"rate_per_min":318,"state":"OPEN","server_time":"…", "poll_after_ms":…, "poll_tiers":[…]}
-join data:           {"ticket_no":32748,"now_serving":31500,"position":1248,"queue_token":"qt_xyz789","sse_url":"/queue/stream"}
+join data:           {"ticket_no":32748,"now_serving":31500,"position":1248,"queue_token":"qt_xyz789","sse_url":"https://events.my-rusuh.my.id/events/evt_konser_a/queue/stream","event":{…}}
 ```
 
 `ticket_no` comes from join (or `/me`); `ratePerMin` arrives with the first SSE snapshot, so the
@@ -356,7 +352,7 @@ giliran Anda". Behind flag `SHOW_SELLOUT_HINT`, off.
 
 ### 8.7 Tests and tasks
 
-- [ ] ctl unit: `rate_per_min` window, seed, SOLD_OUT exclusion ([05 §3.5](05-admission-controller.md#35-rate_per_min))
+- [ ] ctl unit: `rate_per_min` window, seed, FULL_BOOKED exclusion ([05 §3.5](05-admission-controller.md#35-rate_per_min))
 - [ ] contract: SSE examples validate against `QueueStreamUpdate`; `/serving` against `NowServingData`
 - [ ] client unit (web + mobile, shared fixtures): every branch of §8.2; rounding boundaries 10/11, 30/31, 60/61; never rounds down
 - [ ] metrics per sale: `RatePerMin`, `AvgSlotMinutes`, `AvgBasket`, `Conversion`, `GapRatio`, `TimeToSellOut`

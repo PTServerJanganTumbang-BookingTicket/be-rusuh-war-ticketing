@@ -37,6 +37,34 @@ The waves are a real dependency order, not a convenience: `user` resolves
 the wave-1 stack that owns it. The parameter has to exist before the stack
 that reads it is created.
 
+## Queue and booking secrets
+
+The foundation does not create these three secrets. Create them in Secrets Manager (plain string values) and set the
+three repository variables above to their ARNs. `preflight` fails with the variable's name when one is missing or is not a
+Secrets Manager ARN, before anything is deployed.
+
+| Secret | Value | Rule |
+|---|---|---|
+| device pepper | a long random string, e.g. `openssl rand -base64 48` | queue and booking must reference **the same secret**: join stores `HMAC(pepper, X-Device-Id)` and booking recomputes it. Different peppers give every guest `DEVICE_MISMATCH` on the ticket page. Never rotate during a sale. |
+| e-ticket signing key | a long random string | booking signs the `?t=` e-ticket links with it. Notification (email links) and user-service (`GET /tickets/{id}/eticket`) must use the **same** key later, or the links they send and verify do not match. |
+| Turnstile secret key | the Cloudflare Turnstile secret for the site | queue verifies the CAPTCHA at join. |
+
+The values are read at deploy time (CloudFormation dynamic references), so the Lambda roles need no Secrets Manager access
+and rotating a secret takes effect on the next deploy (`DeployRevision` forces one).
+
+**Queue and booking Lambdas use `REDIS_CLUSTER=false`.** The foundation provisions a single-node ElastiCache cache cluster,
+not a cluster-mode replication group, and the cluster client both services use cannot talk to it. Switch the variable to
+`"true"` in `services/queue/template-cfn.yaml` and `services/booking/template-cfn.yaml` together with a cluster-mode Redis.
+
+**What is not deployed here.** The SSE stream server and the admission controller run on ECS and are not in this pipeline,
+and `GET /events/{id}/queue/stream` and `/queue/serving` are not behind the unified gateway. Until the admission
+controller runs, nobody is let in from the queue, so the join and ticket page can be deployed but a real sale cannot run.
+
+**CORS and the queue cookie.** The unified gateway allows the new headers (`X-Grant-Token`, `X-Device-Id`, `X-Queue-Token`)
+but still has `AllowOrigins: *` and `AllowCredentials: false`. A browser only sends and accepts the `queue_token` cookie
+across origins with credentials allowed, which needs an explicit origin list. Set the web origin(s) in
+`infra/api-gateway/template.yaml` once the frontend URL is known.
+
 ## How parameters reach the service stacks
 
 The service templates resolve their own infrastructure, rather than having
@@ -198,7 +226,11 @@ touch your reputation, which makes it the right target for pipeline testing:
 | `DUKCAPIL_MODE` | unset (= `stub`) or `live` | nik-verify — see *Dukcapil: live, mock or stub* |
 | `DUKCAPIL_BASE_URL` | `https://mock.apidog.com/m1/1409481-1420084-default` | nik-verify — required when `DUKCAPIL_MODE=live`. Base URL only: the client appends `/verify`. |
 | `DUKCAPIL_EXTRA_HEADER_NAME` | `apidogToken` | nik-verify — one extra request header. Unused against a real Dukcapil endpoint; **required** against an Apidog mock, which rejects untokened requests. |
-| `COOKIE_DOMAIN` | `.rusuhtiket.com` or empty | user |
+| `COOKIE_DOMAIN` | `.rusuhtiket.com` or empty | user, queue (the `queue_token` cookie domain; empty = the template default `my-rusuh.my.id`) |
+| `SSE_BASE_URL` | `https://events.my-rusuh.my.id` or empty | queue — join returns an absolute `sse_url` built from it. Empty = the template default. |
+| `DEVICE_PEPPER_SECRET_ARN` | `arn:aws:secretsmanager:ap-southeast-1:…:secret:rusuh-prod/device-pepper-…` | queue, booking — **required**, see *Queue and booking secrets* |
+| `TURNSTILE_SECRET_ARN` | `arn:aws:secretsmanager:…` | queue — **required**, see *Queue and booking secrets* |
+| `ETICKET_SIGNING_KEY_SECRET_ARN` | `arn:aws:secretsmanager:…` | booking — **required**, see *Queue and booking secrets* |
 | `SINGLE_AZ` | `true` (default) | foundation — `false` for multi-AZ |
 | `DB_ALLOWED_CIDR` | `0.0.0.0/0` | foundation — **empty means nothing can connect**. This POC uses `0.0.0.0/0`; see *What this costs you*. |
 | `DB_PUBLICLY_ACCESSIBLE` | `true` (default) | foundation — `false` returns Aurora to private subnets |

@@ -1,15 +1,16 @@
 package main
 
 import (
+	"context"
 	"log/slog"
 	"os"
 
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/awslabs/aws-lambda-go-api-proxy/httpadapter"
 
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/dotenv"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/booking/internal/config"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/booking/internal/delivery"
-	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/dotenv"
 )
 
 func main() {
@@ -21,6 +22,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	mux := delivery.New(cfg)
-	lambda.Start(httpadapter.NewV2(mux).ProxyWithContext)
+	// Connections are opened once per Lambda execution environment and reused across invocations.
+	handler, _, err := delivery.New(context.Background(), cfg)
+	if err != nil {
+		slog.Error("Failed to start", slog.Any("err", err))
+		os.Exit(1)
+	}
+	lambda.Start(httpadapter.NewV2(handler).ProxyWithContext)
 }

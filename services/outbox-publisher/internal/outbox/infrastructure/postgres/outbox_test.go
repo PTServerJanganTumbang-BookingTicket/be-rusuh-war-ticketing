@@ -20,7 +20,7 @@ type fakeRow struct{ fn func(...any) error }
 
 func (r fakeRow) Scan(dest ...any) error { return r.fn(dest...) }
 
-func scanErr(err error) fakeRow  { return fakeRow{fn: func(...any) error { return err }} }
+func scanErr(err error) fakeRow { return fakeRow{fn: func(...any) error { return err }} }
 func scanInt(n int) fakeRow {
 	return fakeRow{fn: func(dest ...any) error {
 		if p, ok := dest[0].(*int); ok {
@@ -36,8 +36,8 @@ type fakeRows struct {
 	err  error
 }
 
-func (r *fakeRows) Close()                                      {}
-func (r *fakeRows) Err() error                                  { return r.err }
+func (r *fakeRows) Close()                                       {}
+func (r *fakeRows) Err() error                                   { return r.err }
 func (r *fakeRows) CommandTag() pgconn.CommandTag                { return pgconn.CommandTag{} }
 func (r *fakeRows) FieldDescriptions() []pgconn.FieldDescription { return nil }
 func (r *fakeRows) Next() bool {
@@ -285,8 +285,8 @@ func (b *brokenScanTx) Query(ctx context.Context, sql string, args ...any) (pgx.
 
 type brokenScanRows struct{}
 
-func (r *brokenScanRows) Close()                                      {}
-func (r *brokenScanRows) Err() error                                  { return nil }
+func (r *brokenScanRows) Close()                                       {}
+func (r *brokenScanRows) Err() error                                   { return nil }
 func (r *brokenScanRows) CommandTag() pgconn.CommandTag                { return pgconn.CommandTag{} }
 func (r *brokenScanRows) FieldDescriptions() []pgconn.FieldDescription { return nil }
 func (r *brokenScanRows) Next() bool                                   { return true }

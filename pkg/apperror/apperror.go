@@ -22,6 +22,16 @@ type AppError struct {
 	// on 429 responses, where the contract returns a retry_after field
 	// alongside the message (§1.1). Zero means "not applicable".
 	RetryAfter time.Duration `json:"-"`
+
+	// Data is written as the envelope's data on error (e.g. queue_state,
+	// sale_starts_at). Nil means {}.
+	Data any `json:"-"`
+}
+
+// WithData attaches the error response's data object.
+func (e *AppError) WithData(data any) *AppError {
+	e.Data = data
+	return e
 }
 
 // WithCode attaches an Appendix A error code and returns the error, so call

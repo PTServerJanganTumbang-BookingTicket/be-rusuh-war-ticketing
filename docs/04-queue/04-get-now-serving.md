@@ -30,7 +30,7 @@ sequenceDiagram
             CF-->>C: 200 cached body
         else miss
             CF->>Q: forward
-            Q->>R: HGET queue:{ev} now_serving, rate_per_min · GET queue:{ev}:state
+            Q->>R: HMGET queue:{ev} now_serving, rate_per_min, state
             Q-->>CF: 200 now_serving, rate_per_min, state, server_time, poll_after_ms, poll_tiers
             CF-->>C: 200
         end
@@ -72,8 +72,7 @@ can't do that). Needs a PR to `documentations/api/`.
 
 | Store | Key | Op |
 |---|---|---|
-| Redis | `queue:{ev}` → `now_serving`, `rate_per_min` | HGET |
-| Redis | `queue:{ev}:state` | GET |
+| Redis | `queue:{ev}` → `now_serving`, `rate_per_min`, `state` | HMGET |
 
 ## 5. Responses
 
@@ -91,13 +90,13 @@ can't do that). Needs a PR to `documentations/api/`.
 - Never returns per-user data. If someone proposes adding a token here, it breaks caching.
 - **DECIDED (2026-11-05): `paused` replaced by `state`** (pause removed, ADR-006 §4.3). In polling
   mode the frontend computes position and minutes from `now_serving` + `rate_per_min` with the
-  same rule as SSE ([README §8.2](README.md#82-the-rule-frontend)), and reads `state` for SOLD_OUT / CLOSED.
+  same rule as SSE ([README §8.2](README.md#82-the-rule-frontend)), and reads `state` for FULL_BOOKED / CLOSED.
 
 ## 7. Tests
 
 - [ ] unit: `PollInterval` boundaries (1, 10, 11, 100, 101, 1000, 1001, missing), and `poll_tiers` serialises the same table
 - [ ] contract: response validates against the Apidog response schema
-- [ ] unit: `state` reflected (OPEN, SOLD_OUT, CLOSED)
+- [ ] unit: `state` reflected (OPEN, FULL_BOOKED, CLOSED)
 - [ ] integration: response has no `Set-Cookie` and has correct `Cache-Control`
 
 ## 8. Tasks

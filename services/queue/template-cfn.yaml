@@ -1,0 +1,238 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: rusuh-queue — join and /queue/me, raw CloudFormation (no SAM transform, SCP workaround)
+
+Parameters:
+  DeployRevision:
+    Type: String
+    Default: unset
+    Description: >
+      Commit SHA of the deploy that last touched this stack. Nothing reads it; it forces an update so the
+      {{resolve:secretsmanager:...}} references below are re-read on every deploy (CloudFormation does not detect a
+      rotated secret behind a dynamic reference).
+
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues: [dev, prod]
+    Description: Suffixes every physical resource name.
+
+  LambdaS3Bucket:
+    Type: String
+    Description: S3 bucket containing the Lambda deployment package
+
+  LambdaS3Key:
+    Type: String
+    Description: S3 key of the Lambda deployment package (bootstrap.zip)
+
+  EnableDirectApiAccess:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: >
+      Create a per-service API Gateway endpoint. Keep false when using the unified API Gateway (rusuh-<env>-api).
+
+  VpcSubnetIds:
+    Type: AWS::SSM::Parameter::Value<List<AWS::EC2::Subnet::Id>>
+    Default: /rusuh/prod/vpc/private-subnet-ids
+    Description: Private subnets with reachability to Aurora and Redis
+
+  SecurityGroupIds:
+    Type: AWS::SSM::Parameter::Value<List<AWS::EC2::SecurityGroup::Id>>
+    Default: /rusuh/prod/vpc/lambda-security-group-ids
+    Description: Security group permitting Aurora (5432) and Redis (6379) egress
+
+  RedisAddr:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/redis/addr
+    Description: ElastiCache endpoint, host:port
+
+  DevicePepperSecretArn:
+    Type: String
+    Description: >
+      Secrets Manager secret holding DEVICE_PEPPER (HMAC key for X-Device-Id). Must be the same secret booking uses,
+      or every guest gets DEVICE_MISMATCH on the ticket page.
+
+  TurnstileSecretArn:
+    Type: String
+    Description: Secrets Manager secret holding the Cloudflare Turnstile secret key (CAPTCHA at join). Never in the repo.
+
+  CookieDomain:
+    Type: String
+    Default: my-rusuh.my.id
+    Description: queue_token cookie domain; join is on api.*, the stream on events.*
+
+  SseBaseUrl:
+    Type: String
+    Default: https://events.my-rusuh.my.id
+    Description: Base URL of the SSE stream; join returns an absolute sse_url built from it
+
+Conditions:
+  CreateDirectApi: !Equals [!Ref EnableDirectApiAccess, "true"]
+
+Resources:
+  # ============================================================================
+  # IAM Role for Lambda
+  # ============================================================================
+  QueueFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub rusuh-${Environment}-queue-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: CloudWatchLogs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/rusuh-${Environment}-queue:*
+
+  # ============================================================================
+  # Lambda Function
+  # ============================================================================
+  # Secrets are read at deploy time (dynamic references), so the role needs no Secrets Manager access.
+  #
+  # REDIS_CLUSTER is "false": the foundation provisions a single-node ElastiCache cache cluster, not a cluster-mode
+  # replication group, and a cluster client cannot talk to it. Switch to "true" together with a cluster-mode Redis.
+  #
+  # Join has no provisioned concurrency here (the SAM template had a "live" alias for it). Warm-up before a sale
+  # (docs/04-queue/01-join-queue.md) is a separate step once the traffic profile is known.
+  QueueFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub rusuh-${Environment}-queue
+      Runtime: provided.al2023
+      Architectures:
+        - arm64
+      Handler: bootstrap
+      Role: !GetAtt QueueFunctionRole.Arn
+      Timeout: 10
+      MemorySize: 512
+      Code:
+        S3Bucket: !Ref LambdaS3Bucket
+        S3Key: !Ref LambdaS3Key
+      VpcConfig:
+        SubnetIds: !Ref VpcSubnetIds
+        SecurityGroupIds: !Ref SecurityGroupIds
+      Environment:
+        Variables:
+          DEPLOY_REVISION: !Ref DeployRevision
+          APP_ENV: production
+          REDIS_ADDR: !Ref RedisAddr
+          REDIS_CLUSTER: "false"
+          COOKIE_DOMAIN: !Ref CookieDomain
+          SSE_BASE_URL: !Ref SseBaseUrl
+          QUEUE_CAPACITY: "300000"
+          SALE_WINDOW_SECONDS: "21600"
+          CAPTCHA_PROVIDER: turnstile
+          TURNSTILE_TIMEOUT_MS: "1000"
+          DATABASE_MAX_CONNS: "2"
+          DATABASE_URL: !Sub '{{resolve:secretsmanager:rusuh-${Environment}/database-url:SecretString:url}}'
+          JWT_SECRET: !Sub '{{resolve:secretsmanager:rusuh-${Environment}/jwt-signing:SecretString}}'
+          DEVICE_PEPPER: !Sub '{{resolve:secretsmanager:${DevicePepperSecretArn}:SecretString}}'
+          TURNSTILE_SECRET_KEY: !Sub '{{resolve:secretsmanager:${TurnstileSecretArn}:SecretString}}'
+
+  # ============================================================================
+  # CloudWatch Log Group (explicit retention)
+  # ============================================================================
+  QueueLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/rusuh-${Environment}-queue
+      RetentionInDays: 14
+
+  # ============================================================================
+  # HTTP API (API Gateway v2) — ONLY if EnableDirectApiAccess is true
+  # ============================================================================
+  QueueApi:
+    Type: AWS::ApiGatewayV2::Api
+    Condition: CreateDirectApi
+    Properties:
+      Name: !Sub rusuh-${Environment}-queue-api
+      ProtocolType: HTTP
+      Description: HTTP API for queue service (direct access)
+
+  QueueApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: CreateDirectApi
+    Properties:
+      LogGroupName: !Sub /aws/apigateway/rusuh-${Environment}-queue-api
+      RetentionInDays: 14
+
+  QueueApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Condition: CreateDirectApi
+    Properties:
+      ApiId: !Ref QueueApi
+      StageName: $default
+      AutoDeploy: true
+      AccessLogSettings:
+        DestinationArn: !GetAtt QueueApiLogGroup.Arn
+        Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","routeKey":"$context.routeKey","status":"$context.status","responseLength":"$context.responseLength","integrationLatency":"$context.integrationLatency"}'
+
+  QueueLambdaIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Condition: CreateDirectApi
+    Properties:
+      ApiId: !Ref QueueApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt QueueFunction.Arn
+      PayloadFormatVersion: "2.0"
+
+  RouteJoinQueue:
+    Type: AWS::ApiGatewayV2::Route
+    Condition: CreateDirectApi
+    Properties:
+      ApiId: !Ref QueueApi
+      RouteKey: POST /events/{event_id}/queue/join
+      Target: !Sub integrations/${QueueLambdaIntegration}
+
+  RouteGetQueueState:
+    Type: AWS::ApiGatewayV2::Route
+    Condition: CreateDirectApi
+    Properties:
+      ApiId: !Ref QueueApi
+      RouteKey: GET /events/{event_id}/queue/me
+      Target: !Sub integrations/${QueueLambdaIntegration}
+
+  RouteHealthCheck:
+    Type: AWS::ApiGatewayV2::Route
+    Condition: CreateDirectApi
+    Properties:
+      ApiId: !Ref QueueApi
+      RouteKey: GET /sys/ping
+      Target: !Sub integrations/${QueueLambdaIntegration}
+
+  QueueFunctionDirectApiPermission:
+    Type: AWS::Lambda::Permission
+    Condition: CreateDirectApi
+    Properties:
+      FunctionName: !Ref QueueFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${QueueApi}/*/*
+
+Outputs:
+  ApiUrl:
+    Condition: CreateDirectApi
+    Description: Base URL of the queue HTTP API (direct access)
+    Value: !Sub "https://${QueueApi}.execute-api.${AWS::Region}.amazonaws.com"
+
+  FunctionArn:
+    Description: ARN of the queue Lambda function
+    Value: !GetAtt QueueFunction.Arn
+
+  FunctionName:
+    Description: Name of the queue Lambda function
+    Value: !Ref QueueFunction

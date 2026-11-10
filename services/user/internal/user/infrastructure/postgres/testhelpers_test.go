@@ -73,9 +73,9 @@ type mockRows struct {
 	err  error
 }
 
-func (r *mockRows) Close()                                  {}
-func (r *mockRows) Err() error                              { return r.err }
-func (r *mockRows) CommandTag() pgconn.CommandTag            { return pgconn.CommandTag{} }
+func (r *mockRows) Close()                                       {}
+func (r *mockRows) Err() error                                   { return r.err }
+func (r *mockRows) CommandTag() pgconn.CommandTag                { return pgconn.CommandTag{} }
 func (r *mockRows) FieldDescriptions() []pgconn.FieldDescription { return nil }
 func (r *mockRows) Next() bool {
 	if r.idx < len(r.rows) {
@@ -84,10 +84,10 @@ func (r *mockRows) Next() bool {
 	}
 	return false
 }
-func (r *mockRows) Scan(dest ...any) error  { return r.rows[r.idx-1](dest...) }
-func (r *mockRows) Values() ([]any, error)  { return nil, nil }
-func (r *mockRows) RawValues() [][]byte     { return nil }
-func (r *mockRows) Conn() *pgx.Conn         { return nil }
+func (r *mockRows) Scan(dest ...any) error { return r.rows[r.idx-1](dest...) }
+func (r *mockRows) Values() ([]any, error) { return nil, nil }
+func (r *mockRows) RawValues() [][]byte    { return nil }
+func (r *mockRows) Conn() *pgx.Conn        { return nil }
 
 // ── mockTx ────────────────────────────────────────────────────────────────────
 
@@ -129,7 +129,7 @@ func (t *mockTx) Rollback(ctx context.Context) error {
 	}
 	return nil
 }
-func (t *mockTx) Begin(ctx context.Context) (pgx.Tx, error)                   { return nil, nil }
+func (t *mockTx) Begin(ctx context.Context) (pgx.Tx, error) { return nil, nil }
 func (t *mockTx) CopyFrom(ctx context.Context, table pgx.Identifier, cols []string, src pgx.CopyFromSource) (int64, error) {
 	return 0, nil
 }

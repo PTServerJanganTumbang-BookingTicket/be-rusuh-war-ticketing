@@ -1,0 +1,96 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: rusuh-queue — join (POST /events/{event_id}/queue/join) behind API Gateway HTTP API
+
+Parameters:
+  VpcSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Private subnets with reachability to Aurora and Redis
+  SecurityGroupIds:
+    Type: List<AWS::EC2::SecurityGroup::Id>
+    Description: Security group permitting Aurora (5432) and Redis (6379) egress
+  DatabaseUrlSecretArn:
+    Type: String
+    Description: Secrets Manager secret holding the Aurora WRITER connection string
+  JwtSecretArn:
+    Type: String
+    Description: Secrets Manager secret holding the access-token signing secret (shared with rusuh-user)
+  DevicePepperSecretArn:
+    Type: String
+    Description: Secrets Manager secret holding DEVICE_PEPPER (HMAC key for X-Device-Id)
+  TurnstileSecretArn:
+    Type: String
+    Description: Secrets Manager secret holding TURNSTILE_SECRET_KEY. Never in the repo.
+  RedisAddr:
+    Type: String
+    Description: ElastiCache (cluster mode) configuration endpoint, host:port
+  CookieDomain:
+    Type: String
+    Default: my-rusuh.my.id
+    Description: queue_token cookie domain; join is on api.*, the stream on events.*
+  SseBaseUrl:
+    Type: String
+    Default: https://events.my-rusuh.my.id
+  ProvisionedConcurrency:
+    Type: Number
+    Default: 0
+    Description: Raised from T-30 min before a sale (01-join-queue.md)
+
+Globals:
+  Function:
+    # Join does no waiting (ADR-006 §8.14): CAPTCHA (1 s), a few Redis calls and at most one Aurora read.
+    Timeout: 10
+    MemorySize: 512
+    Runtime: provided.al2023
+    Architectures:
+      - arm64
+
+Resources:
+  JoinFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      FunctionName: rusuh-queue-join
+      Handler: bootstrap
+      CodeUri: .
+      AutoPublishAlias: live
+      ProvisionedConcurrencyConfig:
+        ProvisionedConcurrentExecutions: !Ref ProvisionedConcurrency
+      VpcConfig:
+        SubnetIds: !Ref VpcSubnetIds
+        SecurityGroupIds: !Ref SecurityGroupIds
+      Environment:
+        Variables:
+          APP_ENV: production
+          REDIS_ADDR: !Ref RedisAddr
+          REDIS_CLUSTER: "true"
+          COOKIE_DOMAIN: !Ref CookieDomain
+          SSE_BASE_URL: !Ref SseBaseUrl
+          QUEUE_CAPACITY: "300000"
+          SALE_WINDOW_SECONDS: "21600"
+          CAPTCHA_PROVIDER: turnstile
+          TURNSTILE_TIMEOUT_MS: "1000"
+          DATABASE_MAX_CONNS: "2"
+          DATABASE_URL: !Sub "{{resolve:secretsmanager:${DatabaseUrlSecretArn}}}"
+          JWT_SECRET: !Sub "{{resolve:secretsmanager:${JwtSecretArn}}}"
+          DEVICE_PEPPER: !Sub "{{resolve:secretsmanager:${DevicePepperSecretArn}}}"
+          TURNSTILE_SECRET_KEY: !Sub "{{resolve:secretsmanager:${TurnstileSecretArn}}}"
+      Policies:
+        - AWSLambdaVPCAccessExecutionRole
+      Events:
+        JoinQueue:
+          Type: HttpApi
+          Properties:
+            Path: /events/{event_id}/queue/join
+            Method: POST
+        HealthCheck:
+          Type: HttpApi
+          Properties:
+            Path: /sys/ping
+            Method: GET
+
+Outputs:
+  ApiUrl:
+    Description: Base URL of the queue HTTP API
+    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com"

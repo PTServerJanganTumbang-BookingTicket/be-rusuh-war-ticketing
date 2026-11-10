@@ -1,7 +1,9 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"os"
 
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/envutil"
 )
@@ -18,6 +20,20 @@ func Load() (Config, error) {
 			Level:  envutil.Env("LOG_LEVEL", "info"),
 			Format: envutil.Env("LOG_FORMAT", "json"),
 		},
+		DB: DB{
+			URL:      os.Getenv("DATABASE_URL"),
+			MaxConns: int32(envutil.EnvInt("DATABASE_MAX_CONNS", 2)),
+		},
+		Redis: Redis{
+			Addr:     envutil.Env("REDIS_ADDR", "localhost:16379"),
+			Password: os.Getenv("REDIS_PASSWORD"),
+			Cluster:  envutil.EnvBool("REDIS_CLUSTER", true),
+		},
+		Grant: Grant{DevicePepper: []byte(os.Getenv("DEVICE_PEPPER"))},
+		Booking: Booking{
+			MaxTicketsPerTransaction: envutil.EnvInt("MAX_TICKETS_PER_TRANSACTION", 3),
+			ETicketSigningKey:        []byte(os.Getenv("ETICKET_SIGNING_KEY")),
+		},
 	}
 
 	if err := cfg.validate(); err != nil {
@@ -27,8 +43,29 @@ func Load() (Config, error) {
 }
 
 func (c Config) validate() error {
+	var errs []error
 	if c.App.Port < 1 || c.App.Port > 65535 {
-		return fmt.Errorf("APP_PORT out of range: %d", c.App.Port)
+		errs = append(errs, fmt.Errorf("APP_PORT out of range: %d", c.App.Port))
 	}
-	return nil
+	if c.DB.URL == "" {
+		// Required everywhere: an empty DSN makes pgx fall back to libpq defaults (localhost:5432, OS user).
+		errs = append(errs, errors.New("DATABASE_URL is required (local: see example.env)"))
+	}
+	if c.App.Env == "local" && os.Getenv("AWS_LAMBDA_FUNCTION_NAME") != "" {
+		// APP_ENV defaults to local; inside Lambda that default would silently skip the checks below.
+		errs = append(errs, errors.New("APP_ENV must be set inside Lambda (local is for development only)"))
+	}
+	if c.App.Env != "local" && len(c.Grant.DevicePepper) == 0 {
+		errs = append(errs, errors.New("DEVICE_PEPPER is required outside local: without queue's pepper every guest gets DEVICE_MISMATCH"))
+	}
+	if c.App.Env != "local" && len(c.Booking.ETicketSigningKey) == 0 {
+		errs = append(errs, errors.New("ETICKET_SIGNING_KEY is required outside local: e-ticket links must verify in user-service"))
+	}
+	if c.DB.MaxConns < 1 {
+		errs = append(errs, fmt.Errorf("DATABASE_MAX_CONNS must be at least 1, got %d", c.DB.MaxConns))
+	}
+	if c.Booking.MaxTicketsPerTransaction < 1 {
+		errs = append(errs, fmt.Errorf("MAX_TICKETS_PER_TRANSACTION must be at least 1, got %d", c.Booking.MaxTicketsPerTransaction))
+	}
+	return errors.Join(errs...)
 }
