@@ -1,0 +1,289 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: rusuh-payment-api — native Lambda handler behind API Gateway HTTP API
+
+Parameters:
+  DeployRevision:
+    Type: String
+    Default: unset
+    Description: >
+      Commit SHA of the deploy that last touched this stack. Nothing reads it;
+      it exists to force an update.
+
+      CloudFormation does NOT detect changes behind a
+      {{resolve:secretsmanager:...}} dynamic reference. If the template text is
+      unchanged, the resource is not updated and the reference is never
+      re-resolved - so rotating a secret leaves every Lambda running the value
+      baked in at its last deploy, with no error anywhere and nothing in the
+      console to suggest it is stale.
+
+      Threading the commit SHA through makes every deploy a real change, so
+      the secrets are re-read each time. The cost is that no service deploy is
+      ever a no-op; that is the intended trade.
+
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues: [dev, prod]
+    Description: >
+      Suffixes every physical resource name. Without it the hardcoded names
+      below collide and two environments cannot share an account and region.
+
+  VpcSubnetIds:
+    Type: AWS::SSM::Parameter::Value<List<AWS::EC2::Subnet::Id>>
+    Default: /rusuh/prod/vpc/private-subnet-ids
+    Description: Private subnets with reachability to Aurora, Redis and the Midtrans egress path
+  SecurityGroupIds:
+    Type: AWS::SSM::Parameter::Value<List<AWS::EC2::SecurityGroup::Id>>
+    Default: /rusuh/prod/vpc/lambda-security-group-ids
+    Description: Security group permitting Aurora (5432) and Redis (6379) egress
+  DatabaseSecretArn:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/db/secret-arn
+    Description: Secrets Manager ARN holding the RDS Proxy connection string
+  DevicePepperSecretArn:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/device/pepper-secret-arn
+    Description: >
+      Secrets Manager ARN holding the HMAC pepper for the guest device binding.
+      Must be the SAME value resolved by whatever issues grants, or every guest
+      grant fails its device check here (ADR-006 §8.9).
+  MidtransServerKeySecretArn:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/midtrans/server-key-secret-arn
+    Description: >
+      Secrets Manager ARN holding the Midtrans Core API server key. Populated
+      by hand - see the foundation stack.
+  RedisAddr:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/redis/addr
+    Description: ElastiCache primary endpoint, host:port
+
+  MidtransBaseUrl:
+    Type: String
+    Default: https://api.sandbox.midtrans.com
+    AllowedValues:
+      - https://api.sandbox.midtrans.com
+      - https://api.midtrans.com
+    Description: >
+      Core API origin. Sandbox is the default on purpose: a deploy that forgets
+      this charges nobody rather than everybody. There is no free-text option
+      because the only two legitimate values are these, and a typo in a URL
+      that signs charges is not a failure worth discovering at runtime.
+
+  PaymentTtlSeconds:
+    Type: Number
+    Default: 600
+    MinValue: 60
+    MaxValue: 3600
+    Description: >
+      The payment window (BR-05). Also sent to Midtrans as custom_expiry, so
+      the gateway's deadline and ours end on the same second - without that a
+      virtual account defaults to 24 HOURS and stays payable long after the
+      seats are resold.
+
+  MinRetryRemainingSeconds:
+    Type: Number
+    Default: 60
+    MinValue: 0
+    Description: >
+      Below this much remaining, a method switch is refused. Handing out a new
+      virtual account with fifteen seconds of life only moves the failure
+      somewhere more painful. Must be below PaymentTtlSeconds - the service
+      refuses to start otherwise, and the Rules block below catches it first.
+
+  MaxPaymentAttempts:
+    Type: Number
+    Default: 5
+    MinValue: 1
+    MaxValue: 20
+    Description: Each attempt mints a new virtual account or QR at Midtrans.
+
+  SettledTombstoneSeconds:
+    Type: Number
+    Default: 3600
+    MinValue: 60
+    Description: >
+      How long settled:{uuid} answers queue re-entrancy after the queue
+      credential is deleted, so a guest refreshing between settlement and the
+      e-ticket email sees a paid booking rather than an expiry screen
+      (contract §3.3).
+
+  PaymentIconBase:
+    Type: String
+    Default: https://cdn.rusuh.id/icons
+    Description: >
+      Origin the method catalogue's icon_url values are built on. Cosmetic -
+      a wrong value shows broken images, it does not fail a payment.
+
+# Catches at deploy time part of what would otherwise be a start-up failure on
+# the first invocation - which reads as a 502 with the reason buried in
+# CloudWatch.
+#
+# Only PART of it: CloudFormation rule functions compare for equality, not
+# order, so the two values being EQUAL is all that can be rejected here. The
+# service's validate() rejects the whole range - a floor at or above the window
+# - and is the real guard; this rule catches the likeliest typo early.
+Rules:
+  RetryFloorNotWholeWindow:
+    Assertions:
+      - Assert: !Not [!Equals [!Ref MinRetryRemainingSeconds, !Ref PaymentTtlSeconds]]
+        AssertDescription: >
+          MinRetryRemainingSeconds must be below PaymentTtlSeconds, not equal
+          to it. A floor at or above the whole window refuses every method
+          switch, which looks like a broken endpoint rather than a policy.
+
+Globals:
+  Function:
+    Timeout: 15
+    MemorySize: 512
+    Runtime: provided.al2023
+    Architectures:
+      - arm64
+
+Resources:
+  PaymentApiFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      FunctionName: !Sub rusuh-${Environment}-payment-api
+      Handler: bootstrap
+      CodeUri: .
+      # Provisioned concurrency is set at T-30 per the ADR-005 runbook rather
+      # than pinned here, so an idle preprod stack costs nothing.
+      VpcConfig:
+        SubnetIds: !Ref VpcSubnetIds
+        SecurityGroupIds: !Ref SecurityGroupIds
+      Environment:
+        Variables:
+          DEPLOY_REVISION: !Ref DeployRevision
+          APP_ENV: production
+          MIDTRANS_BASE_URL: !Ref MidtransBaseUrl
+          MIDTRANS_TIMEOUT_MS: "10000"
+          PAYMENT_BREAKER_FAILURE_THRESHOLD: "5"
+          PAYMENT_BREAKER_OPEN_SECONDS: "30"
+          PAYMENT_TTL_SECONDS: !Ref PaymentTtlSeconds
+          MIN_RETRY_REMAINING_SECONDS: !Ref MinRetryRemainingSeconds
+          MAX_PAYMENT_ATTEMPTS: !Ref MaxPaymentAttempts
+          SETTLED_TOMBSTONE_SECONDS: !Ref SettledTombstoneSeconds
+          PAYMENT_ICON_BASE: !Ref PaymentIconBase
+          # ── Secrets, injected by CloudFormation at deploy time ──────────
+          # The Go config loader reads these as PLAIN environment variables
+          # (os.Getenv) and validate() refuses to start without them, so
+          # granting IAM to read the secret is not enough - the value has to
+          # be here.
+          #
+          # Referenced by secret NAME, not by the ARN parameter above. The name
+          # is deterministic from Environment, so !Sub substitutes a plain
+          # parameter and the dynamic reference never depends on an
+          # SSM-resolved value. The ARN parameters are still used, for the IAM
+          # policies below.
+          #
+          # Resolved only on create/update: rotating a secret does NOT reach a
+          # running function until its stack is updated again. For the device
+          # pepper that is the lesser problem - see the next comment.
+          DATABASE_URL: !Sub '{{resolve:secretsmanager:rusuh-${Environment}/database-url:SecretString:url}}'
+          # TODO(pre-production): this puts the pepper into the function's
+          # environment, where anyone with lambda:GetFunctionConfiguration can
+          # read it. Same trade as nik-verify's NIK_PEPPER, and the same fix:
+          # fetch it at runtime in Go and drop this variable. Unlike the NIK
+          # pepper this one can be rotated after a leak - but only BETWEEN
+          # sales, because rotating it mid-sale returns 401 DEVICE_MISMATCH to
+          # every guest holding a grant.
+          DEVICE_PEPPER: !Sub '{{resolve:secretsmanager:rusuh-${Environment}/device-pepper:SecretString}}'
+          # Signs charges AND verifies every notification signature. While this
+          # is still at its REPLACE_ME placeholder the service starts, accepts
+          # requests, and rejects every callback Midtrans sends - money taken,
+          # no ticket issued. Populate it before the first charge.
+          MIDTRANS_SERVER_KEY: !Sub '{{resolve:secretsmanager:rusuh-${Environment}/midtrans-server-key:SecretString:server_key}}'
+          REDIS_ADDR: !Ref RedisAddr
+          # Keep small: every warm container holds its own pool, and a few
+          # hundred of them will exhaust Postgres. RDS Proxy fronts this.
+          DATABASE_MAX_CONNS: "4"
+      Policies:
+        - AWSLambdaVPCAccessExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DatabaseSecretArn
+                - !Ref DevicePepperSecretArn
+                - !Ref MidtransServerKeySecretArn
+      Events:
+        # ── Grant-guarded, one booking each ────────────────────────────────
+        GetMethods:
+          Type: HttpApi
+          Properties:
+            Path: /payments/{booking_id}/methods
+            Method: GET
+        InitiatePayment:
+          Type: HttpApi
+          Properties:
+            Path: /payments/{booking_id}
+            Method: POST
+        RetryPayment:
+          Type: HttpApi
+          Properties:
+            Path: /payments/{booking_id}/retry
+            Method: POST
+        GetStatus:
+          Type: HttpApi
+          Properties:
+            Path: /payments/{booking_id}/status
+            Method: GET
+        # ── Unguarded, called by Midtrans ─────────────────────────────────
+        #
+        # This route overlaps InitiatePayment: POST /payments/webhook also
+        # matches POST /payments/{booking_id}. HTTP API resolves that in the
+        # right direction - a literal segment outranks a path variable - so the
+        # webhook is never routed as a booking whose id happens to be
+        # "webhook". The handler would reject it anyway, with a 200 the gateway
+        # would then retry against, so relying on route precedence alone is
+        # thin: the initiate handler also refuses a booking_id that is not a
+        # UUID.
+        #
+        # No authorizer, by design. Midtrans has no credential to present; the
+        # body's signature_key is the authentication, verified before anything
+        # is read from the payload.
+        Webhook:
+          Type: HttpApi
+          Properties:
+            Path: /payments/webhook
+            Method: POST
+        HealthCheck:
+          Type: HttpApi
+          Properties:
+            Path: /sys/ping
+            Method: GET
+
+  # Declared explicitly because SAM does not create it: Lambda would, on first
+  # invoke, with retention set to NEVER EXPIRE. For a POC that is a slow leak
+  # of storage cost with no upside.
+  PaymentApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/rusuh-${Environment}-payment-api
+      RetentionInDays: 14
+
+  # Published so the Midtrans dashboard's notification URL can be read off a
+  # parameter rather than a stack output, and so anything fronting this service
+  # resolves it the way services/user resolves /nik-verify/base-url.
+  SsmBaseUrl:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /rusuh/${Environment}/payment-api/base-url
+      Type: String
+      Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+      Description: Base URL of the payment-api HTTP API
+
+Outputs:
+  ApiUrl:
+    Description: Base URL of the payment-api HTTP API
+    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+  WebhookUrl:
+    Description: >
+      Paste into the Midtrans dashboard as the Payment Notification URL. Until
+      that is set, no settlement ever reaches this service.
+    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/payments/webhook"

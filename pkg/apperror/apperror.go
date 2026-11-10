@@ -96,4 +96,26 @@ const (
 	CodeTokenExpired         = "TOKEN_EXPIRED"
 	CodeTokenInvalid         = "TOKEN_INVALID"
 	CodeAdmissionPaused      = "ADMISSION_PAUSED"
+
+	// Grant and device binding. Enforced by pkg/grantauth on every endpoint in
+	// contract §4 and §5 (ADR-006 §8.9, §8.13).
+	CodeGrantTokenMissing = "GRANT_TOKEN_MISSING"
+	CodeGrantTokenInvalid = "GRANT_TOKEN_INVALID"
+	CodeDeviceIDRequired  = "DEVICE_ID_REQUIRED"
+	CodeDeviceMismatch    = "DEVICE_MISMATCH"
+
+	// Shared 404: a resource that does not exist and one that is not the
+	// caller's answer identically. 403 would confirm the row exists, which is
+	// enough to map the active id range (contract Appendix A).
+	CodeNotFound = "NOT_FOUND"
+
+	// payment-api (contract §5).
+	CodeBookingStatusInvalid      = "BOOKING_STATUS_INVALID"
+	CodePaymentAlreadyInitiated   = "PAYMENT_ALREADY_INITIATED"
+	CodePaymentAlreadySettled     = "PAYMENT_ALREADY_SETTLED"
+	CodePaymentWindowClosed       = "PAYMENT_WINDOW_CLOSED"
+	CodePaymentExpired            = "PAYMENT_EXPIRED"
+	CodePaymentGatewayUnavailable = "PAYMENT_GATEWAY_UNAVAILABLE"
+	CodeMaxAttemptsExceeded       = "MAX_ATTEMPTS_EXCEEDED"
+	CodeBankNotSupported          = "BANK_NOT_SUPPORTED"
 )

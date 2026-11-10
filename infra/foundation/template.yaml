@@ -559,6 +559,48 @@ Resources:
       Description: Dukcapil API key. Populate by hand once the contract is signed.
       SecretString: '{"api_key":"REPLACE_ME"}'
 
+  # Keys the guest device binding: a guest grant carries
+  # device_hash = HMAC(DevicePepper, X-Device-Id), and payment-api recomputes
+  # it to prove the browser presenting the grant is the one that earned it
+  # (ADR-006 section 8.9).
+  #
+  # On the account-default key and with no DeletionPolicy, unlike the NIK
+  # pepper, because this one IS rotatable - but only BETWEEN sales. Rotating it
+  # mid-sale invalidates every live guest binding at once, and every guest
+  # holding a grant gets 401 DEVICE_MISMATCH with no way back.
+  #
+  # Generated, not placeholdered: there is no external party to agree a value
+  # with, and an unpopulated secret here fails every guest checkout.
+  DevicePepperSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub rusuh-${Environment}/device-pepper
+      Description: >
+        HMAC pepper for the guest device binding. Rotatable BETWEEN sales only
+        - rotating during one breaks every live guest grant.
+      GenerateSecretString:
+        PasswordLength: 64
+        ExcludePunctuation: true
+
+  # One key does two jobs: it authenticates charge calls to the Core API, and
+  # it verifies every incoming notification -
+  # SHA512(order_id + status_code + gross_amount + ServerKey). A wrong value
+  # therefore does not merely stop new charges; it rejects every callback, so
+  # paid bookings are never confirmed and the money is taken with no ticket
+  # issued.
+  #
+  # Placeholdered rather than generated: Midtrans issues this, it cannot be
+  # invented here. Populate it by hand from the Midtrans dashboard - sandbox
+  # key for a POC, production key for a real sale - before the first charge.
+  MidtransServerKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub rusuh-${Environment}/midtrans-server-key
+      Description: >
+        Midtrans Core API server key. Signs charges AND verifies notification
+        signatures. Populate by hand from the Midtrans dashboard.
+      SecretString: '{"server_key":"REPLACE_ME"}'
+
   AuroraMasterSecret:
     Type: AWS::SecretsManager::Secret
     DeletionPolicy: Retain
@@ -944,6 +986,20 @@ Resources:
       Type: String
       Value: !Ref DukcapilApiKeySecret
 
+  SsmDevicePepperSecretArn:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /rusuh/${Environment}/device/pepper-secret-arn
+      Type: String
+      Value: !Ref DevicePepperSecret
+
+  SsmMidtransServerKeySecretArn:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /rusuh/${Environment}/midtrans/server-key-secret-arn
+      Type: String
+      Value: !Ref MidtransServerKeySecret
+
   SsmRedisAddr:
     Type: AWS::SSM::Parameter
     Properties:
@@ -1051,6 +1107,11 @@ Outputs:
     Value: !Ref JwtSecret
   DukcapilApiKeySecretArn:
     Value: !Ref DukcapilApiKeySecret
+  DevicePepperSecretArn:
+    Value: !Ref DevicePepperSecret
+  MidtransServerKeySecretArn:
+    Description: Populate by hand. Generated secrets cannot stand in for a gateway-issued key.
+    Value: !Ref MidtransServerKeySecret
   RedisAddr:
     Description: host:port. Pass as RedisAddr.
     Value: !Sub "${RedisCluster.RedisEndpoint.Address}:${RedisCluster.RedisEndpoint.Port}"

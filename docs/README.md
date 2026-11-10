@@ -12,9 +12,9 @@ source below, the source wins and the plan gets fixed.
 | What | Where (`documentations` repo) |
 |---|---|
 | Requirements (FR / NFR / BR) | `requirement/requirements.md` v1.1 |
-| Architecture of record | `adr/ADR-005-final-architecture-decision.md`, amended by `adr/ADR-006-queue-admission-amendments.md` (queue) |
-| API contract | `api/rusuh-booking-apidog.json` (**source of truth**, Apidog project export) + `api/api-contracts.md` v2.7.0. OpenAPI YAML archived (`api/archive/`), not maintained |
-| Detailed team implementation plan | `requirement/implementation-plan.md` v2.1 (queue sections amended by ADR-006, see its banner) |
+| Architecture of record | `adr/ADR-005-final-architecture-decision.md`, amended by `adr/ADR-006-queue-admission-amendments.md` (queue **and** payment: §3.2, §4.1, §8.9, §8.13). ADR-006 is still **Proposed — menunggu review tim** |
+| API contract | `api/rusuh-booking-apidog.json` (**source of truth**, Apidog project export) + `api/api-contracts.md` v2.12. OpenAPI YAML archived (`api/archive/`), not maintained |
+| Detailed team implementation plan | `requirement/implementation-plan.md` v2.1 (queue sections amended by ADR-006, see its banner). Seven minor contract versions behind; where it disagrees with the contract or ADR-006, it is the document to fix — see `07-payment/README.md` §3 |
 
 ## Layout
 
@@ -27,8 +27,8 @@ source below, the source wins and the plan gets fixed.
 | [`04-queue/`](04-queue/README.md) | Queue | `services/queue`, `services/sse-server`, `services/admission-ctl` | **planning** |
 | `05-booking/` | Booking | `services/booking` | scaffold only |
 | [`06-nik/`](06-nik/README.md) | NIK | `services/nik-verify` | **documented** — branch |
-| `07-payment/` | Payment | `services/payment-api` | not started |
-| `08-admin/` | Admin | `services/payment-api` | not started |
+| [`07-payment/`](07-payment/README.md) | Payment | `services/payment-api` | **documented** — branch `feature/payment` |
+| `08-admin/` | Admin | `services/payment-api` | not started — `GET /admin/reconciliation/disputed` is the operator half of the late-settlement path (`07-payment/05-payment-webhook.md` §10) |
 
 Folders are created when their planning starts. Copy [`_template.md`](_template.md) for each endpoint.
 

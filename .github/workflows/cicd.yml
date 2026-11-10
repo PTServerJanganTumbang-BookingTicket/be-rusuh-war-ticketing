@@ -61,6 +61,7 @@ jobs:
       nik_verify: ${{ steps.filter.outputs.nik_verify }}
       notification: ${{ steps.filter.outputs.notification }}
       outbox_publisher: ${{ steps.filter.outputs.outbox_publisher }}
+      payment_api: ${{ steps.filter.outputs.payment_api }}
       pkg: ${{ steps.filter.outputs.pkg }}
       infra: ${{ steps.filter.outputs.infra }}
       migrations: ${{ steps.filter.outputs.migrations }}
@@ -93,6 +94,10 @@ jobs:
               - 'services/outbox-publisher/**'
               - 'pkg/**'
               - 'go.work'
+            payment_api:
+              - 'services/payment-api/**'
+              - 'pkg/**'
+              - 'go.work'
             infra:
               - 'infra/foundation/**'
             migrations:
@@ -108,7 +113,8 @@ jobs:
           if [ "${{ steps.filter.outputs.nik_verify }}" = "true" ]; then mods+=("services/nik-verify"); fi
           if [ "${{ steps.filter.outputs.notification }}" = "true" ]; then mods+=("services/notification"); fi
           if [ "${{ steps.filter.outputs.outbox_publisher }}" = "true" ]; then mods+=("services/outbox-publisher"); fi
-          if [ ${#mods[@]} -eq 0 ]; then mods+=("pkg" "services/booking" "services/user" "services/nik-verify" "services/notification" "services/outbox-publisher"); fi   # fallback: run all
+          if [ "${{ steps.filter.outputs.payment_api }}" = "true" ]; then mods+=("services/payment-api"); fi
+          if [ ${#mods[@]} -eq 0 ]; then mods+=("pkg" "services/booking" "services/user" "services/nik-verify" "services/notification" "services/outbox-publisher" "services/payment-api"); fi   # fallback: run all
           json=$(printf '%s\n' "${mods[@]}" | jq -R . | jq -cs .)
           echo "modules=$json" >> "$GITHUB_OUTPUT"
           echo "matrix: $json"
@@ -147,6 +153,7 @@ jobs:
       nik_verify: ${{ needs.detect-changes.outputs.nik_verify }}
       notification: ${{ needs.detect-changes.outputs.notification }}
       outbox_publisher: ${{ needs.detect-changes.outputs.outbox_publisher }}
+      payment_api: ${{ needs.detect-changes.outputs.payment_api }}
       foundation_changed: ${{ needs.detect-changes.outputs.infra }}
       any_service_changed: ${{ steps.env.outputs.any_service_changed }}
     steps:
@@ -157,6 +164,7 @@ jobs:
           N: ${{ needs.detect-changes.outputs.nik_verify }}
           T: ${{ needs.detect-changes.outputs.notification }}
           O: ${{ needs.detect-changes.outputs.outbox_publisher }}
+          P: ${{ needs.detect-changes.outputs.payment_api }}
         run: |
           set -eu
           # Only prod exists - see the workflow_dispatch input's description.
@@ -164,7 +172,7 @@ jobs:
           echo "environment=$environment" >> "$GITHUB_OUTPUT"
 
           any=false
-          for f in "$B" "$U" "$N" "$T" "$O"; do
+          for f in "$B" "$U" "$N" "$T" "$O" "$P"; do
             [ "$f" = "true" ] && any=true
           done
           echo "any_service_changed=$any" >> "$GITHUB_OUTPUT"
@@ -277,7 +285,8 @@ jobs:
       needs.detect-changes.outputs.booking == 'true' ||
       needs.detect-changes.outputs.user == 'true' ||
       needs.detect-changes.outputs.nik_verify == 'true' ||
-      needs.detect-changes.outputs.outbox_publisher == 'true'
+      needs.detect-changes.outputs.outbox_publisher == 'true' ||
+      needs.detect-changes.outputs.payment_api == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -469,6 +478,8 @@ jobs:
           HAS_EXTRA_HEADER_VALUE: ${{ secrets.DUKCAPIL_EXTRA_HEADER_VALUE != '' }}
           APP_BASE_URL: ${{ vars.APP_BASE_URL }}
           NEEDS_NOTIFICATION: ${{ needs.resolve-env.outputs.notification }}
+          NEEDS_PAYMENT_API: ${{ needs.resolve-env.outputs.payment_api }}
+          ENV_NAME: ${{ needs.resolve-env.outputs.environment }}
         run: |
           set -euo pipefail
           fail=0
@@ -530,6 +541,22 @@ jobs:
             fail=1
           fi
 
+          # Not fatal, and deliberately not a value check: reading the secret
+          # here would need GetSecretValue on the deploy role and would put a
+          # payment credential one masking bug away from the build log.
+          #
+          # Worth a warning anyway, because the failure it causes is the worst
+          # one this pipeline can ship. The secret is created by the foundation
+          # stack holding REPLACE_ME; with that value the service starts,
+          # charges nobody successfully, and rejects EVERY notification
+          # Midtrans sends - so a customer pays and no ticket is ever issued.
+          if [ "$NEEDS_PAYMENT_API" = "true" ]; then
+            echo "::warning::payment-api is being deployed. Confirm rusuh-${ENV_NAME}/midtrans-server-key"
+            echo "::warning::holds a real server key and not REPLACE_ME, and that the Midtrans"
+            echo "::warning::dashboard's Payment Notification URL points at this stack's WebhookUrl"
+            echo "::warning::output. Neither is checked here."
+          fi
+
           [ "$fail" -eq 0 ] || exit 1
           echo "Repository variables OK."
 
@@ -551,6 +578,8 @@ jobs:
             /rusuh/${ENV}/nik/pepper-kms-key-arn
             /rusuh/${ENV}/auth/jwt-secret-arn
             /rusuh/${ENV}/dukcapil/api-key-secret-arn
+            /rusuh/${ENV}/device/pepper-secret-arn
+            /rusuh/${ENV}/midtrans/server-key-secret-arn
             /rusuh/${ENV}/redis/addr
             /rusuh/${ENV}/ses/configuration-set
             /rusuh/${ENV}/ses/from-address
@@ -689,6 +718,41 @@ jobs:
             DeployRevision=${{ github.sha }}
             AppBaseUrl=${{ vars.APP_BASE_URL }}
 
+  # payment-api is in wave 1 because it consumes nothing any other stack
+  # publishes - only foundation's parameters. The webhook it exposes is called
+  # by Midtrans, not by another service here.
+  deploy-payment-api:
+    name: Deploy payment-api
+    needs: [resolve-env, preflight]
+    if: always() && needs.preflight.result == 'success' && needs.resolve-env.outputs.payment_api == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-env.outputs.environment }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/sam-deploy
+        with:
+          service: payment-api
+          stack-name: rusuh-${{ needs.resolve-env.outputs.environment }}-payment-api
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          environment: ${{ needs.resolve-env.outputs.environment }}
+          # MIDTRANS_BASE_URL is passed rather than left to the template
+          # default so that moving a POC to real money is a repo-variable
+          # change with an audit trail, not a template edit. Unset means
+          # sandbox: a forgotten variable charges nobody.
+          #
+          # The window and attempt limits stay on their template defaults -
+          # they are product policy (BR-05), not per-environment wiring, and
+          # the template constrains their ranges.
+          parameter-overrides: >-
+            Environment=${{ needs.resolve-env.outputs.environment }}
+            DeployRevision=${{ github.sha }}
+            MidtransBaseUrl=${{ vars.MIDTRANS_BASE_URL || 'https://api.sandbox.midtrans.com' }}
+            PaymentIconBase=${{ vars.PAYMENT_ICON_BASE || 'https://cdn.rusuh.id/icons' }}
+
   # ══════════════════════════════════════════════════════════════════════════
   #  WAVE 2 — services that consume wave 1's published parameters
   #
@@ -766,12 +830,13 @@ jobs:
   # ══════════════════════════════════════════════════════════════════════════
   smoke:
     name: Smoke test
-    needs: [resolve-env, deploy-booking, deploy-nik-verify, deploy-user]
+    needs: [resolve-env, deploy-booking, deploy-nik-verify, deploy-user, deploy-payment-api]
     if: >-
       always() &&
       needs.deploy-booking.result != 'failure' &&
       needs.deploy-nik-verify.result != 'failure' &&
       needs.deploy-user.result != 'failure' &&
+      needs.deploy-payment-api.result != 'failure' &&
       needs.resolve-env.outputs.any_service_changed == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -788,7 +853,7 @@ jobs:
         run: |
           set -euo pipefail
           fail=0
-          for svc in booking nik-verify user; do
+          for svc in booking nik-verify user payment-api; do
             url=$(aws cloudformation describe-stacks --stack-name "rusuh-${ENV}-${svc}" \
               --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue" \
               --output text 2>/dev/null || true)

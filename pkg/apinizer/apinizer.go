@@ -3,6 +3,7 @@ package apinizer
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 )
 
 // RegisterHealthCheck registers a liveness endpoint on the mux.
@@ -66,7 +67,23 @@ func WriteErrorEnvelope(w http.ResponseWriter, status int, errorCode, message st
 }
 
 func meta(status int, message, errorCode string, p *Pagination) map[string]any {
-	m := map[string]any{"code": status, "message": message}
+	// server_time is on EVERY response, success or error, and it is filled
+	// here rather than by each handler (API contract §7).
+	//
+	// It exists so a client can synchronise its clock from any reply it is
+	// already making (BR-10) - which is why there is no GET /time: an extra
+	// round trip to learn the time is a round trip the countdown cannot
+	// afford, and a dedicated endpoint would be called least often exactly
+	// when drift matters most.
+	//
+	// Distinct from a server_time INSIDE data: several payment and queue
+	// payloads carry their own, scoped to the countdown that response is
+	// about. This one is about the response itself.
+	m := map[string]any{
+		"code":        status,
+		"message":     message,
+		"server_time": time.Now().UTC().Format(time.RFC3339),
+	}
 	if errorCode != "" {
 		m["error_code"] = errorCode
 	}
