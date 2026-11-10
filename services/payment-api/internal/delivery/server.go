@@ -8,6 +8,9 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+	goredis "github.com/redis/go-redis/v9"
+
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/apinizer"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/grantauth"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/idgen"
@@ -49,6 +52,14 @@ func New(ctx context.Context, cfg paymentcfg.Config) (*Server, error) {
 		return nil, err
 	}
 
+	return newMux(pool, rdb, cfg)
+}
+
+// newMux wires the adapters and mux from already-opened connections.
+// Separating this from New lets tests inject miniredis and a lazy pool
+// without dialling real infrastructure, covering the construction and
+// routing paths independently of the connection paths.
+func newMux(pool *pgxpool.Pool, rdb *goredis.Client, cfg paymentcfg.Config) (*Server, error) {
 	repo := postgres.NewBookingRepository(pool, idgen.New, newQRNonce)
 	gateway := midtrans.New(cfg.Midtrans.BaseURL, cfg.Midtrans.ServerKey, cfg.Midtrans.Timeout)
 	breaker := paymentredis.NewCircuitBreaker(rdb, cfg.Midtrans.BreakerThreshold, cfg.Midtrans.BreakerOpenFor)
@@ -67,10 +78,13 @@ func New(ctx context.Context, cfg paymentcfg.Config) (*Server, error) {
 	// irrelevant and only has to be positive. Same construction as queue's.
 	sessions, err := token.NewIssuer(cfg.App.JWTSecret, "rusuh-user", time.Hour)
 	if err != nil {
-		pool.Close()
+		if pool != nil {
+			pool.Close()
+		}
 		_ = rdb.Close()
 		return nil, err
 	}
+
 	// The shared guard, the same one booking mounts: X-Grant-Token, then the
 	// guest device binding, then the account session (ADR-006 §8.9, §8.13,
 	// §8.17). It reads grant:{token} itself through pkg/rediskeys.
@@ -87,7 +101,9 @@ func New(ctx context.Context, cfg paymentcfg.Config) (*Server, error) {
 	paymenthttp.RegisterRoutes(mux, paymenthttp.NewPayment(uc), guard)
 
 	return &Server{Handler: mux, close: func() {
-		pool.Close()
+		if pool != nil {
+			pool.Close()
+		}
 		_ = rdb.Close()
 	}}, nil
 }
