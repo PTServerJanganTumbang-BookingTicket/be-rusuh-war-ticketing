@@ -547,10 +547,15 @@ jobs:
               *)  echo "::error::$name is not a Secrets Manager ARN: '$value'."; fail=1 ;;
             esac
           }
-          # payment-api verifies the guest device binding with the SAME pepper queue's
-          # join and booking use (ADR-006 section 8.9). A different value here fails
-          # every guest checkout and nothing else, so it is checked with them.
-          if [ "$NEEDS_QUEUE" = "true" ] || [ "$NEEDS_BOOKING" = "true" ] || [ "$NEEDS_PAYMENT_API" = "true" ]; then
+          # Only the stacks that take these ARNs as parameters are checked. payment-api
+          # needs the same device pepper (ADR-006 section 8.9) and the same JWT secret
+          # (section 8.17), but its template resolves both by secret NAME - the name is
+          # deterministic from Environment, so the dynamic reference does not depend on
+          # an SSM-resolved value - and it is passed no ARN to validate. A mismatch
+          # there surfaces as DEVICE_MISMATCH on every guest checkout, or 401 on every
+          # logged-in payment, and nowhere else; see the open item in
+          # docs/07-payment/06-grant-guard.md section 6.
+          if [ "$NEEDS_QUEUE" = "true" ] || [ "$NEEDS_BOOKING" = "true" ]; then
             check_arn DEVICE_PEPPER_SECRET_ARN "$DEVICE_PEPPER_SECRET_ARN"
           fi
           if [ "$NEEDS_QUEUE" = "true" ]; then
@@ -732,7 +737,10 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: ./.github/actions/sam-deploy
+      # cfn-deploy, not sam-deploy: an SCP denies CreateChangeSet on the
+      # Serverless transform, so services/payment-api/template-cfn.yaml is the
+      # deployed template. template.yaml stays as the SAM description.
+      - uses: ./.github/actions/cfn-deploy
         with:
           service: payment-api
           stack-name: rusuh-${{ needs.resolve-env.outputs.environment }}-payment-api
@@ -749,6 +757,7 @@ jobs:
           # the template constrains their ranges.
           parameter-overrides: >-
             Environment=${{ needs.resolve-env.outputs.environment }}
+            EnableDirectApiAccess=${{ vars.ENABLE_DIRECT_API_ACCESS || 'false' }}
             DeployRevision=${{ github.sha }}
             MidtransBaseUrl=${{ vars.MIDTRANS_BASE_URL || 'https://api.sandbox.midtrans.com' }}
             PaymentIconBase=${{ vars.PAYMENT_ICON_BASE || 'https://cdn.rusuh.id/icons' }}
@@ -816,13 +825,17 @@ jobs:
   # ══════════════════════════════════════════════════════════════════════════
   deploy-api-gateway:
     name: Deploy unified API gateway
-    needs: [resolve-env, deploy-booking, deploy-queue, deploy-nik-verify, deploy-user]
+    # payment-api is in this list because the gateway declares a Lambda
+    # permission and an integration naming rusuh-${ENV}-payment-api: deploying
+    # the gateway before that function exists fails the whole stack.
+    needs: [resolve-env, deploy-booking, deploy-queue, deploy-nik-verify, deploy-user, deploy-payment-api]
     if: >-
       always() &&
       needs.deploy-booking.result != 'failure' &&
       needs.deploy-queue.result != 'failure' &&
       needs.deploy-nik-verify.result != 'failure' &&
       needs.deploy-user.result != 'failure' &&
+      needs.deploy-payment-api.result != 'failure' &&
       (needs.resolve-env.outputs.any_service_changed == 'true' ||
        needs.resolve-env.outputs.api_gateway_changed == 'true')
     runs-on: ubuntu-latest

@@ -1,31 +1,9 @@
-GOBIN       := $(shell go env GOPATH)/bin
-MOCKGEN     := $(GOBIN)/mockgen
-MOCK_DIR    := _mock
+# No mockgen targets: every double in this service's tests is hand-written
+# (fakeRepo, fakeCredentials, fakeUsecase and friends). A generated mock of a
+# port with five methods is longer than the fake that replaces it and says
+# nothing about what the test expects.
 
-.PHONY: mock mock-install run build build-lambda test unit-test-coverage golint mod-tidy docker-build
-
-mock-install:
-	go install go.uber.org/mock/mockgen@latest
-
-mock:
-	@echo "Generating mocks..."
-	$(MOCKGEN) \
-		-source=internal/nik/port/inbound/nik.go \
-		-destination=$(MOCK_DIR)/nik/port/inbound/nik_mock.go \
-		-package=mock_inbound
-	$(MOCKGEN) \
-		-source=internal/nik/port/outbound/dukcapil.go \
-		-destination=$(MOCK_DIR)/nik/port/outbound/dukcapil_mock.go \
-		-package=mock_outbound
-	$(MOCKGEN) \
-		-source=internal/nik/port/outbound/evidence.go \
-		-destination=$(MOCK_DIR)/nik/port/outbound/evidence_mock.go \
-		-package=mock_outbound
-	$(MOCKGEN) \
-		-source=internal/nik/port/outbound/guard.go \
-		-destination=$(MOCK_DIR)/nik/port/outbound/guard_mock.go \
-		-package=mock_outbound
-	@echo "Done."
+.PHONY: run build build-lambda test unit-test-coverage golint mod-tidy docker-build
 
 mod-tidy:
 	go mod tidy
@@ -46,8 +24,11 @@ build-lambda:
 #   package <second half> is not in std
 # which points at the toolchain rather than at the path. CI never sees it:
 # /home/runner/work/... has no spaces.
-# SAM makefile-builder target (used by template.yaml BuildMethod: makefile).
-build-NikVerifyFunction:
+# SAM makefile-builder target, named for the function in template.yaml
+# (BuildMethod: makefile). The deployed path does NOT use it: an SCP blocks the
+# SAM transform, so CI builds with .github/actions/cfn-deploy against
+# template-cfn.yaml. This stays for `sam build` / `sam local`.
+build-PaymentApiFunction:
 	@env CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -tags lambda.norpc -o "$(ARTIFACTS_DIR)/bootstrap" ./cmd/lambda
 
 test:
@@ -56,9 +37,6 @@ test:
 unit-test-coverage:
 	go test -v -covermode=count ./... -coverprofile=coverage.cov
 	go tool cover -func=coverage.cov
-
-gen-mock-source:
-	$(MOCKGEN) -package=${pkg} -destination=$(destination) -source=${source}
 
 docker-build: build
 	docker build -f Dockerfile -t rusuh-payment-api:latest .

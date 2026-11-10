@@ -184,13 +184,35 @@ The pipeline deliberately does **not** run migrations (see the note in
 `.github/workflows/cicd.yml`): the schema is applied by hand, and a service
 deploy reports success whether or not the schema matches.
 
-## 8. Open decisions
+## 8. Deploy
+
+Two templates, like every other service here:
+
+| File | Role |
+|---|---|
+| `template-cfn.yaml` | Raw CloudFormation. **This is what the pipeline deploys**, through `.github/actions/cfn-deploy` |
+| `template.yaml` | The SAM description of the same stack. Reference, and `sam local`; not deployed |
+
+An SCP in this account denies `cloudformation:CreateChangeSet` on the
+`Serverless-2016-10-31` transform, so a SAM template cannot be deployed at all
+— the error names the transform, not the template, which is why it reads like a
+role problem. A change to one template belongs in both.
+
+`EnableDirectApiAccess` decides whether this service gets a per-service API
+Gateway endpoint of its own. It is `false` in the pipeline: the unified gateway
+(`infra/api-gateway/template.yaml`) is the single entry point and carries all
+five routes, the webhook included. **Midtrans calls the webhook from the
+internet**, so one public route must exist — with direct access off, the URL for
+the dashboard is the unified gateway's (`/rusuh/{env}/api/url`) plus
+`/payments/webhook`.
+
+## 9. Open decisions
 
 | # | Decision |
 |---|---|
 | 1 | **OPEN:** api-contracts §5.5's event table says a late settlement emits `payment.refund`. No such outbox type exists, and §6.3 states the customer receives a **`payment.failed_notice`** saying the money arrived, the booking was cancelled and a refund is being processed. The implementation follows §6.3 (`events.FailureDisputed`). The §5.5 table cell needs correcting. |
-| 2 | **OPEN:** `MIDTRANS_SERVER_KEY` is created by the foundation stack holding `REPLACE_ME`. With that value the service starts, accepts requests and rejects every callback — money taken, no ticket issued. Populate it, and set the Midtrans dashboard's Payment Notification URL to the stack's `WebhookUrl` output, before the first charge. Neither is checked by CI; preflight only warns. |
+| 2 | **OPEN:** `MIDTRANS_SERVER_KEY` is created by the foundation stack holding `REPLACE_ME`. With that value the service starts, accepts requests and rejects every callback — money taken, no ticket issued. Populate it, and set the Midtrans dashboard's Payment Notification URL — the unified gateway's URL plus `/payments/webhook`, or this stack's `WebhookUrl` output when direct access is on — before the first charge. Neither is checked by CI; preflight only warns. |
 | 3 | **OPEN:** `DEVICE_PEPPER` must be the same value in whatever issues grants (booking-service) and here. Nothing enforces that today; a mismatch shows up as `401 DEVICE_MISMATCH` on every guest checkout and nowhere else. |
 | 4 | **OPEN:** `MAX_PAYMENT_ATTEMPTS` (5) and `MIN_RETRY_REMAINING_SECONDS` (60) are product policy with no stated source. Confirm with the team before the sale. |
-| 5 | **OPEN:** The API Gateway resource policy that allowlists Midtrans's notification IPs (§5.5) is not in `template.yaml`. Today the signature is the only authentication on the webhook — which is the authentication that matters, but the allowlist was specified and is missing. |
+| 5 | **OPEN:** The API Gateway resource policy that allowlists Midtrans's notification IPs (§5.5) is in neither template, and the webhook now arrives through the unified gateway, so the policy would belong on `infra/api-gateway/template.yaml` and would apply to every route on that API. Today the signature is the only authentication on the webhook — which is the authentication that matters, but the allowlist was specified and is missing. |
 | 6 | **OPEN:** `/admin/reconciliation/disputed` (§6.3, Apidog › Admin) is assigned to this service in `docs/README.md` but not implemented. It is the operator's half of the late-settlement path; without it a disputed payment is only discoverable in CloudWatch. Plan it as `08-admin/`. |

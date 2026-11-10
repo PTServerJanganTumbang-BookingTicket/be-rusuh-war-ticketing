@@ -1,0 +1,429 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: rusuh-payment-api — raw CloudFormation (no SAM transform, SCP workaround)
+
+# Why this file exists alongside template.yaml
+# ─────────────────────────────────────────────
+# An SCP in this account denies cloudformation:CreateChangeSet on
+# arn:aws:cloudformation:*:aws:transform/Serverless-2016-10-31, so anything
+# carrying `Transform: AWS::Serverless-2016-10-31` cannot be deployed at all.
+# booking, queue, user and nik-verify each ship a raw-CloudFormation twin for
+# that reason, deployed by .github/actions/cfn-deploy; this is payment-api's.
+#
+# The twin is the DEPLOYED template. template.yaml stays as the SAM
+# description of the same stack (and for `sam local`), so a change to one
+# belongs in both.
+
+Parameters:
+  DeployRevision:
+    Type: String
+    Default: unset
+    Description: >
+      Commit SHA of the deploy that last touched this stack. Nothing reads it;
+      it exists to force an update.
+
+      CloudFormation does NOT detect changes behind a
+      {{resolve:secretsmanager:...}} dynamic reference. If the template text is
+      unchanged, the resource is not updated and the reference is never
+      re-resolved - so rotating a secret leaves every Lambda running the value
+      baked in at its last deploy, with no error anywhere and nothing in the
+      console to suggest it is stale.
+
+      Threading the commit SHA through makes every deploy a real change, so
+      the secrets are re-read each time. The cost is that no service deploy is
+      ever a no-op; that is the intended trade.
+
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues: [dev, prod]
+    Description: >
+      Suffixes every physical resource name. Without it the hardcoded names
+      below collide and two environments cannot share an account and region.
+
+  LambdaS3Bucket:
+    Type: String
+    Description: S3 bucket containing the Lambda deployment package
+
+  LambdaS3Key:
+    Type: String
+    Description: S3 key of the Lambda deployment package (bootstrap.zip)
+
+  EnableDirectApiAccess:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: >
+      Create a per-service API Gateway endpoint. Set to false when using the
+      unified API Gateway (rusuh-prod-api) as the single entry point.
+
+      Read the note on the webhook route before turning this off for a stack
+      that takes real money: Midtrans calls POST /payments/webhook from the
+      internet, so SOME public route has to exist. The unified gateway carries
+      it (infra/api-gateway/template.yaml); this flag only decides whether a
+      second, direct endpoint exists beside it.
+
+  VpcSubnetIds:
+    Type: AWS::SSM::Parameter::Value<List<AWS::EC2::Subnet::Id>>
+    Default: /rusuh/prod/vpc/private-subnet-ids
+    Description: Private subnets with reachability to Aurora, Redis and the Midtrans egress path
+
+  SecurityGroupIds:
+    Type: AWS::SSM::Parameter::Value<List<AWS::EC2::SecurityGroup::Id>>
+    Default: /rusuh/prod/vpc/lambda-security-group-ids
+    Description: Security group permitting Aurora (5432) and Redis (6379) egress
+
+  RedisAddr:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/redis/addr
+    Description: ElastiCache primary endpoint, host:port
+
+  MidtransBaseUrl:
+    Type: String
+    Default: https://api.sandbox.midtrans.com
+    AllowedValues:
+      - https://api.sandbox.midtrans.com
+      - https://api.midtrans.com
+    Description: >
+      Core API origin. Sandbox is the default on purpose: a deploy that forgets
+      this charges nobody rather than everybody. There is no free-text option
+      because the only two legitimate values are these, and a typo in a URL
+      that signs charges is not a failure worth discovering at runtime.
+
+  PaymentTtlSeconds:
+    Type: Number
+    Default: 600
+    MinValue: 60
+    MaxValue: 3600
+    Description: >
+      The payment window (BR-05). Also sent to Midtrans as custom_expiry, so
+      the gateway's deadline and ours end on the same second - without that a
+      virtual account defaults to 24 HOURS and stays payable long after the
+      seats are resold.
+
+  MinRetryRemainingSeconds:
+    Type: Number
+    Default: 60
+    MinValue: 0
+    Description: >
+      Below this much remaining, a method switch is refused. Handing out a new
+      virtual account with fifteen seconds of life only moves the failure
+      somewhere more painful. Must be below PaymentTtlSeconds - the service
+      refuses to start otherwise, and the Rules block below catches it first.
+
+  MaxPaymentAttempts:
+    Type: Number
+    Default: 5
+    MinValue: 1
+    MaxValue: 20
+    Description: Each attempt mints a new virtual account or QR at Midtrans.
+
+  SettledTombstoneSeconds:
+    Type: Number
+    Default: 3600
+    MinValue: 60
+    Description: >
+      How long settled:{uuid} answers queue re-entrancy after the queue
+      credential is deleted, so a guest refreshing between settlement and the
+      e-ticket email sees a paid booking rather than an expiry screen
+      (contract §3.3).
+
+  PaymentIconBase:
+    Type: String
+    Default: https://cdn.rusuh.id/icons
+    Description: >
+      Origin the method catalogue's icon_url values are built on. Cosmetic -
+      a wrong value shows broken images, it does not fail a payment.
+
+# Catches at deploy time part of what would otherwise be a start-up failure on
+# the first invocation - which reads as a 502 with the reason buried in
+# CloudWatch.
+#
+# Only PART of it: CloudFormation rule functions compare for equality, not
+# order, so the two values being EQUAL is all that can be rejected here. The
+# service's validate() rejects the whole range - a floor at or above the window
+# - and is the real guard; this rule catches the likeliest typo early.
+Rules:
+  RetryFloorNotWholeWindow:
+    Assertions:
+      - Assert: !Not [!Equals [!Ref MinRetryRemainingSeconds, !Ref PaymentTtlSeconds]]
+        AssertDescription: >
+          MinRetryRemainingSeconds must be below PaymentTtlSeconds, not equal
+          to it. A floor at or above the whole window refuses every method
+          switch, which looks like a broken endpoint rather than a policy.
+
+Conditions:
+  CreateDirectApi: !Equals [!Ref EnableDirectApiAccess, "true"]
+
+Resources:
+  # ============================================================================
+  # IAM Role for Lambda
+  # ============================================================================
+  # No Secrets Manager permission, on purpose: every secret below is a
+  # {{resolve:secretsmanager:...}} dynamic reference, resolved by
+  # CloudFormation at deploy time and handed to the function as a plain
+  # environment variable. The function itself never calls Secrets Manager.
+  PaymentApiFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub rusuh-${Environment}-payment-api-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: CloudWatchLogs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/rusuh-${Environment}-payment-api:*
+
+  # ============================================================================
+  # Lambda Function
+  # ============================================================================
+  # Provisioned concurrency is set at T-30 per the ADR-005 runbook rather than
+  # pinned here, so an idle preprod stack costs nothing.
+  #
+  # There is no REDIS_CLUSTER variable: payment-api opens a single-node client
+  # (pkg/redisutil), which is what the foundation provisions - a cache cluster,
+  # not a cluster-mode replication group. booking and queue carry the flag
+  # because their clients can do either.
+  PaymentApiFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub rusuh-${Environment}-payment-api
+      Runtime: provided.al2023
+      Architectures:
+        - arm64
+      Handler: bootstrap
+      Role: !GetAtt PaymentApiFunctionRole.Arn
+      Timeout: 15
+      MemorySize: 512
+      Code:
+        S3Bucket: !Ref LambdaS3Bucket
+        S3Key: !Ref LambdaS3Key
+      VpcConfig:
+        SubnetIds: !Ref VpcSubnetIds
+        SecurityGroupIds: !Ref SecurityGroupIds
+      Environment:
+        Variables:
+          DEPLOY_REVISION: !Ref DeployRevision
+          APP_ENV: production
+          MIDTRANS_BASE_URL: !Ref MidtransBaseUrl
+          MIDTRANS_TIMEOUT_MS: "10000"
+          PAYMENT_BREAKER_FAILURE_THRESHOLD: "5"
+          PAYMENT_BREAKER_OPEN_SECONDS: "30"
+          PAYMENT_TTL_SECONDS: !Ref PaymentTtlSeconds
+          MIN_RETRY_REMAINING_SECONDS: !Ref MinRetryRemainingSeconds
+          MAX_PAYMENT_ATTEMPTS: !Ref MaxPaymentAttempts
+          SETTLED_TOMBSTONE_SECONDS: !Ref SettledTombstoneSeconds
+          PAYMENT_ICON_BASE: !Ref PaymentIconBase
+          REDIS_ADDR: !Ref RedisAddr
+          # Keep small: every warm container holds its own pool, and a few
+          # hundred of them will exhaust Postgres. RDS Proxy fronts this.
+          DATABASE_MAX_CONNS: "4"
+          # ── Secrets, injected by CloudFormation at deploy time ──────────
+          # The Go config loader reads these as PLAIN environment variables
+          # (os.Getenv) and validate() refuses to start without them.
+          #
+          # Referenced by secret NAME, not by an ARN parameter. The name is
+          # deterministic from Environment, so !Sub substitutes a plain
+          # parameter and the dynamic reference never depends on an
+          # SSM-resolved value.
+          #
+          # Resolved only on create/update: rotating a secret does NOT reach a
+          # running function until its stack is updated again, which is what
+          # DeployRevision is for.
+          DATABASE_URL: !Sub '{{resolve:secretsmanager:rusuh-${Environment}/database-url:SecretString:url}}'
+          # TODO(pre-production): this puts the pepper into the function's
+          # environment, where anyone with lambda:GetFunctionConfiguration can
+          # read it. Same trade as nik-verify's NIK_PEPPER, and the same fix:
+          # fetch it at runtime in Go and drop this variable. Unlike the NIK
+          # pepper this one can be rotated after a leak - but only BETWEEN
+          # sales, because rotating it mid-sale returns 401 DEVICE_MISMATCH to
+          # every guest holding a grant.
+          #
+          # It must be the SAME value whatever issues grants resolves, or every
+          # guest grant fails its device check here (ADR-006 §8.9).
+          DEVICE_PEPPER: !Sub '{{resolve:secretsmanager:rusuh-${Environment}/device-pepper:SecretString}}'
+          # The same secret user-service signs access tokens with. ADR-006
+          # §8.17: an account grant is only honoured alongside that account's
+          # Bearer token, so a wrong value here turns every logged-in payment
+          # into 401 and a missing one into 503.
+          JWT_SECRET: !Sub '{{resolve:secretsmanager:rusuh-${Environment}/jwt-signing:SecretString}}'
+          # Signs charges AND verifies every notification signature. While this
+          # is still at its REPLACE_ME placeholder the service starts, accepts
+          # requests, and rejects every callback Midtrans sends - money taken,
+          # no ticket issued. Populate it before the first charge.
+          MIDTRANS_SERVER_KEY: !Sub '{{resolve:secretsmanager:rusuh-${Environment}/midtrans-server-key:SecretString:server_key}}'
+
+  # ============================================================================
+  # CloudWatch Log Group (explicit retention)
+  # ============================================================================
+  # Declared explicitly because Lambda would create it on first invoke with
+  # retention set to NEVER EXPIRE. For a POC that is a slow leak of storage
+  # cost with no upside.
+  PaymentApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/rusuh-${Environment}-payment-api
+      RetentionInDays: 14
+
+  # ============================================================================
+  # HTTP API (API Gateway v2) — ONLY if EnableDirectApiAccess is true
+  # ============================================================================
+  PaymentApiApi:
+    Type: AWS::ApiGatewayV2::Api
+    Condition: CreateDirectApi
+    Properties:
+      Name: !Sub rusuh-${Environment}-payment-api-api
+      ProtocolType: HTTP
+      Description: HTTP API for payment service (direct access)
+
+  PaymentApiApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: CreateDirectApi
+    Properties:
+      LogGroupName: !Sub /aws/apigateway/rusuh-${Environment}-payment-api-api
+      RetentionInDays: 14
+
+  PaymentApiApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Condition: CreateDirectApi
+    Properties:
+      ApiId: !Ref PaymentApiApi
+      StageName: $default
+      AutoDeploy: true
+      AccessLogSettings:
+        DestinationArn: !GetAtt PaymentApiApiLogGroup.Arn
+        Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","routeKey":"$context.routeKey","status":"$context.status","protocol":"$context.protocol","responseLength":"$context.responseLength","integrationErrorMessage":"$context.integrationErrorMessage"}'
+
+  PaymentApiLambdaIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Condition: CreateDirectApi
+    Properties:
+      ApiId: !Ref PaymentApiApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt PaymentApiFunction.Arn
+      PayloadFormatVersion: "2.0"
+
+  # ── Grant-guarded, one booking each ────────────────────────────────────────
+  RouteGetMethods:
+    Type: AWS::ApiGatewayV2::Route
+    Condition: CreateDirectApi
+    Properties:
+      ApiId: !Ref PaymentApiApi
+      RouteKey: GET /payments/{booking_id}/methods
+      Target: !Sub integrations/${PaymentApiLambdaIntegration}
+
+  RouteInitiatePayment:
+    Type: AWS::ApiGatewayV2::Route
+    Condition: CreateDirectApi
+    Properties:
+      ApiId: !Ref PaymentApiApi
+      RouteKey: POST /payments/{booking_id}
+      Target: !Sub integrations/${PaymentApiLambdaIntegration}
+
+  RouteRetryPayment:
+    Type: AWS::ApiGatewayV2::Route
+    Condition: CreateDirectApi
+    Properties:
+      ApiId: !Ref PaymentApiApi
+      RouteKey: POST /payments/{booking_id}/retry
+      Target: !Sub integrations/${PaymentApiLambdaIntegration}
+
+  RouteGetStatus:
+    Type: AWS::ApiGatewayV2::Route
+    Condition: CreateDirectApi
+    Properties:
+      ApiId: !Ref PaymentApiApi
+      RouteKey: GET /payments/{booking_id}/status
+      Target: !Sub integrations/${PaymentApiLambdaIntegration}
+
+  # ── Unguarded, called by Midtrans ─────────────────────────────────────────
+  #
+  # This route overlaps RouteInitiatePayment: POST /payments/webhook also
+  # matches POST /payments/{booking_id}. HTTP API resolves that in the right
+  # direction - a literal segment outranks a path variable - so the webhook is
+  # never routed as a booking whose id happens to be "webhook". The handler
+  # would reject it anyway, with a 200 the gateway would then retry against, so
+  # relying on route precedence alone is thin: the initiate handler also
+  # refuses a booking_id that is not a UUID.
+  #
+  # No authorizer, by design. Midtrans has no credential to present; the body's
+  # signature_key is the authentication, verified before anything is read from
+  # the payload.
+  RouteWebhook:
+    Type: AWS::ApiGatewayV2::Route
+    Condition: CreateDirectApi
+    Properties:
+      ApiId: !Ref PaymentApiApi
+      RouteKey: POST /payments/webhook
+      Target: !Sub integrations/${PaymentApiLambdaIntegration}
+
+  RouteHealthCheck:
+    Type: AWS::ApiGatewayV2::Route
+    Condition: CreateDirectApi
+    Properties:
+      ApiId: !Ref PaymentApiApi
+      RouteKey: GET /sys/ping
+      Target: !Sub integrations/${PaymentApiLambdaIntegration}
+
+  PaymentApiFunctionDirectApiPermission:
+    Type: AWS::Lambda::Permission
+    Condition: CreateDirectApi
+    Properties:
+      FunctionName: !Ref PaymentApiFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${PaymentApiApi}/*/*
+
+  # ============================================================================
+  # SSM Parameter — the direct endpoint, when there is one
+  # ============================================================================
+  # Published so anything that needs this service's own origin can read it off
+  # a parameter rather than a stack output.
+  #
+  # Only exists with direct access on. The Midtrans dashboard's Payment
+  # Notification URL normally comes from the UNIFIED gateway instead:
+  # /rusuh/${Environment}/api/url + /payments/webhook. Until that URL is set in
+  # the dashboard, no settlement ever reaches this service.
+  SsmBaseUrl:
+    Type: AWS::SSM::Parameter
+    Condition: CreateDirectApi
+    Properties:
+      Name: !Sub /rusuh/${Environment}/payment-api/base-url
+      Type: String
+      Value: !Sub https://${PaymentApiApi}.execute-api.${AWS::Region}.amazonaws.com
+      Description: Base URL of the payment-api HTTP API (direct access)
+
+Outputs:
+  ApiUrl:
+    Condition: CreateDirectApi
+    Description: Base URL of the payment-api HTTP API (direct access)
+    Value: !Sub https://${PaymentApiApi}.execute-api.${AWS::Region}.amazonaws.com
+
+  WebhookUrl:
+    Condition: CreateDirectApi
+    Description: >
+      Paste into the Midtrans dashboard as the Payment Notification URL, unless
+      the unified gateway is the entry point - then use its URL with the same
+      path. Until one of them is set, no settlement ever reaches this service.
+    Value: !Sub https://${PaymentApiApi}.execute-api.${AWS::Region}.amazonaws.com/payments/webhook
+
+  FunctionArn:
+    Description: ARN of the payment-api Lambda function
+    Value: !GetAtt PaymentApiFunction.Arn
+
+  FunctionName:
+    Description: Name of the payment-api Lambda function
+    Value: !Ref PaymentApiFunction

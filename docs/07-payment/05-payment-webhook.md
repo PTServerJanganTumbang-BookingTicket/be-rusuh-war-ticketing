@@ -326,8 +326,11 @@ with an alarm on every execution before production.
   Leaving it out would make opening cards a code change in the riskiest handler
   in the service.
 - **OPEN:** the API Gateway resource policy allowlisting Midtrans's notification
-  IPs (§5.5) is not in `template.yaml`. The signature is the authentication that
-  matters, but the allowlist was specified and is missing.
+  IPs (§5.5) exists in neither of this service's templates. The webhook now
+  arrives through the unified gateway, so the policy would sit on
+  `infra/api-gateway/template.yaml` and apply to every route on that API, which
+  is a decision wider than this endpoint. The signature is the authentication
+  that matters, but the allowlist was specified and is missing.
 
 ## 14. Tests
 

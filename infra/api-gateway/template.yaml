@@ -9,6 +9,7 @@ Description: >
     /bookings/*  → booking service
     /events/{event_id}/tickets → booking service
     /events/{event_id}/queue/* → queue service (join, me)
+    /payments/*  → payment service (methods, initiate, retry, status, webhook)
     /nik/*       → nik-verify service
     /auth/*      → user service
     /accounts/*  → user service
@@ -104,6 +105,14 @@ Resources:
       IntegrationUri: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:rusuh-${Environment}-user
       PayloadFormatVersion: "2.0"
 
+  PaymentApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref UnifiedApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:rusuh-${Environment}-payment-api
+      PayloadFormatVersion: "2.0"
+
   # ============================================================================
   # Lambda Permissions — allow this API Gateway to invoke the Lambdas
   # ============================================================================
@@ -135,6 +144,14 @@ Resources:
     Type: AWS::Lambda::Permission
     Properties:
       FunctionName: !Sub rusuh-${Environment}-user
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${UnifiedApi}/*/*
+
+  PaymentApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Sub rusuh-${Environment}-payment-api
       Action: lambda:InvokeFunction
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${UnifiedApi}/*/*
@@ -275,6 +292,56 @@ Resources:
       ApiId: !Ref UnifiedApi
       RouteKey: GET /tickets/{ticket_id}/eticket
       Target: !Sub integrations/${UserIntegration}
+
+  # ============================================================================
+  # Routes — Payment Service (/payments/*)
+  # ============================================================================
+  # The first four sit behind the grant guard (X-Grant-Token, plus the account's
+  # Bearer when the grant names one - ADR-006 §8.17). The gateway does not check
+  # either; the service does.
+  RoutePaymentMethods:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UnifiedApi
+      RouteKey: GET /payments/{booking_id}/methods
+      Target: !Sub integrations/${PaymentApiIntegration}
+
+  RoutePaymentInitiate:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UnifiedApi
+      RouteKey: POST /payments/{booking_id}
+      Target: !Sub integrations/${PaymentApiIntegration}
+
+  RoutePaymentRetry:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UnifiedApi
+      RouteKey: POST /payments/{booking_id}/retry
+      Target: !Sub integrations/${PaymentApiIntegration}
+
+  RoutePaymentStatus:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UnifiedApi
+      RouteKey: GET /payments/{booking_id}/status
+      Target: !Sub integrations/${PaymentApiIntegration}
+
+  # Called by Midtrans, not by the frontend, and deliberately unauthenticated:
+  # Midtrans has no credential to present, so the body's signature_key is the
+  # authentication and the service verifies it before reading the payload.
+  #
+  # This is the route that makes settlement possible at all - it is the URL
+  # pasted into the Midtrans dashboard as the Payment Notification URL. It
+  # overlaps RoutePaymentInitiate (POST /payments/webhook also matches
+  # POST /payments/{booking_id}), and HTTP API resolves that the right way: a
+  # literal segment outranks a path variable.
+  RoutePaymentWebhook:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UnifiedApi
+      RouteKey: POST /payments/webhook
+      Target: !Sub integrations/${PaymentApiIntegration}
 
   # ============================================================================
   # Routes — Health Check
