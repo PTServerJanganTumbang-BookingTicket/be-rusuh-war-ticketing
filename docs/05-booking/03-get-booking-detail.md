@@ -3,11 +3,11 @@
 | | |
 |---|---|
 | **Service** | `services/booking` (Lambda) |
-| **Auth** | `X-Grant-Token` (required) · `X-Device-Id` (required for a guest grant) · no `Authorization` |
+| **Auth** | `X-Grant-Token` (required) · `X-Device-Id` (required for a guest grant) · `Authorization: Bearer` (required when the grant belongs to a logged-in account) |
 | **Contract** | Apidog `GET /bookings/{booking_id}` · api-contracts §4.4 |
 | **Requirements** | FR-21, FR-22, FR-27, NFR-10, BR-05, BR-10 |
-| **Detail** | impl-plan §3.7, §3.10, §5.5 · ADR-005 §12 (ownership: 404 not 403) · ADR-006 §8.8 (e-ticket link replaces `GET /bookings/{id}/tickets`), §8.13 |
-| **Status** | built (B3), awaiting commit |
+| **Detail** | impl-plan §3.7, §3.10, §5.5 · ADR-005 §12 (ownership) · ADR-006 §8.8 (the e-ticket link), §8.13 |
+| **Status** | built |
 
 ## 1. Purpose
 
@@ -30,7 +30,7 @@ sequenceDiagram
     participant DB as Aurora (writer)
 
     C->>G: GET /bookings/{id} + X-Grant-Token (+ X-Device-Id)
-    G-->>C: 401 / 400 on a bad grant (README §3)
+    G-->>C: 401 / 400 on a bad grant (README §2)
     G->>B: Grant{booking_id, ...}
     alt grant.booking_id != path id
         B-->>C: 404 NOT_FOUND (no database read)
@@ -47,7 +47,7 @@ sequenceDiagram
 
 ## 3. Steps
 
-1. `pkg/grantauth` verifies the grant (README §3).
+1. `pkg/grantauth` verifies the grant (README §2).
 2. **Ownership first** (ADR-005 §12): `grant.BookingID ≠ {booking_id}` → 404; then
    `WHERE b.id = $1 AND b.grant_token = $2` on the writer; no row → **404 `NOT_FOUND`**. Nothing about the status is
    looked at before this.
@@ -64,8 +64,8 @@ sequenceDiagram
    `created_at, id`. Empty before HELD. B4 writes the seats of one order with increasing `created_at`
    (`clock_timestamp()`): `now()` is the transaction start, the same for every seat.
 5. **By status:**
-   - `PENDING_PAYMENT`: `payment_ttl = {expires_at: payment_expires_at, ttl_seconds = max(0, ceil(expires_at − now)), server_time}`.
-     For PENDING_CANCELLATION `ttl_seconds` is 0 (deadline passed, grace running); the frontend shows
+   - `PENDING_PAYMENT`: `payment_ttl = {expires_at: payment_expires_at, server_time}`; the client counts down from `expires_at`.
+     For PENDING_CANCELLATION `expires_at` has passed (grace running); the frontend shows
      "memverifikasi pembayaran…" from `GET /payments/{id}/status` (§5.4), not an expired screen.
    - `PAID`: join `tickets` on `booking_item_id`. Per ticket: `ticket_id` and
      `eticket_url = "/tickets/{ticket_id}/eticket?t=" + eticket.Mint(ticket_id, event_date + 1 day)`.
@@ -74,7 +74,7 @@ sequenceDiagram
      An item without a `tickets` row yet: no `ticket_id`, no `eticket_url`. A REVOKED or EXPIRED ticket keeps its
      `ticket_id` but gets no link. An unknown `payment_method` is shown as stored and counted (`UnknownPaymentMethod`).
    - `SELECTING`, `EXPIRED`: no `payment_ttl`, no `payment_method`; `tickets` as stored (usually empty).
-6. **Summary:** `{quantity = len(items), total = Σ unit_price}`. No `price_per_ticket` (dropped, §6).
+6. **Summary:** `{quantity = len(items), total = Σ unit_price}`. Prices per seat are in `tickets[].price` (§6).
 7. Header `Cache-Control: no-store`.
 
 ### 3.1 `pkg/eticket` (built in this step)
@@ -104,10 +104,9 @@ The token expires at **event_date + 1 day, 00:00 Asia/Jakarta** (the gate opens 
 | 200 | — | booking found (any status) |
 | 400 | `DEVICE_ID_REQUIRED` | guest grant without `X-Device-Id` |
 | 401 | `GRANT_TOKEN_MISSING` / `GRANT_TOKEN_INVALID` / `DEVICE_MISMATCH` | bad grant |
+| 401 | `UNAUTHORIZED` / `TOKEN_EXPIRED` / `TOKEN_INVALID` | account grant without `Authorization`, of another account, expired, invalid |
 | 404 | `NOT_FOUND` | no booking with this id **for this grant** (not distinguished from "does not exist") |
 | 503 | `INTERNAL_ERROR` | Redis or Aurora unreachable |
-
-Contract changes: C3–C6 in README §6.
 
 ## 6. Edge cases
 
@@ -117,10 +116,9 @@ Contract changes: C3–C6 in README §6.
 - **PAID before the tickets are issued.** CONFIRMED is written by the webhook; the `tickets` rows come from the issuer
   right after (inline or outbox). The answer is `PAID` with the items but without `ticket_id` / `eticket_url`; the
   Success page polls this endpoint (e.g. every 2 s, up to 30 s) until every ticket has a link.
-- **No payment time in the response.** `bookings` has no column for it; the contract's `paid_at` is removed (C4).
-  `payment_method` is shown as a label: `bank_transfer` → "Virtual Account", `gopay` → "GoPay".
-- **No `price_per_ticket`.** It has no correct value when an order mixes categories (FR-13a); each `tickets[].price` is
-  the price. `summary` = `{quantity, total}` (C5).
+- **No payment time in the response**: `bookings` has no column for it. `payment_method` is shown as a label: `bank_transfer` → "Virtual Account", `gopay` → "GoPay".
+- **No price per ticket in `summary`.** It would have no correct value when an order mixes categories (FR-13a); each
+  `tickets[].price` is the price. `summary` = `{quantity, total}`.
 - **After the grant expires** (1080 s from `granted_at`) this endpoint answers 401. The customer already has the
   `eticket_url` links, the email, and `/queue/me` answering CONFIRMED from the tombstone.
 - **CONFIRMED must not delete the grant.** If admission-ctl or the webhook `DEL`s `grant:{token}` on CONFIRMED, the
@@ -157,11 +155,8 @@ Integration (real Postgres via `pkg/pgtest`):
 
 ## 8. Tasks
 
-- [x] B1 done
-- [x] tests red → list reviewed
 - [x] `pkg/eticket`
-- [x] use case `GetBooking` + handler + route; delete the scaffold's in-memory `GetBooking`
-- [x] `make verify` green, `/code-review` (10 findings: 8 fixed, 1 moved to B4, 1 kept)
-- [ ] commit approval
-- [ ] contract/Apidog C3–C6 (documentations, after approval)
-- [ ] 07-payment note: webhook keeps `grant:{token}` on CONFIRMED
+- [x] use case `GetBooking` + handler + route
+- [x] `make verify` green; independent review done
+- [ ] 07-payment: the webhook keeps `grant:{token}` on CONFIRMED
+- [ ] user-service: `GET /tickets/{id}/eticket?t=…` verifies the link with `eticket.Verify`

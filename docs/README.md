@@ -11,9 +11,9 @@ source below, the source wins and the plan gets fixed.
 
 | What | Where (`documentations` repo) |
 |---|---|
-| Requirements (FR / NFR / BR) | `requirement/requirements.md` v1.1 |
-| Architecture of record | `adr/ADR-005-final-architecture-decision.md`, amended by `adr/ADR-006-queue-admission-amendments.md` (queue) |
-| API contract | `api/rusuh-booking-apidog.json` (**source of truth**, Apidog project export) + `api/api-contracts.md` v2.7.0. OpenAPI YAML archived (`api/archive/`), not maintained |
+| Requirements (FR / NFR / BR) | `requirement/requirements.md` v1.1 (changes after v1.1 are marked in the file, e.g. FR-26) |
+| Architecture of record | `adr/ADR-005-final-architecture-decision.md`, amended by `adr/ADR-006-queue-admission-amendments.md` (queue and booking decisions) |
+| API contract | `api/rusuh-booking-apidog.json` (**source of truth**, Apidog project export) + `api/api-contracts.md` (its changelog, Appendix C, lists every version). OpenAPI YAML archived (`api/archive/`), not maintained |
 | Detailed team implementation plan | `requirement/implementation-plan.md` v2.1 (queue sections amended by ADR-006, see its banner) |
 
 ## Layout
@@ -25,7 +25,7 @@ source below, the source wins and the plan gets fixed.
 | `02-accounts/tickets/` | Accounts › Tickets (`GET /users/me/tickets`, `GET /tickets/{ticket_id}/eticket`) | `services/user` | not started |
 | `03-events/` | Events | `services/events` | not started |
 | [`04-queue/`](04-queue/README.md) | Queue | `services/queue`, `services/sse-server`, `services/admission-ctl` | **planning** |
-| [`05-booking/`](05-booking/README.md) | Booking | `services/booking` (+ SELECTING sweep in `services/admission-ctl`) | **in progress**: GET endpoints built (B1–B3); `POST /bookings` (B4) next |
+| [`05-booking/`](05-booking/README.md) | Booking | `services/booking` (+ sweeps in `services/admission-ctl`) | **in progress**: both GET endpoints built; `POST /bookings` planned |
 | [`06-nik/`](06-nik/README.md) | NIK | `services/nik-verify` | **documented** — branch |
 | `07-payment/` | Payment | `services/payment-api` | not started |
 | `08-admin/` | Admin | `services/payment-api` | not started |

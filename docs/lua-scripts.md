@@ -12,7 +12,8 @@ Sources: ADR-006 §3.4, §4.1, §8.12 (§8.11 `free_slots` removed by §8.14) ·
 | `advance_now_serving.lua` | **built** (`pkg/redisscript`) | admission-ctl only | every 500 ms tick, per event | decide how many people to let in, raise `now_serving` |
 | `hset_if_exists.lua` | **built** (`pkg/redisscript`) | admission-ctl (FINISH) | after a customer's booking row exists | copy the grant into `token:<queue_token>` only if that hash still exists, so an expired token is never recreated without a TTL |
 | token-bucket rate limiter | **built** (Lua embedded in `pkg/ratelimit/ratelimit.go`) | join (per IP and per account), sse-server (per IP); user and nik-verify have their own limiters | on every request that passes a limiter | refill the bucket by elapsed time and take one token, atomically |
-| `hold_booking.lua` | planned (booking plan) | booking service | when a customer picks seats | reserve stock across categories, all or nothing |
+| `hold_booking.lua` | planned (`05-booking/02-create-booking.md`) | booking service | the customer presses Pay (`POST /bookings`) | reserve stock across categories and lock every seat's NIK, all or nothing |
+| `release_hold.lua` | planned (same plan) | booking service, admission-ctl | the booking transaction fails after the hold, or a `HELD` booking expires | give the stock back and delete the NIK locks |
 | `adjust_if_unchanged.lua` | planned (admission-ctl plan) | admission-ctl, stock reconciliation | periodic correction of stock counters | correct a counter only if it still has the value that was read |
 
 ```mermaid
@@ -25,12 +26,15 @@ flowchart LR
     end
     CTL -->|every 500 ms| ADV[advance_now_serving.lua]
     CTL -->|reconcile stock| ADJ[adjust_if_unchanged.lua]
-    BOOK -->|pick seats| HOLD[hold_booking.lua]
+    BOOK -->|press Pay| HOLD[hold_booking.lua]
+    BOOK -->|undo a hold| REL[release_hold.lua]
+    CTL -->|HELD expired| REL
     JOIN -->|each request| RL[token-bucket rate limiter]
     SSE -->|each connect| RL
     ADV --> Q[(queue:ev hash, by_ticket, stock:ev:cat)]
     ADJ --> S[(stock:ev:cat)]
     HOLD --> S
+    REL --> S
     RL --> L[(rl:... keys)]
 ```
 
@@ -75,21 +79,34 @@ It never removes tokens from `by_ticket`. A member whose score is ≤ `now_servi
 
 Join and sse-server use `pkg/ratelimit`. The user and nik-verify services have their own limiters, which are Handoko's work and not covered here.
 
-## 4. `hold_booking.lua` (planned)
+## 4. `hold_booking.lua` and `release_hold.lua` (planned)
 
-**What for.** Reserve seats when a customer picks them. It checks **all** categories before decrementing **any** (all or nothing), sets the NIK lock with `SET NX` and rolls back if a later step fails. A missing stock key is not zero.
+**Spec:** `docs/05-booking/02-create-booking.md` §3.2 · **Code:** `pkg/redisscript/` (not written yet)
 
-**When.** When a customer reserves seats (`POST /bookings` in the booking plan). Which status change it belongs to is the booking plan's to settle.
+**`hold_booking.lua` — what for.** Take the seats when the customer presses Pay. Three phases, in one atomic call:
+1. check **every** category has enough stock (a missing key is `STOCK_UNINITIALIZED`, not zero) before changing anything;
+2. lock each seat's NIK with `SET NX EX`; one already taken undoes the locks made so far;
+3. decrement the stock; a negative count (`STOCK_NEGATIVE`) undoes everything.
 
-**Spec:** not written yet (booking plan). Touches `stock:{ev}:<category>`, which `advance_now_serving.lua` also reads, so the stock keys must stay in one slot with the event hash tag.
+It answers `HELD`, `NO_STOCK` (with the category index), `NIK_TAKEN` (with the seat index), or a guard code. It never
+touches `queue:{ev}`.
+
+**When.** Once per `POST /bookings`, inside the booking transaction, after the booking row is locked (the booking moves
+`SELECTING → HELD`).
+
+**`release_hold.lua` — what for.** The reverse: add the stock back and delete the NIK locks, in one call. Used when the
+booking transaction fails after the hold, and by the HELD → EXPIRED sweep.
+
+**Keys.** `stock:{ev}:<category>` per category and `nik:used:{ev}:<hmac>` per seat. All carry the `{ev}` hash tag, so one
+call can touch them in the cluster. `advance_now_serving.lua` also reads the stock keys.
 
 ## 5. `adjust_if_unchanged.lua` (planned)
 
 **What for.** Correct a stock counter that drifted, but only if it still holds the value the caller read. A double run therefore never corrects twice.
 
-**When.** Admission-ctl's periodic stock reconciliation.
+**When.** The periodic stock reconciliation (step B5 in `05-booking/README.md`).
 
-**Spec:** not written yet (admission-ctl plan).
+**Spec:** not written yet.
 
 ## 6. How scripts are loaded
 
