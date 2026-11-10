@@ -416,6 +416,7 @@ jobs:
       needs.deploy-foundation.result != 'failure' &&
       needs.resolve-env.outputs.any_service_changed == 'true'
     runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-env.outputs.environment }}
     permissions:
       id-token: write
       contents: read
