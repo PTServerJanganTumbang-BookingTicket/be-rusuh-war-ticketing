@@ -73,8 +73,8 @@ func seed(t *testing.T, pool *pgxpool.Pool, booking string) {
 }
 
 func item(pool *pgxpool.Pool, id, booking, nikHmac string) error {
-	_, err := pool.Exec(ctx, `INSERT INTO booking_items (id, booking_id, event_id, category_id, category_name, unit_price, nik_hmac, nik_masked, holder_email)
-		VALUES ($1, $2, 'evt_a', 'cat_vip', 'VIP', 1500000, $3, '3171********0001', 'a@example.com')`, id, booking, nikHmac)
+	_, err := pool.Exec(ctx, `INSERT INTO booking_items (id, booking_id, event_id, category_id, category_name, unit_price, nik_hmac, nik_masked)
+		VALUES ($1, $2, 'evt_a', 'cat_vip', 'VIP', 1500000, $3, '3171********0001')`, id, booking, nikHmac)
 	return err
 }
 
@@ -90,7 +90,7 @@ func TestTheBookingMigrationsApplyAndTheirDownFilesReverseThem(t *testing.T) {
 			t.Fatalf("after the up migrations %s.%s is missing", tc.table, tc.column)
 		}
 	}
-	for _, f := range []string{"0008_booking_domain.down.sql", "0007_ticket_categories.down.sql"} {
+	for _, f := range []string{"0009_drop_terms_and_holder_email.down.sql", "0008_booking_domain.down.sql", "0007_ticket_categories.down.sql"} {
 		if _, err := pool.Exec(ctx, migration(t, f)); err != nil {
 			t.Fatalf("%s: %v", f, err)
 		}
@@ -102,7 +102,7 @@ func TestTheBookingMigrationsApplyAndTheirDownFilesReverseThem(t *testing.T) {
 			t.Fatalf("after the down migrations %s %s still exists", tc.table, tc.column)
 		}
 	}
-	for _, f := range []string{"0007_ticket_categories.up.sql", "0008_booking_domain.up.sql"} {
+	for _, f := range []string{"0007_ticket_categories.up.sql", "0008_booking_domain.up.sql", "0009_drop_terms_and_holder_email.up.sql"} {
 		if _, err := pool.Exec(ctx, migration(t, f)); err != nil {
 			t.Fatalf("re-applying %s after its down: %v", f, err)
 		}
@@ -149,22 +149,47 @@ func TestASecondTicketForTheSameBookingItemIsRefused(t *testing.T) {
 	}
 }
 
-// Email and terms are entered at POST /bookings (HELD). A booking that never got there (claimed, then expired or
-// abandoned) has neither, and must still be storable; from HELD on both are required.
-func TestEmailAndTermsAreRequiredOnlyFromHeldOn(t *testing.T) {
+// The email is entered at POST /bookings (HELD). A booking that never got there (claimed, then expired or abandoned)
+// has none, and must still be storable; from HELD on it is required.
+func TestEmailIsRequiredOnlyFromHeldOn(t *testing.T) {
 	pool := pgtest.New(t)
-	seed(t, pool, "RB-1") // SELECTING, no email, no terms
+	seed(t, pool, "RB-1") // SELECTING, no email
 	for _, s := range []string{"EXPIRED", "ABANDONED"} {
 		if _, err := pool.Exec(ctx, `UPDATE bookings SET status = $1 WHERE id = 'RB-1'`, s); err != nil {
-			t.Fatalf("a booking without email or terms must be able to become %s: %v", s, err)
+			t.Fatalf("a booking without an email must be able to become %s: %v", s, err)
 		}
 	}
 	for _, s := range []string{"HELD", "AWAITING_PAYMENT", "PENDING_CANCELLATION", "CONFIRMED"} {
 		_, err := pool.Exec(ctx, `UPDATE bookings SET status = $1 WHERE id = 'RB-1'`, s)
 		var pg *pgconn.PgError
 		if !errors.As(err, &pg) || pg.Code != "23514" {
-			t.Fatalf("%s without email or terms: err = %v, want a check violation", s, err)
+			t.Fatalf("%s without an email: err = %v, want a check violation", s, err)
 		}
+	}
+}
+
+// Consent is recorded at registration (ADR-006 §8.16), so a HELD booking needs only its email.
+func TestABookingCanBeHeldWithOnlyItsEmail(t *testing.T) {
+	pool := pgtest.New(t)
+	seed(t, pool, "RB-1")
+	if _, err := pool.Exec(ctx, `UPDATE bookings SET status = 'HELD', contact_email = 'a@example.com', held_at = now(),
+		payment_expires_at = now() + interval '10 minutes' WHERE id = 'RB-1'`); err != nil {
+		t.Fatalf("HELD with an email and nothing else: %v", err)
+	}
+}
+
+// ADR-006 §8.15 and §8.16: no per-seat email, no terms record on the booking.
+func TestTheTermsAndHolderEmailColumnsAreGone(t *testing.T) {
+	pool := pgtest.New(t)
+	for _, c := range []struct{ table, column string }{
+		{"bookings", "terms_version"}, {"bookings", "terms_accepted_at"}, {"booking_items", "holder_email"},
+	} {
+		if exists(t, pool, c.table, c.column) {
+			t.Errorf("%s.%s still exists", c.table, c.column)
+		}
+	}
+	if !exists(t, pool, "tickets", "holder_email") {
+		t.Error("tickets.holder_email must stay: it holds the buyer's email for the e-ticket (user-service reads it)")
 	}
 }
 

@@ -204,9 +204,9 @@ func registerSweepSteps(sc *godog.ScenarioContext, w *tickWorld) {
 
 	sc.Step(`^(\d+) bookings exist, of which (\d+) are "GRANTED"$`, func(total, granted int) error {
 		_, err := w.bks.(*pgBookings).db.admin.Exec(w.ctx, `
-INSERT INTO bookings (id, event_id, queue_token, status, grant_token, contact_email, terms_accepted_at, booking_expires_at)
+INSERT INTO bookings (id, event_id, queue_token, status, grant_token, contact_email, booking_expires_at)
 SELECT 'sw-' || i, 'X' || (i % 20), 'sw-q' || i, CASE WHEN i <= $1 THEN 'GRANTED' ELSE 'CONFIRMED' END,
-       'sw-g' || i, 'a@example.com', now(), now() + interval '1 day'
+       'sw-g' || i, 'a@example.com', now() + interval '1 day'
 FROM generate_series(1, $2) AS i`, granted, total)
 		if err != nil {
 			return err

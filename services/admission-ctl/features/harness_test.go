@@ -466,14 +466,14 @@ func (p *pgBookings) seedInside(ctx context.Context, ev string, n int, status st
 	if _, err := p.db.admin.Exec(ctx, `INSERT INTO events (id, name, event_date) VALUES ($1,$1,'2026-12-01') ON CONFLICT DO NOTHING`, ev); err != nil {
 		return err
 	}
-	_, err := p.db.admin.Exec(ctx, `INSERT INTO bookings (id, event_id, queue_token, status, grant_token, contact_email, terms_accepted_at, booking_expires_at)
-		SELECT 'in-' || $1 || '-' || i, $1, 'in-q-' || $1 || '-' || i || '-' || $2, $2, 'in-g-' || $1 || '-' || i || '-' || $2, 'a@example.com', now(), timestamptz '2099-01-01'
+	_, err := p.db.admin.Exec(ctx, `INSERT INTO bookings (id, event_id, queue_token, status, grant_token, contact_email, booking_expires_at)
+		SELECT 'in-' || $1 || '-' || i, $1, 'in-q-' || $1 || '-' || i || '-' || $2, $2, 'in-g-' || $1 || '-' || i || '-' || $2, 'a@example.com', timestamptz '2099-01-01'
 		FROM generate_series(1, $3) AS i`, ev, status, n)
 	return err
 }
 
 func (p *pgBookings) moveOne(ctx context.Context, ev, from, to string) error {
-	tag, err := p.db.admin.Exec(ctx, `UPDATE bookings SET status=$3, contact_email='a@example.com', terms_accepted_at=now()
+	tag, err := p.db.admin.Exec(ctx, `UPDATE bookings SET status=$3, contact_email='a@example.com'
 		WHERE id = (SELECT id FROM bookings WHERE event_id=$1 AND status=$2 LIMIT 1)`, ev, from, to)
 	if err == nil && tag.RowsAffected() == 0 {
 		return fmt.Errorf("no %s booking to move", from)
@@ -487,7 +487,7 @@ func (p *pgBookings) setDeadline(ctx context.Context, id string, at time.Time) e
 }
 
 func (p *pgBookings) setStatus(ctx context.Context, id, status string) error {
-	_, err := p.db.admin.Exec(ctx, `UPDATE bookings SET status=$2, contact_email=COALESCE(contact_email,'a@example.com'), terms_accepted_at=COALESCE(terms_accepted_at, now()) WHERE id=$1`, id, status)
+	_, err := p.db.admin.Exec(ctx, `UPDATE bookings SET status=$2, contact_email=COALESCE(contact_email,'a@example.com') WHERE id=$1`, id, status)
 	return err
 }
 

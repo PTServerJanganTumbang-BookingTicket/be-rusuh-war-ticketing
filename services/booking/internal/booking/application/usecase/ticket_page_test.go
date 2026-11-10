@@ -2,9 +2,11 @@ package usecase
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -111,7 +113,7 @@ func TestTheFirstLoadClaimsTheBookingOfTheGrantAndKeepsItsDeadline(t *testing.T)
 	if !reflect.DeepEqual(r.b.claims, [][2]string{{"RB-1", "gt_1"}}) {
 		t.Fatalf("claims = %v, want one claim bound to the grant's booking and token", r.b.claims)
 	}
-	if v.Session.ExpiresAt != "2026-11-10T19:05:00Z" || v.Session.TTLSeconds != 180 || v.Session.ServerTime != "2026-11-10T19:02:00Z" {
+	if v.Session.ExpiresAt != "2026-11-10T19:05:00Z" || v.Session.ServerTime != "2026-11-10T19:02:00Z" {
 		t.Fatalf("session = %+v, want the deadline fixed at grant time", v.Session)
 	}
 }
@@ -133,7 +135,7 @@ func TestAHeldBookingRendersWithThePaymentDeadline(t *testing.T) {
 			r.b.row.BookingExpiresAt = now.Add(-time.Minute) // the 5-minute deadline has passed
 			r.b.row.PaymentExpiresAt = now.Add(8 * time.Minute)
 			v, err := r.uc.Get(context.Background(), grant, "evt_a")
-			if err != nil || v.Session.ExpiresAt != "2026-11-10T19:10:00Z" || v.Session.TTLSeconds != 480 {
+			if err != nil || v.Session.ExpiresAt != "2026-11-10T19:10:00Z" {
 				t.Fatalf("session %+v (%v), want the payment deadline", v.Session, err)
 			}
 		})
@@ -225,16 +227,17 @@ func TestANegativeStockIsShownAsZero(t *testing.T) {
 	}
 }
 
-func TestTheCountdownNeverGoesBelowZeroAndRoundsUp(t *testing.T) {
+// The client counts down from expires_at with its clock corrected by server_time (contract v2.15): a deadline that
+// has already passed (the sweep has not run yet) is sent as it is, and there is no ttl_seconds to go negative.
+func TestThePageSendsTheDeadlineAsItIsAndNoSecondsLeft(t *testing.T) {
 	r := newRig()
-	r.b.row.BookingExpiresAt = now.Add(-2 * time.Second) // passed, sweep not run yet
-	if v, err := r.uc.Get(context.Background(), grant, "evt_a"); err != nil || v.Session.TTLSeconds != 0 {
-		t.Fatalf("ttl %d (%v), want 0", v.Session.TTLSeconds, err)
+	r.b.row.BookingExpiresAt = now.Add(-2 * time.Second)
+	v, err := r.uc.Get(context.Background(), grant, "evt_a")
+	if err != nil || v.Session.ExpiresAt != "2026-11-10T19:01:58Z" || v.Session.ServerTime != "2026-11-10T19:02:00Z" {
+		t.Fatalf("session %+v (%v), want the passed deadline and the server time", v.Session, err)
 	}
-	r = newRig()
-	r.b.row.BookingExpiresAt = now.Add(1500 * time.Millisecond)
-	if v, err := r.uc.Get(context.Background(), grant, "evt_a"); err != nil || v.Session.TTLSeconds != 2 {
-		t.Fatalf("ttl %d (%v), want 2 (rounded up)", v.Session.TTLSeconds, err)
+	if b, _ := json.Marshal(v); strings.Contains(string(b), "ttl_seconds") {
+		t.Fatalf("the response must not carry ttl_seconds: %s", b)
 	}
 }
 

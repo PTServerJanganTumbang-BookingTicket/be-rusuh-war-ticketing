@@ -27,8 +27,8 @@ func grant(event, qt, id, gt string) domain.Grant {
 
 func seed(t *testing.T, pool *pgxpool.Pool, event, status, qt string, expires time.Time) {
 	t.Helper()
-	_, err := pool.Exec(ctx, `INSERT INTO bookings (id, event_id, queue_token, status, grant_token, contact_email, terms_accepted_at, booking_expires_at)
-		VALUES ($1, $2, $3, $4, $5, 'a@example.com', now(), $6)`, "id-"+qt, event, qt, status, "gt-"+qt, expires)
+	_, err := pool.Exec(ctx, `INSERT INTO bookings (id, event_id, queue_token, status, grant_token, contact_email, booking_expires_at)
+		VALUES ($1, $2, $3, $4, $5, 'a@example.com', $6)`, "id-"+qt, event, qt, status, "gt-"+qt, expires)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -43,9 +43,9 @@ func TestNewPoolRejectsABadDSN(t *testing.T) {
 func TestDetailReturnsTheFieldsMeNeeds(t *testing.T) {
 	pool := pgtest.New(t)
 	ctx := context.Background()
-	if _, err := pool.Exec(ctx, `INSERT INTO bookings (id, event_id, queue_token, status, grant_token, booking_expires_at, payment_expires_at, payment_ref, contact_email, terms_accepted_at)
-		VALUES ('RB-1', 'E1', 'qt1', 'AWAITING_PAYMENT', 'gt_1', '2026-11-10T19:05:00Z', '2026-11-10T19:10:00Z', 'pay_1', 'a@example.com', now()),
-		       ('RB-2', 'E1', 'qt2', 'GRANTED', NULL, NULL, NULL, NULL, NULL, NULL)`); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO bookings (id, event_id, queue_token, status, grant_token, booking_expires_at, payment_expires_at, payment_ref, contact_email)
+		VALUES ('RB-1', 'E1', 'qt1', 'AWAITING_PAYMENT', 'gt_1', '2026-11-10T19:05:00Z', '2026-11-10T19:10:00Z', 'pay_1', 'a@example.com'),
+		       ('RB-2', 'E1', 'qt2', 'GRANTED', NULL, NULL, NULL, NULL, NULL)`); err != nil {
 		t.Fatal(err)
 	}
 	store := NewBookings(pool)

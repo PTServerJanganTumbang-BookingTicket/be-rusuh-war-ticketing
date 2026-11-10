@@ -161,11 +161,11 @@ func detailSeed(t *testing.T, pool *pgxpool.Pool) {
 	for _, q := range []string{
 		`INSERT INTO events (id, name, event_date, venue, image_url) VALUES ('evt_a', 'Konser A', '2026-12-25', 'GBK', 'https://cdn/a.jpg')`,
 		`INSERT INTO bookings (id, event_id, queue_token, status, grant_token, booking_expires_at, held_at, payment_expires_at,
-		   payment_method, contact_email, terms_accepted_at)
-		 VALUES ('RB-1', 'evt_a', 'qt_1', 'CONFIRMED', 'gt_1', now(), now(), '2026-11-10T19:15:00Z', 'gopay', 'a@example.com', now())`,
-		`INSERT INTO booking_items (id, booking_id, event_id, category_id, category_name, unit_price, nik_hmac, nik_masked, holder_email, created_at)
-		 VALUES ('it_1', 'RB-1', 'evt_a', 'cat_vip', 'VIP', 1500000, 'h1', '3171********0001', 'a@example.com', '2026-11-10T19:00:00Z'),
-		        ('it_2', 'RB-1', 'evt_a', 'cat_fest', 'Festival', 850000, 'h2', '3171********0002', 'b@example.com', '2026-11-10T19:00:01Z')`,
+		   payment_method, contact_email)
+		 VALUES ('RB-1', 'evt_a', 'qt_1', 'CONFIRMED', 'gt_1', now(), now(), '2026-11-10T19:15:00Z', 'gopay', 'a@example.com')`,
+		`INSERT INTO booking_items (id, booking_id, event_id, category_id, category_name, unit_price, nik_hmac, nik_masked, created_at)
+		 VALUES ('it_1', 'RB-1', 'evt_a', 'cat_vip', 'VIP', 1500000, 'h1', '3171********0001', '2026-11-10T19:00:00Z'),
+		        ('it_2', 'RB-1', 'evt_a', 'cat_fest', 'Festival', 850000, 'h2', '3171********0002', '2026-11-10T19:00:01Z')`,
 		`INSERT INTO tickets (id, booking_id, event_id, nik_hmac, nik_masked, holder_email, category_id, category_name, price, qr_nonce, booking_item_id)
 		 VALUES ('TKT-001', 'RB-1', 'evt_a', 'h1', '3171********0001', 'a@example.com', 'cat_vip', 'VIP', 1500000, 'n1', 'it_1')`,
 	} {

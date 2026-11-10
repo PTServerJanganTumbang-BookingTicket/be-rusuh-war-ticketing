@@ -40,10 +40,10 @@ type EventView struct {
 	ImageURL string `json:"image_url"`
 }
 
-// SessionView is data.session: the countdown, from the server's deadline and clock.
+// SessionView is data.session (and data.payment_ttl): the deadline and the server's clock. The client counts down
+// from ExpiresAt with its own clock corrected by ServerTime (BR-10); there is no seconds-left field (contract v2.15).
 type SessionView struct {
 	ExpiresAt  string `json:"expires_at"`
-	TTLSeconds int64  `json:"ttl_seconds"`
 	ServerTime string `json:"server_time"`
 }
 
@@ -152,16 +152,11 @@ func currentDeadline(b domain.Booking) time.Time {
 	return b.BookingExpiresAt
 }
 
-// session builds the countdown: whole seconds left, rounded up, never below 0 (the sweep may run a second late).
+// session builds the deadline and clock pair. A deadline that has already passed (the sweep may run a second late)
+// is sent as it is: the client shows the expired screen from it.
 func session(deadline, now time.Time) SessionView {
-	left := deadline.Sub(now)
-	ttl := int64(0)
-	if left > 0 {
-		ttl = int64((left + time.Second - 1) / time.Second)
-	}
 	return SessionView{
 		ExpiresAt:  deadline.UTC().Format(time.RFC3339),
-		TTLSeconds: ttl,
 		ServerTime: now.Format(time.RFC3339),
 	}
 }

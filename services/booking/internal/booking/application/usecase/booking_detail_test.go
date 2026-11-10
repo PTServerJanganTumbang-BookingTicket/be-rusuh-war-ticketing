@@ -89,13 +89,16 @@ func TestEachStoredStatusMapsToItsDetailStatus(t *testing.T) {
 func TestAHeldBookingShowsThePaymentCountdown(t *testing.T) {
 	r := newDetailRig(t)
 	v, err := r.uc.Get(context.Background(), detailGrant, "RB-1")
-	if err != nil || v.PaymentTTL == nil || v.PaymentTTL.ExpiresAt != "2026-11-10T19:12:00Z" || v.PaymentTTL.TTLSeconds != 600 {
-		t.Fatalf("payment_ttl %+v (%v), want 600 s to 19:12", v.PaymentTTL, err)
+	if err != nil || v.PaymentTTL == nil || v.PaymentTTL.ExpiresAt != "2026-11-10T19:12:00Z" || v.PaymentTTL.ServerTime != "2026-11-10T19:02:00Z" {
+		t.Fatalf("payment_ttl %+v (%v), want the deadline 19:12 and the server time", v.PaymentTTL, err)
+	}
+	if b, _ := json.Marshal(v); strings.Contains(string(b), "ttl_seconds") {
+		t.Fatalf("payment_ttl must not carry ttl_seconds: %s", b)
 	}
 	r.d.detail.Status = bookingstate.PendingCancellation
 	r.d.detail.PaymentExpiresAt = now.Add(-10 * time.Second) // grace running
-	if v, err := r.uc.Get(context.Background(), detailGrant, "RB-1"); err != nil || v.PaymentTTL == nil || v.PaymentTTL.TTLSeconds != 0 {
-		t.Fatalf("payment_ttl in the grace %+v (%v), want ttl 0", v.PaymentTTL, err)
+	if v, err := r.uc.Get(context.Background(), detailGrant, "RB-1"); err != nil || v.PaymentTTL == nil || v.PaymentTTL.ExpiresAt != "2026-11-10T19:01:50Z" {
+		t.Fatalf("payment_ttl in the grace %+v (%v), want the passed deadline as it is", v.PaymentTTL, err)
 	}
 }
 

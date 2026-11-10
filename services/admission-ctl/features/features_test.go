@@ -326,8 +326,8 @@ func (w *storeWorld) seedBooking(event, status, queueToken, grantToken string) e
 		return err
 	}
 	_, err := w.db.admin.Exec(w.ctx, `
-INSERT INTO bookings (id, event_id, queue_token, status, grant_token, contact_email, terms_accepted_at, booking_expires_at)
-VALUES ($1, $2, $3, $4, $5, 'a@example.com', now(), now() + interval '5 minutes')`,
+INSERT INTO bookings (id, event_id, queue_token, status, grant_token, contact_email, booking_expires_at)
+VALUES ($1, $2, $3, $4, $5, 'a@example.com', now() + interval '5 minutes')`,
 		"seed-"+queueToken+"-"+event, event, queueToken, status, grantToken)
 	return err
 }
@@ -390,12 +390,12 @@ func (w *storeWorld) bigTable(others, total, active int) error {
 		return err
 	}
 	_, err := w.db.admin.Exec(w.ctx, `
-INSERT INTO bookings (id, event_id, queue_token, status, grant_token, contact_email, terms_accepted_at, booking_expires_at)
+INSERT INTO bookings (id, event_id, queue_token, status, grant_token, contact_email, booking_expires_at)
 SELECT 'big-' || i,
        CASE WHEN i <= $2 THEN 'E1' ELSE 'X' || (i % $1) END,
        'big-q' || i,
        CASE WHEN i <= $2 OR i % 50 = 0 THEN 'GRANTED' ELSE 'CONFIRMED' END,
-       'big-g' || i, 'a@example.com', now(), now() + interval '5 minutes'
+       'big-g' || i, 'a@example.com', now() + interval '5 minutes'
 FROM generate_series(1, $3) AS i`, others, active, total)
 	if err != nil {
 		return err

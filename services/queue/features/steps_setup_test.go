@@ -294,8 +294,8 @@ func (w *world) insertBooking(eventID, qt, status string) error {
 		return err
 	}
 	_, err := adminDB.Exec(context.Background(), `INSERT INTO bookings
-		(id, event_id, queue_token, status, grant_token, granted_at, booking_expires_at, contact_email, terms_version, terms_accepted_at)
-		VALUES ($1, $2, $3, $4, $5, now(), now() + interval '5 minutes', 'buyer@example.com', 'v1', now())`,
+		(id, event_id, queue_token, status, grant_token, granted_at, booking_expires_at, contact_email)
+		VALUES ($1, $2, $3, $4, $5, now(), now() + interval '5 minutes', 'buyer@example.com')`,
 		idgen.NewPrefixed("RB-"), eventID, qt, status, idgen.NewPrefixed("gt_"))
 	return err
 }
