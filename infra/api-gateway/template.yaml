@@ -1,0 +1,280 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Unified API Gateway — single entry point for all rusuh services.
+  Deploy this AFTER all service stacks are deployed.
+  
+  Frontend calls: https://<this-api>.execute-api.<region>.amazonaws.com
+  
+  Routes:
+    /bookings/*  → booking service
+    /nik/*       → nik-verify service
+    /auth/*      → user service
+    /accounts/*  → user service
+    /users/*     → user service
+    /tickets/*   → user service
+    /sys/ping    → booking service (health check)
+
+Parameters:
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues: [dev, prod]
+
+Resources:
+  # ============================================================================
+  # HTTP API
+  # ============================================================================
+  UnifiedApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub rusuh-${Environment}-api
+      ProtocolType: HTTP
+      Description: Unified API Gateway for all rusuh services
+      CorsConfiguration:
+        AllowOrigins:
+          - "*"
+        AllowMethods:
+          - GET
+          - POST
+          - PUT
+          - PATCH
+          - DELETE
+          - OPTIONS
+        AllowHeaders:
+          - Content-Type
+          - Authorization
+          - X-Request-ID
+          - Cookie
+        AllowCredentials: false
+        MaxAge: 86400
+
+  UnifiedApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/apigateway/rusuh-${Environment}-api
+      RetentionInDays: 14
+
+  UnifiedApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref UnifiedApi
+      StageName: $default
+      AutoDeploy: true
+      AccessLogSettings:
+        DestinationArn: !GetAtt UnifiedApiLogGroup.Arn
+        Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","routeKey":"$context.routeKey","status":"$context.status","protocol":"$context.protocol","responseLength":"$context.responseLength","integrationErrorMessage":"$context.integrationErrorMessage"}'
+
+  # ============================================================================
+  # Lambda Integrations
+  # ============================================================================
+  BookingIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref UnifiedApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:rusuh-${Environment}-booking
+      PayloadFormatVersion: "2.0"
+
+  NikVerifyIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref UnifiedApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:rusuh-${Environment}-nik-verify
+      PayloadFormatVersion: "2.0"
+
+  UserIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref UnifiedApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:rusuh-${Environment}-user
+      PayloadFormatVersion: "2.0"
+
+  # ============================================================================
+  # Lambda Permissions — allow this API Gateway to invoke the Lambdas
+  # ============================================================================
+  BookingPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Sub rusuh-${Environment}-booking
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${UnifiedApi}/*/*
+
+  NikVerifyPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Sub rusuh-${Environment}-nik-verify
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${UnifiedApi}/*/*
+
+  UserPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Sub rusuh-${Environment}-user
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${UnifiedApi}/*/*
+
+  # ============================================================================
+  # Routes — Booking Service (/bookings/*)
+  # ============================================================================
+  RouteBookingsCreate:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UnifiedApi
+      RouteKey: POST /bookings
+      Target: !Sub integrations/${BookingIntegration}
+
+  RouteBookingGet:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UnifiedApi
+      RouteKey: GET /bookings/{booking_id}
+      Target: !Sub integrations/${BookingIntegration}
+
+  # ============================================================================
+  # Routes — NIK Verify Service (/nik/*)
+  # ============================================================================
+  RouteNikValidate:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UnifiedApi
+      RouteKey: POST /nik/validate
+      Target: !Sub integrations/${NikVerifyIntegration}
+
+  # ============================================================================
+  # Routes — User Service (/auth/*, /accounts/*, /users/*, /tickets/*)
+  # ============================================================================
+  
+  # Auth routes
+  RouteAuthMagicLink:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UnifiedApi
+      RouteKey: POST /auth/magic-link
+      Target: !Sub integrations/${UserIntegration}
+
+  RouteAuthMagicLinkResend:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UnifiedApi
+      RouteKey: POST /auth/magic-link/resend
+      Target: !Sub integrations/${UserIntegration}
+
+  RouteAuthVerify:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UnifiedApi
+      RouteKey: GET /auth/verify
+      Target: !Sub integrations/${UserIntegration}
+
+  RouteAuthVerifyEmail:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UnifiedApi
+      RouteKey: GET /auth/verify-email
+      Target: !Sub integrations/${UserIntegration}
+
+  RouteAuthRefresh:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UnifiedApi
+      RouteKey: POST /auth/refresh
+      Target: !Sub integrations/${UserIntegration}
+
+  RouteAuthRegister:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UnifiedApi
+      RouteKey: POST /auth/register
+      Target: !Sub integrations/${UserIntegration}
+
+  # Accounts routes
+  RouteAccountsSavedNiksGet:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UnifiedApi
+      RouteKey: GET /accounts/me/saved-niks
+      Target: !Sub integrations/${UserIntegration}
+
+  RouteAccountsSavedNiksPost:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UnifiedApi
+      RouteKey: POST /accounts/me/saved-niks
+      Target: !Sub integrations/${UserIntegration}
+
+  RouteAccountsSavedNikDelete:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UnifiedApi
+      RouteKey: DELETE /accounts/me/saved-niks/{id}
+      Target: !Sub integrations/${UserIntegration}
+
+  # Users routes
+  RouteUsersMyTickets:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UnifiedApi
+      RouteKey: GET /users/me/tickets
+      Target: !Sub integrations/${UserIntegration}
+
+  # Tickets routes
+  RouteTicketEticket:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UnifiedApi
+      RouteKey: GET /tickets/{ticket_id}/eticket
+      Target: !Sub integrations/${UserIntegration}
+
+  # ============================================================================
+  # Routes — Health Check
+  # ============================================================================
+  RouteSysPing:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UnifiedApi
+      RouteKey: GET /sys/ping
+      Target: !Sub integrations/${BookingIntegration}
+
+  # ============================================================================
+  # SSM Parameter — so frontend can discover the URL
+  # ============================================================================
+  SsmApiUrl:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /rusuh/${Environment}/api/url
+      Type: String
+      Value: !Sub https://${UnifiedApi}.execute-api.${AWS::Region}.amazonaws.com
+      Description: Unified API Gateway URL — use this for frontend
+
+Outputs:
+  ApiUrl:
+    Description: |
+      Unified API URL — Frontend should call this single URL.
+      All routes are available here:
+        POST /bookings
+        GET  /bookings/{booking_id}
+        POST /nik/validate
+        POST /auth/magic-link
+        POST /auth/magic-link/resend
+        GET  /auth/verify
+        GET  /auth/verify-email
+        POST /auth/refresh
+        POST /auth/register
+        GET  /accounts/me/saved-niks
+        POST /accounts/me/saved-niks
+        DELETE /accounts/me/saved-niks/{id}
+        GET  /users/me/tickets
+        GET  /tickets/{ticket_id}/eticket
+        GET  /sys/ping
+    Value: !Sub https://${UnifiedApi}.execute-api.${AWS::Region}.amazonaws.com
+    Export:
+      Name: !Sub rusuh-${Environment}-api-url
+
+  ApiId:
+    Description: API Gateway ID
+    Value: !Ref UnifiedApi

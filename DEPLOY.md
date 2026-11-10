@@ -907,10 +907,120 @@ adding `VpcConfig`, the `DATABASE_URL` dynamic reference and the SSM-resolved
 subnet and security-group parameters that the other four templates already
 carry; copy them from `services/outbox-publisher/template.yaml`.
 
+---
+
+## SCP restriction and the workaround
+
+This AWS account (699475956139) is in an AWS Organization with a Service
+Control Policy (SCP) that blocks `cloudformation:CreateChangeSet` on the SAM
+Serverless transform (`arn:aws:cloudformation:*:aws:transform/Serverless-2016-10-31`).
+
+**What this means:** `sam deploy` fails, even with a valid role:
+
+```
+User: arn:aws:sts::699475956139:assumed-role/... is not authorized to perform:
+cloudformation:CreateChangeSet on resource: arn:aws:cloudformation:*:aws:transform/Serverless-2016-10-31
+with an explicit deny in a service control policy
+```
+
+The SCP (`p-6c01uovr`) is set at the organization level (462410419105) and
+cannot be modified without organization admin access. **There is no
+workaround** that involves SAM.
+
+### The solution: raw CloudFormation
+
+All service deployments use raw CloudFormation templates that do **not**
+include `Transform: AWS::Serverless-2016-10-31`. The conversion:
+
+| SAM resource | Raw CloudFormation equivalent |
+|---|---|
+| `AWS::Serverless::Function` | `AWS::Lambda::Function` + `AWS::IAM::Role` |
+| `Events.HttpApi` | `AWS::ApiGatewayV2::Api` + `Stage` + `Integration` + `Route` + `AWS::Lambda::Permission` |
+| `Events.SQS` | `AWS::Lambda::EventSourceMapping` |
+| `Events.Schedule` | `AWS::Events::Rule` + `AWS::Lambda::Permission` |
+| `CodeUri: .` | `Code.S3Bucket` + `Code.S3Key` parameters |
+
+### Template organization
+
+Each service now has two templates:
+
+| File | Purpose |
+|---|---|
+| `template.yaml` | Original SAM template — **reference only**, not deployed |
+| `template-cfn.yaml` | Raw CloudFormation — **used by the pipeline** |
+
+The raw templates require two additional parameters:
+
+```yaml
+LambdaS3Bucket:
+  Type: String
+  Description: S3 bucket containing the Lambda deployment package
+
+LambdaS3Key:
+  Type: String
+  Description: S3 key of the Lambda deployment package (bootstrap.zip)
+```
+
+### How the pipeline deploys
+
+The `.github/actions/cfn-deploy/action.yml` handles:
+
+1. Vendors Go dependencies (`go mod vendor`)
+2. Builds the Lambda binary (`GOOS=linux GOARCH=arm64 CGO_ENABLED=0`)
+3. Creates `bootstrap.zip`
+4. Reads the artifact bucket from SSM (`/rusuh/prod/sam/artifact-bucket`)
+5. Uploads `bootstrap.zip` to S3
+6. Runs `aws cloudformation deploy` with the raw template
+
+The foundation stack (`infra/foundation/template.yaml`) is **unaffected** — it
+never used the SAM transform and deploys normally.
+
+### Manual deployment
+
+```bash
+cd services/booking
+
+# Build
+GOWORK=off GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o bootstrap ./cmd/lambda/
+zip -j bootstrap.zip bootstrap
+
+# Upload
+BUCKET=$(aws ssm get-parameter --name /rusuh/prod/sam/artifact-bucket \
+  --query Parameter.Value --output text --region ap-southeast-1)
+aws s3 cp bootstrap.zip "s3://$BUCKET/booking/bootstrap.zip" --region ap-southeast-1
+
+# Deploy
+aws cloudformation deploy \
+  --template-file template-cfn.yaml \
+  --stack-name rusuh-prod-booking \
+  --capabilities CAPABILITY_IAM \
+  --region ap-southeast-1 \
+  --parameter-overrides \
+    Environment=prod \
+    LambdaS3Bucket="$BUCKET" \
+    LambdaS3Key=booking/bootstrap.zip
+```
+
+### If the SCP is removed
+
+If the organization removes the SCP restriction in the future:
+
+1. The raw templates (`template-cfn.yaml`) will continue to work — no change
+   required.
+2. To switch back to SAM: update `.github/actions/cfn-deploy/` to use
+   `sam build && sam deploy`, and point it at `template.yaml`.
+
+The raw CloudFormation approach is more verbose but has one advantage: it
+makes every resource explicit, with no transform magic. Both approaches
+produce identical AWS resources.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Cause |
 |---|---|
+| `is not authorized to perform: cloudformation:CreateChangeSet on resource: arn:aws:cloudformation:*:aws:transform/Serverless-2016-10-31` | SCP blocks SAM transform. Use `template-cfn.yaml` and `cfn-deploy` action instead. See *SCP restriction* below. |
 | `SSM parameter /rusuh/prod/... not found` | The foundation has not been deployed, or was deployed under a different environment name. `preflight` names the missing paths. |
 | A service picked up the wrong database | Deployed with a non-`prod` environment name while the templates still resolve `/rusuh/prod/...`. `preflight` refuses this, so it means the guard was bypassed. |
 | `Stack rusuh-prod-foundation does not exist` | First deploy: run `workflow_dispatch` with `deploy_foundation = true`. |
