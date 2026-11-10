@@ -87,6 +87,14 @@ jobs:
               - 'services/outbox-publisher/**'
               - 'pkg/**'
               - 'go.work'
+            sse_server:
+              - 'services/sse-server/**'
+              - 'pkg/**'
+              - 'go.work'
+            admission_ctl:
+              - 'services/admission-ctl/**'
+              - 'pkg/**'
+              - 'go.work'
             infra:
               - 'infra/foundation/**'
             api_gateway:
@@ -101,7 +109,7 @@ jobs:
 
           # force_deploy=all overrides path detection entirely
           if [ "$FORCE" = "all" ]; then
-            mods=("pkg" "services/booking" "services/queue" "services/user" "services/nik-verify" "services/notification" "services/outbox-publisher")
+            mods=("pkg" "services/booking" "services/queue" "services/user" "services/nik-verify" "services/notification" "services/outbox-publisher" "services/sse-server" "services/admission-ctl")
           else
             if [ "${{ steps.filter.outputs.pkg }}" = "true" ]; then mods+=("pkg"); fi
             if [ "${{ steps.filter.outputs.booking }}" = "true" ] || echo "$FORCE" | grep -q "booking"; then mods+=("services/booking"); fi
@@ -110,6 +118,8 @@ jobs:
             if [ "${{ steps.filter.outputs.nik_verify }}" = "true" ] || echo "$FORCE" | grep -q "nik-verify"; then mods+=("services/nik-verify"); fi
             if [ "${{ steps.filter.outputs.notification }}" = "true" ] || echo "$FORCE" | grep -q "notification"; then mods+=("services/notification"); fi
             if [ "${{ steps.filter.outputs.outbox_publisher }}" = "true" ] || echo "$FORCE" | grep -q "outbox-publisher"; then mods+=("services/outbox-publisher"); fi
+            if [ "${{ steps.filter.outputs.sse_server }}" = "true" ]; then mods+=("services/sse-server"); fi
+            if [ "${{ steps.filter.outputs.admission_ctl }}" = "true" ]; then mods+=("services/admission-ctl"); fi
           fi
 
           # Matrix must have at least one entry — fall back to pkg (fastest)
