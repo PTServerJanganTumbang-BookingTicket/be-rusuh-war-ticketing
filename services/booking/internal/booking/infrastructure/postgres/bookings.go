@@ -14,11 +14,19 @@ import (
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/booking/internal/booking/domain"
 )
 
+// db is the part of the pool the store uses. *pgxpool.Pool satisfies it; the unit tests (bookings_unit_test.go) fake it
+// to cover the Go side (scanning, status parsing, error handling) without a database. The SQL itself is proven by the
+// integration tests in bookings_test.go against real Postgres.
+type db interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	SendBatch(ctx context.Context, b *pgx.Batch) pgx.BatchResults
+}
+
 // Store implements outbound.Bookings and outbound.Catalog.
-type Store struct{ db *pgxpool.Pool }
+type Store struct{ db db }
 
 // NewStore wraps the writer pool.
-func NewStore(db *pgxpool.Pool) *Store { return &Store{db: db} }
+func NewStore(pool *pgxpool.Pool) *Store { return &Store{db: pool} }
 
 // ClaimSQL is the claim (GRANTED → SELECTING), returning the row. A compare-and-set: a reload or a second tab
 // matches nothing. Only before the deadline, on Aurora's clock (the same clock as the sweeps): a GRANTED booking whose
