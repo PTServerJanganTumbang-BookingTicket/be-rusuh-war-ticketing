@@ -63,7 +63,7 @@ func vaRequest() portout.ChargeRequest {
 		PaymentType:   entity.MethodBankTransfer,
 		Bank:          entity.BankBCA,
 		HeldAt:        heldAt(),
-		ExpiryMinutes: 10,
+		ExpirySeconds: 600,
 	}
 }
 
@@ -116,8 +116,26 @@ func TestCharge_AlwaysSendsCustomExpiry(t *testing.T) {
 
 	exp, ok := cap.body["custom_expiry"].(map[string]any)
 	require.True(t, ok, "custom_expiry missing from charge body")
-	assert.Equal(t, float64(10), exp["expiry_duration"])
-	assert.Equal(t, "minute", exp["unit"])
+	// Seconds, not minutes. Midtrans accepts second/minute/hour/day, and
+	// minutes would truncate a window that is not a whole number of them.
+	assert.Equal(t, float64(600), exp["expiry_duration"])
+	assert.Equal(t, "second", exp["unit"])
+}
+
+// A window that is not a whole number of minutes must reach the gateway
+// intact. In minutes this would have been sent as 7, and Midtrans would have
+// refused payment with thirty seconds still on the customer's clock.
+func TestCharge_SubMinuteWindowIsSentExactly(t *testing.T) {
+	c, cap := newStub(t, 201, vaResponse)
+
+	req := vaRequest()
+	req.ExpirySeconds = 450 // 7m30s
+	_, err := c.Charge(context.Background(), req)
+	require.NoError(t, err)
+
+	exp := cap.body["custom_expiry"].(map[string]any)
+	assert.Equal(t, float64(450), exp["expiry_duration"])
+	assert.Equal(t, "second", exp["unit"])
 }
 
 // expiry_time is the only evidence custom_expiry was honoured at all. Parsed in
@@ -257,7 +275,7 @@ func TestCharge_GoPay_OmitsBankTransfer(t *testing.T) {
 
 	res, err := c.Charge(context.Background(), portout.ChargeRequest{
 		OrderID: "RB-00912:1", GrossAmount: 3000000,
-		PaymentType: entity.MethodGoPay, HeldAt: heldAt(), ExpiryMinutes: 10,
+		PaymentType: entity.MethodGoPay, HeldAt: heldAt(), ExpirySeconds: 600,
 	})
 	require.NoError(t, err)
 

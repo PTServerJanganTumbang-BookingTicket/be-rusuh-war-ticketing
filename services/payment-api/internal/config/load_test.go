@@ -143,35 +143,30 @@ func TestLoad_RetryFloorMustBeBelowTheWindow(t *testing.T) {
 	}
 }
 
-// custom_expiry.expiry_duration is expressed in whole minutes, so a window
-// that is not a whole number of minutes cannot be sent to the gateway: it
-// truncates, and Midtrans then stops accepting payment BEFORE the deadline the
-// customer can still see counting down. Refused at boot rather than rounded,
-// because both roundings are wrong.
-func TestLoad_PaymentTTLMustBeWholeMinutes(t *testing.T) {
-	for _, secs := range []string{"450", "90", "61", "599"} {
-		t.Run(secs, func(t *testing.T) {
+// Any window the template allows must load, whole minutes or not. custom_expiry
+// is sent with unit "second", so there is no reason to restrict the value -
+// and an earlier version of this file did restrict it, on the mistaken belief
+// that expiry_duration could only be expressed in minutes. Midtrans accepts
+// second, minute, hour or day.
+func TestLoad_SubMinuteWindowsAreAccepted(t *testing.T) {
+	for _, tc := range []struct {
+		env  string
+		want time.Duration
+	}{
+		{"61", 61 * time.Second},
+		{"90", 90 * time.Second},
+		{"450", 450 * time.Second},
+		{"599", 599 * time.Second},
+		{"3599", 3599 * time.Second},
+	} {
+		t.Run(tc.env, func(t *testing.T) {
 			setRequired(t)
-			t.Setenv("PAYMENT_TTL_SECONDS", secs)
-
-			_, err := Load()
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), "whole number of minutes")
-		})
-	}
-}
-
-func TestLoad_WholeMinuteTTLsAreAccepted(t *testing.T) {
-	for _, secs := range []string{"60", "600", "900", "3600"} {
-		t.Run(secs, func(t *testing.T) {
-			setRequired(t)
-			t.Setenv("PAYMENT_TTL_SECONDS", secs)
-			// 60s would otherwise trip the retry floor, which defaults to 60s
-			// and must stay strictly below the window.
+			t.Setenv("PAYMENT_TTL_SECONDS", tc.env)
 			t.Setenv("MIN_RETRY_REMAINING_SECONDS", "30")
 
-			_, err := Load()
+			cfg, err := Load()
 			require.NoError(t, err)
+			assert.Equal(t, tc.want, cfg.Payment.TTL)
 		})
 	}
 }

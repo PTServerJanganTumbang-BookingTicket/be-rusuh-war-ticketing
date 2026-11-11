@@ -203,7 +203,8 @@ func TestInitiate_ChargeAnchorsExpiryOnHeldAt(t *testing.T) {
 
 	assert.Equal(t, *b.HeldAt, h.gw.lastCharge.HeldAt)
 	assert.NotEqual(t, fixedNow, h.gw.lastCharge.HeldAt)
-	assert.Equal(t, 10, h.gw.lastCharge.ExpiryMinutes)
+	// Seconds: the window is sent to the gateway at full resolution.
+	assert.Equal(t, 600, h.gw.lastCharge.ExpirySeconds)
 }
 
 // A booking with no held_at cannot anchor on nothing: the request time is the

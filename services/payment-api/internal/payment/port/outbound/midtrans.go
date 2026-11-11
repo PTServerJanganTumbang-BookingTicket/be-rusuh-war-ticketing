@@ -20,10 +20,16 @@ type ChargeRequest struct {
 	// otherwise every method switch grants a fresh 10 minutes and BR-05 is
 	// never enforced.
 	HeldAt time.Time
-	// ExpiryMinutes is custom_expiry.expiry_duration. Without custom_expiry
-	// Midtrans defaults a VA to 24 HOURS, so it stays payable all day after
-	// the sweep has released the seats and resold them.
-	ExpiryMinutes int
+	// ExpirySeconds is custom_expiry.expiry_duration, sent with unit "second".
+	// Without custom_expiry Midtrans defaults a VA to 24 HOURS, so it stays
+	// payable all day after the sweep released the seats and resold them.
+	//
+	// Seconds rather than minutes because Midtrans accepts second, minute,
+	// hour or day, and the payment window is configurable to the second:
+	// expressed in minutes, a 7m30s window would truncate to 7 and the
+	// gateway would stop accepting payment while the customer still saw
+	// thirty seconds on the clock.
+	ExpirySeconds int
 }
 
 // ChargeResult is the subset of the charge response the client needs.

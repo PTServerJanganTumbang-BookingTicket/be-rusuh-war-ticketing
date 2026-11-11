@@ -89,7 +89,7 @@ func (u *PaymentUsecase) Initiate(ctx context.Context, bookingID, grantToken str
 			// every method switch a fresh 10 minutes and BR-05 would never be
 			// enforced.
 			HeldAt:        heldAt,
-			ExpiryMinutes: int(u.cfg.PaymentTTL / time.Minute),
+			ExpirySeconds: int(u.cfg.PaymentTTL / time.Second),
 		})
 		if err != nil {
 			// A timeout is NOT a failed charge: the instrument may exist. Do

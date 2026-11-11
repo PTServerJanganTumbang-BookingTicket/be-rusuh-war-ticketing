@@ -112,10 +112,11 @@ type chargeResponse struct {
 // gatewayExpiryTolerance is how far Midtrans's expiry_time may sit from the
 // window we asked for before it is worth a log line.
 //
-// Not zero: expiry_duration is expressed in whole MINUTES, so a deadline that
-// is not on a minute boundary is rounded by design, and Midtrans may round the
-// stored value on its own. A minute of slack keeps the warning for the case it
-// exists to catch - custom_expiry clamped to hours, or ignored entirely.
+// Not zero: the window is sent to the second, but Midtrans may still round the
+// stored value, and a second or two of clock skew between us and the gateway
+// proves nothing. A minute of slack keeps the warning for the case it exists
+// to catch - custom_expiry clamped to hours, or ignored entirely and reverted
+// to the 24-hour default.
 const gatewayExpiryTolerance = time.Minute
 
 // Charge creates the payment instrument.
@@ -128,9 +129,13 @@ func (c *Client) Charge(ctx context.Context, req portout.ChargeRequest) (portout
 			// a booking held at 10:15 must still expire at 10:25; anchoring on
 			// now() would grant a fresh window on every method switch and the
 			// payment TTL would never actually elapse.
-			OrderTime:      req.HeldAt.In(wib).Format("2006-01-02 15:04:05 -0700"),
-			ExpiryDuration: req.ExpiryMinutes,
-			Unit:           "minute",
+			OrderTime: req.HeldAt.In(wib).Format("2006-01-02 15:04:05 -0700"),
+			// Seconds, which Midtrans accepts alongside minute, hour and day.
+			// The alternative truncates: a 7m30s window would be sent as 7
+			// minutes and the gateway would refuse payment with thirty seconds
+			// still on the customer's clock.
+			ExpiryDuration: req.ExpirySeconds,
+			Unit:           "second",
 		},
 	}
 	if req.PaymentType == entity.MethodBankTransfer {
@@ -165,7 +170,7 @@ func (c *Client) Charge(ctx context.Context, req portout.ChargeRequest) (portout
 	if res.ExpiryTime != "" {
 		if got, perr := time.ParseInLocation(midtransTimeLayout, res.ExpiryTime, wib); perr == nil {
 			out.GatewayExpiry = &got
-			want := req.HeldAt.Add(time.Duration(req.ExpiryMinutes) * time.Minute)
+			want := req.HeldAt.Add(time.Duration(req.ExpirySeconds) * time.Second)
 			if drift := got.Sub(want); drift > gatewayExpiryTolerance || drift < -gatewayExpiryTolerance {
 				slog.Warn("midtrans expiry_time does not match the window we requested",
 					slog.String("order_id", req.OrderID),
