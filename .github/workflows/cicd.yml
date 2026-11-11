@@ -26,7 +26,7 @@ on:
       force_deploy:
         description: >
           Force deploy specific services regardless of changed files.
-          Comma-separated: booking,queue,nik-verify,user,notification,outbox-publisher,all
+          Comma-separated: booking,queue,events,nik-verify,user,notification,outbox-publisher,all
           Use "all" to redeploy everything. Useful for reruns.
         type: string
         default: ""
@@ -36,6 +36,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  debug-oidc:
+    name: Debug OIDC claim
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Print OIDC subject claim
+        run: |
+          TOKEN=$(curl -sSL \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" \
+            | jq -r '.value')
+          echo "$TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null \
+            | jq '{sub,iss,ref,environment,job_workflow_ref}' \
+            || echo "$TOKEN" | cut -d. -f2 | base64 --decode | python3 -m json.tool
+
   detect-changes:
     name: Detect Changed Modules
     runs-on: ubuntu-latest
@@ -46,6 +63,7 @@ jobs:
       modules: ${{ steps.set.outputs.modules }}
       booking: ${{ steps.filter.outputs.booking }}
       queue: ${{ steps.filter.outputs.queue }}
+      events: ${{ steps.filter.outputs.events }}
       user: ${{ steps.filter.outputs.user }}
       nik_verify: ${{ steps.filter.outputs.nik_verify }}
       notification: ${{ steps.filter.outputs.notification }}
@@ -69,6 +87,10 @@ jobs:
               - 'go.work'
             queue:
               - 'services/queue/**'
+              - 'pkg/**'
+              - 'go.work'
+            events:
+              - 'services/events/**'
               - 'pkg/**'
               - 'go.work'
             user:
@@ -109,11 +131,12 @@ jobs:
 
           # force_deploy=all overrides path detection entirely
           if [ "$FORCE" = "all" ]; then
-            mods=("pkg" "services/booking" "services/queue" "services/user" "services/nik-verify" "services/notification" "services/outbox-publisher" "services/sse-server" "services/admission-ctl")
+            mods=("pkg" "services/booking" "services/queue" "services/events" "services/user" "services/nik-verify" "services/notification" "services/outbox-publisher" "services/sse-server" "services/admission-ctl")
           else
             if [ "${{ steps.filter.outputs.pkg }}" = "true" ]; then mods+=("pkg"); fi
             if [ "${{ steps.filter.outputs.booking }}" = "true" ] || echo "$FORCE" | grep -q "booking"; then mods+=("services/booking"); fi
             if [ "${{ steps.filter.outputs.queue }}" = "true" ] || echo "$FORCE" | grep -q "queue"; then mods+=("services/queue"); fi
+            if [ "${{ steps.filter.outputs.events }}" = "true" ] || echo "$FORCE" | grep -q "events"; then mods+=("services/events"); fi
             if [ "${{ steps.filter.outputs.user }}" = "true" ] || echo "$FORCE" | grep -q "user"; then mods+=("services/user"); fi
             if [ "${{ steps.filter.outputs.nik_verify }}" = "true" ] || echo "$FORCE" | grep -q "nik-verify"; then mods+=("services/nik-verify"); fi
             if [ "${{ steps.filter.outputs.notification }}" = "true" ] || echo "$FORCE" | grep -q "notification"; then mods+=("services/notification"); fi
@@ -142,6 +165,7 @@ jobs:
       environment: ${{ steps.env.outputs.environment }}
       booking: ${{ steps.env.outputs.booking }}
       queue: ${{ steps.env.outputs.queue }}
+      events: ${{ steps.env.outputs.events }}
       user: ${{ steps.env.outputs.user }}
       nik_verify: ${{ steps.env.outputs.nik_verify }}
       notification: ${{ steps.env.outputs.notification }}
@@ -154,6 +178,7 @@ jobs:
         env:
           B: ${{ needs.detect-changes.outputs.booking }}
           Q: ${{ needs.detect-changes.outputs.queue }}
+          V: ${{ needs.detect-changes.outputs.events }}
           U: ${{ needs.detect-changes.outputs.user }}
           N: ${{ needs.detect-changes.outputs.nik_verify }}
           T: ${{ needs.detect-changes.outputs.notification }}
@@ -175,6 +200,7 @@ jobs:
 
           b=$(is_changed "$B" "booking")
           q=$(is_changed "$Q" "queue")
+          v=$(is_changed "$V" "events")
           u=$(is_changed "$U" "user")
           n=$(is_changed "$N" "nik-verify")
           t=$(is_changed "$T" "notification")
@@ -182,13 +208,14 @@ jobs:
 
           echo "booking=$b"           >> "$GITHUB_OUTPUT"
           echo "queue=$q"             >> "$GITHUB_OUTPUT"
+          echo "events=$v"            >> "$GITHUB_OUTPUT"
           echo "user=$u"              >> "$GITHUB_OUTPUT"
           echo "nik_verify=$n"        >> "$GITHUB_OUTPUT"
           echo "notification=$t"      >> "$GITHUB_OUTPUT"
           echo "outbox_publisher=$o"  >> "$GITHUB_OUTPUT"
 
           any=false
-          for f in "$b" "$q" "$u" "$n" "$t" "$o"; do
+          for f in "$b" "$q" "$v" "$u" "$n" "$t" "$o"; do
             [ "$f" = "true" ] && any=true
           done
           echo "any_service_changed=$any" >> "$GITHUB_OUTPUT"
@@ -196,6 +223,7 @@ jobs:
           echo "environment        : $environment"
           echo "booking            : $b"
           echo "queue              : $q"
+          echo "events             : $v"
           echo "user               : $u"
           echo "nik_verify         : $n"
           echo "notification       : $t"
@@ -466,6 +494,8 @@ jobs:
           NEEDS_NOTIFICATION: ${{ needs.resolve-env.outputs.notification }}
           NEEDS_QUEUE: ${{ needs.resolve-env.outputs.queue }}
           NEEDS_BOOKING: ${{ needs.resolve-env.outputs.booking }}
+          NEEDS_EVENTS: ${{ needs.resolve-env.outputs.events }}
+          TURNSTILE_SITE_KEY: ${{ secrets.TURNSTILE_SITE_KEY }}
           DEVICE_PEPPER_SECRET_ARN: ${{ vars.DEVICE_PEPPER_SECRET_ARN }}
           TURNSTILE_SECRET_ARN: ${{ vars.TURNSTILE_SECRET_ARN }}
           ETICKET_SIGNING_KEY_SECRET_ARN: ${{ vars.ETICKET_SIGNING_KEY_SECRET_ARN }}
@@ -526,6 +556,11 @@ jobs:
           fi
           if [ "$NEEDS_BOOKING" = "true" ]; then
             check_arn ETICKET_SIGNING_KEY_SECRET_ARN "$ETICKET_SIGNING_KEY_SECRET_ARN"
+          fi
+
+          if [ "$NEEDS_EVENTS" = "true" ] && [ -z "$TURNSTILE_SITE_KEY" ]; then
+            echo "::error::The GitHub secret TURNSTILE_SITE_KEY is empty and events is being deployed (public Turnstile site key, returned as captcha.site_key)."
+            fail=1
           fi
 
           [ "$fail" -eq 0 ] || exit 1
@@ -633,6 +668,34 @@ jobs:
             TurnstileSecretArn=${{ vars.TURNSTILE_SECRET_ARN }}
             CookieDomain=${{ vars.COOKIE_DOMAIN }}
             SseBaseUrl=${{ vars.SSE_BASE_URL }}
+            CaptchaProvider=${{ vars.CAPTCHA_PROVIDER || 'mock' }}
+            QueueCapacity=${{ vars.QUEUE_CAPACITY || '300000' }}
+            SaleWindowSeconds=${{ vars.SALE_WINDOW_SECONDS || '21600' }}
+
+  deploy-events:
+    name: Deploy events
+    needs: [resolve-env, preflight]
+    if: always() && needs.preflight.result == 'success' && needs.resolve-env.outputs.events == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-env.outputs.environment }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/cfn-deploy
+        with:
+          service: events
+          stack-name: rusuh-${{ needs.resolve-env.outputs.environment }}-events
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          environment: ${{ needs.resolve-env.outputs.environment }}
+          parameter-overrides: >-
+            Environment=${{ needs.resolve-env.outputs.environment }}
+            EnableDirectApiAccess=${{ vars.ENABLE_DIRECT_API_ACCESS || 'false' }}
+            DeployRevision=${{ github.sha }}
+            TurnstileSiteKey=${{ secrets.TURNSTILE_SITE_KEY }}
+            QueueCapacity=${{ vars.QUEUE_CAPACITY || '300000' }}
 
   deploy-nik-verify:
     name: Deploy nik-verify
@@ -742,16 +805,17 @@ jobs:
   # ══════════════════════════════════════════════════════════════════════════
   #  UNIFIED API GATEWAY — Single entry point for frontend
   #
-  #  Deploys after all HTTP services (booking, queue, nik-verify, user) are up.
+  #  Deploys after all HTTP services (booking, queue, events, nik-verify, user) are up.
   #  Creates routes that proxy to the individual Lambda functions.
   # ══════════════════════════════════════════════════════════════════════════
   deploy-api-gateway:
     name: Deploy unified API gateway
-    needs: [resolve-env, deploy-booking, deploy-queue, deploy-nik-verify, deploy-user]
+    needs: [resolve-env, deploy-booking, deploy-queue, deploy-events, deploy-nik-verify, deploy-user]
     if: >-
       always() &&
       needs.deploy-booking.result != 'failure' &&
       needs.deploy-queue.result != 'failure' &&
+      needs.deploy-events.result != 'failure' &&
       needs.deploy-nik-verify.result != 'failure' &&
       needs.deploy-user.result != 'failure' &&
       (needs.resolve-env.outputs.any_service_changed == 'true' ||
@@ -787,16 +851,18 @@ jobs:
   # ══════════════════════════════════════════════════════════════════════════
   smoke:
     name: Smoke test
-    needs: [resolve-env, deploy-booking, deploy-queue, deploy-nik-verify, deploy-user, deploy-api-gateway]
+    needs: [resolve-env, deploy-booking, deploy-queue, deploy-events, deploy-nik-verify, deploy-user, deploy-api-gateway]
     if: >-
       always() &&
       needs.deploy-booking.result != 'failure' &&
       needs.deploy-queue.result != 'failure' &&
+      needs.deploy-events.result != 'failure' &&
       needs.deploy-nik-verify.result != 'failure' &&
       needs.deploy-user.result != 'failure' &&
       needs.deploy-api-gateway.result != 'failure' &&
       needs.resolve-env.outputs.any_service_changed == 'true'
     runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-env.outputs.environment }}
     permissions:
       id-token: write
       contents: read
@@ -835,7 +901,7 @@ jobs:
             echo ""
             echo "Testing direct service endpoints (ENABLE_DIRECT_API_ACCESS=true)..."
             fail=0
-            for svc in booking queue nik-verify user; do
+            for svc in booking queue events nik-verify user; do
               url=$(aws cloudformation describe-stacks --stack-name "rusuh-${ENV}-${svc}" \
                 --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue" \
                 --output text 2>/dev/null || true)

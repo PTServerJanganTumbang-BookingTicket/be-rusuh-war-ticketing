@@ -112,7 +112,6 @@ const (
 	CodeCaptchaFailed    = "CAPTCHA_FAILED"
 	CodeSaleNotOpen      = "SALE_NOT_OPEN"
 	CodeSaleClosed       = "SALE_CLOSED"
-	CodeFullBooked       = "FULL_BOOKED"
 	CodeQueueFull        = "QUEUE_FULL"
 	CodeQueueNotReady    = "QUEUE_NOT_READY"
 	CodeUnauthorized     = "UNAUTHORIZED"

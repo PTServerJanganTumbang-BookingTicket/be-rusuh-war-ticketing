@@ -7,6 +7,7 @@ Description: >
   
   Routes:
     /bookings/*  → booking service
+    /events, /events/{event_id} → events service
     /events/{event_id}/tickets → booking service
     /events/{event_id}/queue/* → queue service (join, me)
     /nik/*       → nik-verify service
@@ -88,6 +89,22 @@ Resources:
       IntegrationUri: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:rusuh-${Environment}-nik-verify
       PayloadFormatVersion: "2.0"
 
+  EventsIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref UnifiedApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:rusuh-${Environment}-events
+      PayloadFormatVersion: "2.0"
+
+  NikVerifyIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref UnifiedApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:rusuh-${Environment}-nik-verify
+      PayloadFormatVersion: "2.0"
+
   QueueIntegration:
     Type: AWS::ApiGatewayV2::Integration
     Properties:
@@ -111,6 +128,14 @@ Resources:
     Type: AWS::Lambda::Permission
     Properties:
       FunctionName: !Sub rusuh-${Environment}-booking
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${UnifiedApi}/*/*
+
+  EventsPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Sub rusuh-${Environment}-events
       Action: lambda:InvokeFunction
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${UnifiedApi}/*/*
@@ -277,6 +302,24 @@ Resources:
       Target: !Sub integrations/${UserIntegration}
 
   # ============================================================================
+  # Routes — Events Service (/events, /events/{event_id})
+  # Public and cacheable: the handler sets Cache-Control. CloudFront in front of this API honours it.
+  # ============================================================================
+  RouteEventsList:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UnifiedApi
+      RouteKey: GET /events
+      Target: !Sub integrations/${EventsIntegration}
+
+  RouteEventsGet:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UnifiedApi
+      RouteKey: GET /events/{event_id}
+      Target: !Sub integrations/${EventsIntegration}
+
+  # ============================================================================
   # Routes — Health Check
   # ============================================================================
   RouteSysPing:
@@ -302,6 +345,8 @@ Outputs:
     Description: |
       Unified API URL — Frontend should call this single URL.
       All routes are available here:
+        GET  /events
+        GET  /events/{event_id}
         GET  /events/{event_id}/tickets
         POST /events/{event_id}/queue/join
         GET  /events/{event_id}/queue/me

@@ -66,6 +66,26 @@ Parameters:
     Default: https://events.my-rusuh.my.id
     Description: Base URL of the SSE stream; join returns an absolute sse_url built from it
 
+  QueueCapacity:
+    Type: String
+    Default: "300000"
+    Description: Maximum number of positions in the queue per sale event.
+
+  SaleWindowSeconds:
+    Type: String
+    Default: "21600"
+    Description: >
+      How long the sale stays open in seconds (gate open → close).
+      Shared across queue and user services — both must use the same value.
+
+  CaptchaProvider:
+    Type: String
+    Default: mock
+    AllowedValues: [turnstile, mock]
+    Description: >
+      Captcha provider. Use "mock" for POC/testing (no Turnstile widget needed).
+      Use "turnstile" for production (requires TURNSTILE_SECRET_ARN to be set).
+
 Conditions:
   CreateDirectApi: !Equals [!Ref EnableDirectApiAccess, "true"]
 
@@ -133,10 +153,11 @@ Resources:
           REDIS_CLUSTER: "false"
           COOKIE_DOMAIN: !Ref CookieDomain
           SSE_BASE_URL: !Ref SseBaseUrl
-          QUEUE_CAPACITY: "300000"
-          SALE_WINDOW_SECONDS: "21600"
-          CAPTCHA_PROVIDER: turnstile
+          QUEUE_CAPACITY: !Ref QueueCapacity
+          SALE_WINDOW_SECONDS: !Ref SaleWindowSeconds
+          CAPTCHA_PROVIDER: !Ref CaptchaProvider
           TURNSTILE_TIMEOUT_MS: "1000"
+          JOIN_RATE_LIMITS_ENABLED: "true"
           DATABASE_MAX_CONNS: "2"
           DATABASE_URL: !Sub '{{resolve:secretsmanager:rusuh-${Environment}/database-url:SecretString:url}}'
           JWT_SECRET: !Sub '{{resolve:secretsmanager:rusuh-${Environment}/jwt-signing:SecretString}}'

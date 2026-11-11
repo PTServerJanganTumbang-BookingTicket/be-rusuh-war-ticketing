@@ -161,14 +161,10 @@ func (j *Join) Join(ctx context.Context, in JoinInput) (JoinResult, error) {
 		return res, nil
 	}
 
-	if snap.State == domain.StateFullBooked {
-		return JoinResult{}, apperror.ErrConflict("Tiket sedang habis").WithCode(domain.CodeFullBooked).
-			WithData(map[string]any{"queue_state": string(domain.StateFullBooked), "full_booked_at": snap.FullBookedAt})
-	}
 	if snap.Depth() >= j.cfg.Capacity {
 		return JoinResult{}, apperror.New(http.StatusServiceUnavailable, "50300",
 			"Antrian sedang penuh, silakan coba beberapa saat lagi").WithCode(domain.CodeQueueFull).
-			WithData(map[string]any{"queue_state": "FULL", "queue_capacity": j.cfg.Capacity})
+			WithData(map[string]any{"queue_state": "FULL_QUEUE", "queue_capacity": j.cfg.Capacity})
 	}
 
 	return j.issue(ctx, ev, snap, accountID, deviceHash, stale)
@@ -235,7 +231,7 @@ func saleGate(s domain.EventSnapshot) error {
 		return apperror.New(http.StatusServiceUnavailable, "50300", "Antrian belum siap").WithCode(domain.CodeQueueNotReady)
 	case s.State == domain.StateScheduled:
 		return apperror.ErrConflict("Penjualan belum dibuka").WithCode(domain.CodeSaleNotOpen).
-			WithData(map[string]any{"queue_state": "NOT_OPEN", "sale_starts_at": s.SaleStartsAt})
+			WithData(map[string]any{"queue_state": "SCHEDULED", "sale_starts_at": s.SaleStartsAt})
 	case s.State == domain.StateClosed:
 		return apperror.New(http.StatusGone, "41000", "Tiket sudah habis").WithCode(domain.CodeSaleClosed).
 			WithData(map[string]any{"queue_state": string(domain.StateClosed)})

@@ -23,7 +23,7 @@ source below, the source wins and the plan gets fixed.
 | [`01-authentication/`](01-authentication/README.md) | Authentication | `services/user` | **documented** — branch `feature/user-notif-nikverify-outboxpublisher` |
 | [`02-accounts/`](02-accounts/README.md) | Accounts | `services/user` | **documented** — branch |
 | `02-accounts/tickets/` | Accounts › Tickets (`GET /users/me/tickets`, `GET /tickets/{ticket_id}/eticket`) | `services/user` | not started |
-| `03-events/` | Events | `services/events` | not started |
+| [`03-events/`](03-events/README.md) | Events | `services/events` | **built** (both endpoints, templates, CI job, gateway routes; CloudFront open) |
 | [`04-queue/`](04-queue/README.md) | Queue | `services/queue`, `services/sse-server`, `services/admission-ctl` | **planning** |
 | [`05-booking/`](05-booking/README.md) | Booking | `services/booking` (+ sweeps in `services/admission-ctl`) | **in progress**: both GET endpoints built; `POST /bookings` planned |
 | [`06-nik/`](06-nik/README.md) | NIK | `services/nik-verify` | **documented** — branch |
