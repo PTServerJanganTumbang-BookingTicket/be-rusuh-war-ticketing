@@ -93,9 +93,14 @@ runs:
         BUCKET: ${{ steps.bucket.outputs.bucket }}
         SERVICE: ${{ inputs.service }}
         REGION: ${{ inputs.aws-region }}
+        # Include the commit SHA so each deploy gets a unique S3 key.
+        # CloudFormation only triggers a Lambda code update when S3Key changes;
+        # overwriting the same key is invisible to CloudFormation and leaves the
+        # old binary running even though DEPLOY_REVISION env var changes.
+        REVISION: ${{ github.sha }}
       run: |
         set -euo pipefail
-        S3_KEY="${SERVICE}/bootstrap.zip"
+        S3_KEY="${SERVICE}/${REVISION}/bootstrap.zip"
         aws s3 cp bootstrap.zip "s3://${BUCKET}/${S3_KEY}" --region "$REGION"
         echo "Uploaded to s3://${BUCKET}/${S3_KEY}"
         echo "s3_key=${S3_KEY}" >> "$GITHUB_ENV"
