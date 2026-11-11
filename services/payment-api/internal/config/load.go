@@ -35,11 +35,12 @@ func Load() (Config, error) {
 		Midtrans: Midtrans{
 			// Sandbox by default. A deployment that forgot to set this should
 			// charge nobody rather than charge everybody.
-			BaseURL:          envutil.Env("MIDTRANS_BASE_URL", "https://api.sandbox.midtrans.com"),
-			ServerKey:        os.Getenv("MIDTRANS_SERVER_KEY"),
-			Timeout:          envutil.EnvDuration("MIDTRANS_TIMEOUT_MS", 10*time.Second),
-			BreakerThreshold: envutil.EnvInt("PAYMENT_BREAKER_FAILURE_THRESHOLD", 5),
-			BreakerOpenFor:   envutil.EnvDuration("PAYMENT_BREAKER_OPEN_SECONDS", 30*time.Second),
+			BaseURL:            envutil.Env("MIDTRANS_BASE_URL", "https://api.sandbox.midtrans.com"),
+			ServerKey:          os.Getenv("MIDTRANS_SERVER_KEY"),
+			SignatureSecretKey: os.Getenv("MIDTRANS_SIGNATURE_SECRET_KEY"),
+			Timeout:            envutil.EnvDuration("MIDTRANS_TIMEOUT_MS", 10*time.Second),
+			BreakerThreshold:   envutil.EnvInt("PAYMENT_BREAKER_FAILURE_THRESHOLD", 5),
+			BreakerOpenFor:     envutil.EnvDuration("PAYMENT_BREAKER_OPEN_SECONDS", 30*time.Second),
 		},
 		Payment: Payment{
 			TTL:                 envutil.EnvDuration("PAYMENT_TTL_SECONDS", 600*time.Second),
@@ -66,10 +67,15 @@ func (c Config) validate() error {
 		return fmt.Errorf("DATABASE_URL is required")
 	}
 	if c.Midtrans.ServerKey == "" {
-		// Signs charges and verifies every notification signature. Missing, it
-		// would reject all valid callbacks and confirm no booking ever - while
-		// the service still reported healthy.
-		return fmt.Errorf("MIDTRANS_SERVER_KEY is required and has no default: without it every notification fails signature verification")
+		// Authenticates the charge. Missing, no instrument is ever issued.
+		return fmt.Errorf("MIDTRANS_SERVER_KEY is required and has no default: without it no charge can be authenticated")
+	}
+	if c.Midtrans.SignatureSecretKey == "" {
+		// Verifies every notification. Missing, the service starts, reports
+		// healthy, issues virtual accounts, takes the customer's money - and
+		// rejects every callback as a forgery, confirming no booking ever.
+		// The symptom is indistinguishable from Midtrans never calling.
+		return fmt.Errorf("MIDTRANS_SIGNATURE_SECRET_KEY is required and has no default: without it every notification fails signature verification")
 	}
 	if c.App.JWTSecret == "" {
 		// Without it every logged-in customer gets 503 at the payment step,

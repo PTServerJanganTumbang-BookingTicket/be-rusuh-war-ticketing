@@ -14,6 +14,9 @@ func setRequired(t *testing.T) {
 	t.Helper()
 	t.Setenv("DATABASE_URL", "postgres://u:p@localhost:5432/db")
 	t.Setenv("MIDTRANS_SERVER_KEY", "SB-Mid-server-test")
+	// A DIFFERENT value from the server key on purpose: the two are separate
+	// credentials, and identical fixtures would hide a slot mix-up.
+	t.Setenv("MIDTRANS_SIGNATURE_SECRET_KEY", "SB-Mid-signature-test")
 	t.Setenv("DEVICE_PEPPER", "pepper")
 	t.Setenv("JWT_SECRET", "jwt-secret")
 }
@@ -35,6 +38,9 @@ func TestLoad_Defaults(t *testing.T) {
 	assert.Equal(t, "https://api.sandbox.midtrans.com", cfg.Midtrans.BaseURL)
 	assert.Equal(t, 10*time.Second, cfg.Midtrans.Timeout)
 	assert.Equal(t, 5, cfg.Midtrans.BreakerThreshold)
+	// Loaded into separate fields, not aliased onto one another.
+	assert.Equal(t, "SB-Mid-server-test", cfg.Midtrans.ServerKey)
+	assert.Equal(t, "SB-Mid-signature-test", cfg.Midtrans.SignatureSecretKey)
 	assert.Equal(t, 30*time.Second, cfg.Midtrans.BreakerOpenFor)
 
 	assert.Equal(t, 10*time.Minute, cfg.Payment.TTL)
@@ -44,9 +50,8 @@ func TestLoad_Defaults(t *testing.T) {
 	assert.NotEmpty(t, cfg.Payment.IconBase)
 }
 
-// Without the server key the service would start, report healthy, and reject
-// every notification Midtrans sent - money taken, no ticket issued. Refusing
-// to boot is the only safe behaviour.
+// Without the server key no charge can be authenticated, so no customer ever
+// receives an instrument to pay.
 func TestLoad_MidtransServerKeyRequired(t *testing.T) {
 	setRequired(t)
 	t.Setenv("MIDTRANS_SERVER_KEY", "")
@@ -54,6 +59,33 @@ func TestLoad_MidtransServerKeyRequired(t *testing.T) {
 	_, err := Load()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "MIDTRANS_SERVER_KEY")
+}
+
+// Without the signature secret key the service starts, reports healthy, issues
+// virtual accounts and takes the money - then rejects every callback as a
+// forgery, confirming no booking and letting the sweep resell the seats. The
+// symptom is indistinguishable from Midtrans never calling at all, so refusing
+// to boot is the only safe behaviour.
+func TestLoad_MidtransSignatureSecretKeyRequired(t *testing.T) {
+	setRequired(t)
+	t.Setenv("MIDTRANS_SIGNATURE_SECRET_KEY", "")
+
+	_, err := Load()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "MIDTRANS_SIGNATURE_SECRET_KEY")
+}
+
+// The server key must NOT stand in for a missing signature secret key. Midtrans
+// split the two on 28 October 2026, and for an older merchant both dashboard
+// values start out identical - so a fallback would look correct in every test
+// and in sandbox, then fail silently in production the day either key is
+// regenerated. Server keys now carry expiry dates, so that day comes.
+func TestLoad_SignatureSecretKeyDoesNotFallBackToServerKey(t *testing.T) {
+	setRequired(t)
+	t.Setenv("MIDTRANS_SIGNATURE_SECRET_KEY", "")
+
+	_, err := Load()
+	require.Error(t, err, "an empty signature secret key must not be filled in from the server key")
 }
 
 // Without the pepper every guest grant fails its device check, while the

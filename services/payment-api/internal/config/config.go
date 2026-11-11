@@ -64,10 +64,26 @@ type Midtrans struct {
 	// a misconfigured deployment should charge nobody, not charge everybody.
 	BaseURL string
 
-	// ServerKey authenticates charges AND verifies notification signatures.
-	// Required, no default - without it every notification fails verification
-	// and no payment is ever confirmed.
+	// ServerKey authenticates charges: HTTP Basic on POST /v2/charge. It does
+	// NOT verify notification signatures - see SignatureSecretKey.
+	// Required, no default.
 	ServerKey string
+
+	// SignatureSecretKey verifies the signature_key on notifications:
+	//
+	//	SHA512(order_id + status_code + gross_amount + SignatureSecretKey)
+	//
+	// A SEPARATE credential from ServerKey since Midtrans split the two on
+	// 28 October 2026. For a merchant that integrated before that date the
+	// Signature Secret Key STARTS OUT equal to the default Server Key, so one
+	// value in both slots appears to work - until either is regenerated, and
+	// Server Keys now carry their own expiry dates. When they diverge the
+	// charge still succeeds and the customer still pays, while every
+	// notification is rejected as a forgery: money taken, seats swept.
+	//
+	// Required, no default, and deliberately not defaulted to ServerKey: a
+	// fallback would reinstate exactly that silent failure.
+	SignatureSecretKey string
 
 	Timeout time.Duration
 

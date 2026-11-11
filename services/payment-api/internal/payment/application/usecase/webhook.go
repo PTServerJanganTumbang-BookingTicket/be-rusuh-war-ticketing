@@ -27,7 +27,10 @@ func (u *PaymentUsecase) HandleNotification(ctx context.Context, n dto.Notificat
 	//    gross_amount goes into the hash EXACTLY as received, decimals and
 	//    all: "3000000.00" and "3000000" hash differently and only the former
 	//    matches. That is why the field is a string all the way to here.
-	if !valueobject.VerifySignature(n.SignatureKey, n.OrderID, n.StatusCode, n.GrossAmount, u.cfg.ServerKey) {
+	//    The last argument is the SIGNATURE SECRET KEY, never the server key:
+	//    Midtrans split the two on 28 October 2026 and the values only
+	//    coincide until one of them is regenerated.
+	if !valueobject.VerifySignature(n.SignatureKey, n.OrderID, n.StatusCode, n.GrossAmount, u.cfg.SignatureSecretKey) {
 		// Ignore it completely. Do not process, do not change any status, and
 		// do not tell the sender why.
 		slog.WarnContext(ctx, "payment notification signature mismatch, ignoring",

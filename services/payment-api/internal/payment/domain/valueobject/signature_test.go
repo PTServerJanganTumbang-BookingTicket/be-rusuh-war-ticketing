@@ -40,7 +40,7 @@ func TestVerifySignature(t *testing.T) {
 
 	assert.True(t, VerifySignature(want, "RB-00912:1", "200", "3000000.00", key))
 
-	t.Run("wrong server key", func(t *testing.T) {
+	t.Run("wrong signature secret key", func(t *testing.T) {
 		assert.False(t, VerifySignature(want, "RB-00912:1", "200", "3000000.00", "other"))
 	})
 	t.Run("wrong order id", func(t *testing.T) {

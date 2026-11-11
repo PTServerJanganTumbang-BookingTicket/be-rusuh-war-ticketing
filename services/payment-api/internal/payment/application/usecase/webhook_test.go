@@ -18,7 +18,7 @@ import (
 // signed builds a notification whose signature_key is correct for its own
 // fields, so a test that wants a mismatch has to ask for one explicitly.
 func signed(n dto.Notification) dto.Notification {
-	n.SignatureKey = valueobject.SignatureKey(n.OrderID, n.StatusCode, n.GrossAmount, testServerKey)
+	n.SignatureKey = valueobject.SignatureKey(n.OrderID, n.StatusCode, n.GrossAmount, testSignatureKey)
 	return n
 }
 
@@ -79,6 +79,44 @@ func TestHandleNotification_EmptySignature_IsRejected(t *testing.T) {
 
 	assert.Error(t, h.uc.HandleNotification(context.Background(), n))
 	assert.Equal(t, 0, h.repo.notifyCalls)
+}
+
+// The regression guard for the 28 October 2026 key split.
+//
+// A notification signed with the SERVER key must be rejected. For a merchant
+// who integrated before that date both dashboard values start out identical,
+// so verifying against the server key passes every test and every sandbox
+// charge - and then fails silently in production the day either key is
+// regenerated, which server-key expiry dates guarantee will happen. At that
+// point charges still succeed and customers still pay, while every callback is
+// read as a forgery: no booking confirmed, seats resold by the sweep.
+//
+// Pinning the two fixtures to DIFFERENT values is what makes this detectable.
+func TestHandleNotification_SignedWithTheServerKey_IsRejected(t *testing.T) {
+	const serverKey = "SB-Mid-server-test"
+	require.NotEqual(t, serverKey, testSignatureKey,
+		"the fixtures must differ or this test cannot distinguish the two keys")
+
+	h := newHarness(t)
+	n := settlement()
+	n.SignatureKey = valueobject.SignatureKey(n.OrderID, n.StatusCode, n.GrossAmount, serverKey)
+
+	require.Error(t, h.uc.HandleNotification(context.Background(), n),
+		"a notification signed with the server key must not verify")
+	assert.Equal(t, 0, h.repo.notifyCalls)
+	assert.Equal(t, 0, h.creds.settleCalls)
+}
+
+// And the positive half: a notification signed with the signature secret key
+// verifies and is applied. Without this, the test above would also pass if
+// verification rejected everything.
+func TestHandleNotification_SignedWithTheSignatureSecretKey_IsAccepted(t *testing.T) {
+	h := newHarness(t)
+	n := settlement()
+	n.SignatureKey = valueobject.SignatureKey(n.OrderID, n.StatusCode, n.GrossAmount, testSignatureKey)
+
+	require.NoError(t, h.uc.HandleNotification(context.Background(), n))
+	assert.Equal(t, 1, h.repo.notifyCalls)
 }
 
 // The signature is computed from gross_amount exactly as received, which is

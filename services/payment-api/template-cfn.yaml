@@ -272,11 +272,20 @@ Resources:
           # Bearer token, so a wrong value here turns every logged-in payment
           # into 401 and a missing one into 503.
           JWT_SECRET: !Sub '{{resolve:secretsmanager:rusuh-${Environment}/jwt-signing:SecretString}}'
-          # Signs charges AND verifies every notification signature. While this
-          # is still at its REPLACE_ME placeholder the service starts, accepts
-          # requests, and rejects every callback Midtrans sends - money taken,
-          # no ticket issued. Populate it before the first charge.
+          # Authenticates POST /v2/charge (HTTP Basic). Wrong or placeholder,
+          # no instrument is ever issued and the customer cannot start paying.
           MIDTRANS_SERVER_KEY: !Sub '{{resolve:secretsmanager:rusuh-${Environment}/midtrans-server-key:SecretString:server_key}}'
+          # Verifies the signature_key on every notification. A SEPARATE
+          # credential from the server key since Midtrans split the two on
+          # 28 October 2026; both dashboard values start out identical for an
+          # older merchant, so one key in both slots works right up until
+          # either is regenerated - and server keys now expire.
+          #
+          # While this is wrong the service starts, reports healthy, issues
+          # virtual accounts and takes the money, then rejects every callback
+          # as a forgery: no booking is ever confirmed and the sweep resells
+          # the seats. Populate it before the first charge.
+          MIDTRANS_SIGNATURE_SECRET_KEY: !Sub '{{resolve:secretsmanager:rusuh-${Environment}/midtrans-signature-secret-key:SecretString:signature_secret_key}}'
 
   # ============================================================================
   # CloudWatch Log Group (explicit retention)

@@ -75,7 +75,7 @@ func newMux(pool *pgxpool.Pool, rdb *goredis.Client, cfg paymentcfg.Config) (*Se
 		MinRetryRemaining:   cfg.Payment.MinRetryRemaining,
 		MaxPaymentAttempts:  cfg.Payment.MaxAttempts,
 		SettledTombstoneTTL: cfg.Payment.SettledTombstoneTTL,
-		ServerKey:           cfg.Midtrans.ServerKey,
+		SignatureSecretKey:  cfg.Midtrans.SignatureSecretKey,
 	})
 
 	// Verify-only: payment-api never issues a session, so the TTL here is

@@ -26,8 +26,11 @@ type Config struct {
 	// SettledTombstoneTTL is how long settled:{uuid} answers §3.3 after the
 	// queue credential is deleted.
 	SettledTombstoneTTL time.Duration
-	// ServerKey signs and verifies Midtrans notifications.
-	ServerKey string
+	// SignatureSecretKey verifies the signature_key on every notification
+	// (§5.5). NOT the server key, which authenticates charges and lives in the
+	// gateway client: Midtrans split the two on 28 October 2026. This usecase
+	// never charges, so the server key has no business being here at all.
+	SignatureSecretKey string
 }
 
 // PaymentUsecase implements the five endpoints of contract §5.

@@ -162,7 +162,10 @@ func (c *fakeCredentials) SettleEngagement(ctx context.Context, in portout.Settl
 // checked rather than slept through.
 var fixedNow = time.Date(2026, 3, 1, 10, 5, 0, 0, time.UTC)
 
-const testServerKey = "SB-Mid-server-test"
+// Deliberately NOT equal to any server key fixture: the signature secret key
+// is a separate credential (Midtrans split the two on 28 October 2026), and an
+// identical fixture would let the wrong slot pass every test.
+const testSignatureKey = "SB-Mid-signature-test"
 
 func testConfig() Config {
 	return Config{
@@ -171,7 +174,7 @@ func testConfig() Config {
 		MinRetryRemaining:   60 * time.Second,
 		MaxPaymentAttempts:  5,
 		SettledTombstoneTTL: time.Hour,
-		ServerKey:           testServerKey,
+		SignatureSecretKey:  testSignatureKey,
 	}
 }
 
