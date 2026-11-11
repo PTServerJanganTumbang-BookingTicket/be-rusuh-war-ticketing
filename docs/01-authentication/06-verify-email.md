@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Service** | `services/user` (Lambda) |
-| **Auth** | `token` query parameter (single-use verification token) |
+| **Auth** | `magic_token` cookie (single-use verification token) |
 | **Contract** | Apidog `GET /auth/verify-email` · api-contracts §1.7 |
 | **Requirements** | FR-31 |
 | **Status** | done |
@@ -37,8 +37,8 @@ sequenceDiagram
     participant H as user-service
     participant DB as Aurora
 
-    C->>H: GET /auth/verify-email?token={plain}
-    H->>H: token present and non-empty?
+    C->>H: GET /auth/verify-email (Cookie: magic_token={plain})
+    H->>H: cookie present and non-empty?
     alt missing
         H-->>C: 400 TOKEN_INVALID
     end
@@ -60,8 +60,8 @@ sequenceDiagram
 
 ## 3. Steps
 
-1. Read the `token` **query parameter**; return 400 `TOKEN_INVALID` if absent
-   or empty. **Not a cookie** — see §6.
+1. Read the `magic_token` **cookie**; return 400 `TOKEN_INVALID` if absent or
+   empty. **Not a query parameter** — see §6.
 2. Compute `SHA-256(token)`.
 3. `ConsumeMagicToken(hash, purpose=VERIFY_EMAIL)`: atomically marks used.
    Returns error if not found, expired, already used, or purpose mismatch.
@@ -82,31 +82,43 @@ sequenceDiagram
 | HTTP | Code | When |
 |---|---|---|
 | 200 | — | Email verified, with `data {email_verified: true}` |
-| 400 | `TOKEN_INVALID` | `token` query parameter absent or empty |
+| 400 | `TOKEN_INVALID` | `magic_token` cookie absent or empty |
 | 401 | `TOKEN_INVALID` | Token not found · already used · expired · wrong purpose |
 
 ## 6. Edge cases and decisions
 
-- **The token is a query parameter, not a cookie** (api-contracts §1.7). This
-  URL is clicked straight out of an email client, so there is no cookie on the
-  request and nothing in the registration flow ever set one. The handler read
-  `magic_token` until this was corrected, which meant the link in **every**
-  verification email answered 400 without the use case ever running — a 400
-  that looked like an expired token and was in fact an endpoint that could
-  never succeed.
+- **The token is a cookie, not a query parameter** — and api-contracts §1.7 said
+  the opposite until v2.24, when the *contract* was corrected to match. The
+  handler has read the cookie since the endpoint was born (`1417f00`,
+  3 Nov 09:26); the contract's query table was written 12 hours later and
+  transcribed the shape of the **email link**, not of the request to the API.
+  Nothing broke in between only because `?token=` was always answered
+  `400 TOKEN_INVALID`, so no working client ever depended on it.
 
-  §1.3 reads a cookie because its flow differs: there the frontend receives the
-  login token and sets it before calling the endpoint. The two are not
-  interchangeable, which is the point of them being separate endpoints with
-  separate token purposes — and a cookie is deliberately **not** accepted here
-  as a fallback, because honouring both would hide that one of them never
-  worked.
-- **No session issued**: confirming an address must not be a login bypass. A
-  verification link proves control; a login link grants access.
-- **Purpose isolation**: `ConsumeMagicToken` filters on `purpose = VERIFY_EMAIL`.
-  A login token cannot be redeemed here, and vice versa.
-- **Idempotent write**: if `VerifyMagicLink` (§1.3) already set `email_verified_at`
-  (because login also proves address control), this write is a no-op.
+  The delivery path is why the cookie is the right channel, and it is the same
+  path as §1.3. `notification-service` builds the link as
+  `APP_BASE_URL + "/auth/verify-email?token=" + token`, and `APP_BASE_URL` is
+  the **frontend** (default `http://localhost:3000`), not this API. The frontend
+  page reads the token out of its own query string, sets `magic_token`, and
+  calls here. That `APP_BASE_URL` is a frontend origin is unambiguous in the
+  login email, which points at `/auth/login` — a route this API does not have;
+  its API route is `GET /auth/verify`.
+
+- **Why that is safer.** A query parameter here would copy a single-use
+  credential into this service's access logs, the load balancer's logs,
+  CloudWatch, and the `Referer` of anything the response links to. The token
+  does still travel in one URL — the frontend's, unavoidable for any emailed
+  link — but it stops there. `HttpOnly` keeps it away from script on later
+  pages, `SameSite=Strict` stops another origin submitting it, and the spent
+  cookie is cleared on success so a dead credential does not ride along on
+  every later request to this origin.
+
+- **Still a separate endpoint from §1.3, and a separate token purpose.** Same
+  channel, different outcome: this one fills `email_verified_at` and issues
+  nothing. If it minted a session, "please confirm your email" would be a login
+  bypass. A login token cannot be redeemed here, and vice versa
+  (`purpose = VERIFY_EMAIL`).
+
 - **Token TTL 15 min, no resend path**: the token shares the `MagicTokenTTL`
   constant with login tokens. If it expires, the customer requests a login link
   and the login redemption sets the same column (api-contracts §1.7).
@@ -114,12 +126,15 @@ sequenceDiagram
 
 ## 7. Tests
 
-- [x] unit: valid token in the query → 200 with `data {email_verified: true}`,
+- [x] unit: valid token in the cookie → 200 with `data {email_verified: true}`,
       `email_verified_at` set, token consumed
-- [x] unit: missing `token` parameter → 400 `TOKEN_INVALID`
-- [x] unit: `?token=` empty → 400, which is what a mail template with an
+- [x] unit: the spent cookie is cleared (`Max-Age=-1`)
+- [x] unit: no `access_token` cookie and no token in `data` — verification
+      never mints a session
+- [x] unit: missing `magic_token` cookie → 400 `TOKEN_INVALID`
+- [x] unit: empty cookie value → 400, which is what a mail template with an
       unrendered variable produces
-- [x] unit: a `magic_token` cookie is **not** accepted in its place
+- [x] unit: `?token=` is **not** accepted in its place
 - [x] unit: the response envelope carries `meta.server_time`, like every other
       route (see `envelope_test.go`)
 - [x] unit: expired token → 401

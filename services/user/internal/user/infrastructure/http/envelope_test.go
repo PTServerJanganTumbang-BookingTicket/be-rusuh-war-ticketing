@@ -77,9 +77,10 @@ func allRoutes() []routeCase {
 			},
 		},
 		{
-			// §1.7 reads the token QUERY PARAMETER: this URL is clicked out of
-			// an email client, where no cookie exists.
-			name: "verify email", method: http.MethodGet, path: "/auth/verify-email?token=tok-123",
+			// Cookie, like §1.3: the emailed link lands on the frontend, which
+			// sets magic_token before calling here.
+			name: "verify email", method: http.MethodGet, path: "/auth/verify-email",
+			cookie: "tok-123",
 			status: http.StatusOK,
 			expect: func(uc *mock_inbound.MockIUserUsecase) {
 				uc.EXPECT().VerifyEmail(gomock.Any(), "tok-123").Return(nil)
