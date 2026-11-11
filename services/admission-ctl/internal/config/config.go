@@ -22,6 +22,8 @@ type Config struct {
 	// EventRefresh is how often the worker scans Redis for sales (queue:{ev} hashes) and their stock categories.
 	EventRefresh time.Duration
 	Tick         usecase.Config
+	// Reconcile tunes the repair of Redis stock and NIK locks from Aurora (docs/05-booking/04-stock-reconciliation.md).
+	Reconcile usecase.ReconcileConfig
 }
 
 // Load reads and validates the environment.
@@ -45,6 +47,12 @@ func Load() (Config, error) {
 	t.CloseAfter = time.Duration(envutil.EnvInt("FULL_BOOKED_CLOSE_SECONDS", 930)) * time.Second
 	t.EtaSeedMinutes = int64(envutil.EnvInt("ETA_SEED_SLOT_MINUTES", int(t.EtaSeedMinutes)))
 	c.Tick = t
+	rc := usecase.DefaultReconcileConfig()
+	rc.Every = time.Duration(envutil.EnvInt("STOCK_RECONCILE_SECONDS", int(rc.Every/time.Second))) * time.Second
+	rc.Threshold = int64(envutil.EnvInt("STOCK_DRIFT_THRESHOLD", int(rc.Threshold)))
+	rc.MaxCorrection = int64(envutil.EnvInt("STOCK_MAX_CORRECTION", int(rc.MaxCorrection)))
+	rc.LockTTL = time.Duration(envutil.EnvInt("SALE_WINDOW_SECONDS", int(rc.LockTTL/time.Second))) * time.Second
+	c.Reconcile = rc
 	return c, c.Validate()
 }
 
@@ -70,6 +78,19 @@ func (c Config) Validate() error {
 		errs = append(errs, errors.New("GRANT_TOKEN_TTL_SECONDS must be at least BOOKING_TTL_SECONDS"))
 	case t.EtaSeedMinutes < 1:
 		errs = append(errs, errors.New("ETA_SEED_SLOT_MINUTES must be at least 1"))
+	}
+	if rc := c.Reconcile; rc.Every < 0 {
+		errs = append(errs, errors.New("STOCK_RECONCILE_SECONDS must not be negative (0 turns reconciliation off)"))
+	} else if rc.Every > 0 {
+		if rc.Threshold < 1 {
+			errs = append(errs, errors.New("STOCK_DRIFT_THRESHOLD must be at least 1"))
+		}
+		if rc.MaxCorrection < rc.Threshold {
+			errs = append(errs, errors.New("STOCK_MAX_CORRECTION must be at least STOCK_DRIFT_THRESHOLD"))
+		}
+		if rc.LockTTL < time.Second {
+			errs = append(errs, errors.New("SALE_WINDOW_SECONDS must be at least 1: a restored NIK lock without an expiry would leak for ever"))
+		}
 	}
 	return errors.Join(errs...)
 }

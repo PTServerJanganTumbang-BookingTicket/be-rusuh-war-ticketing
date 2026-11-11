@@ -55,7 +55,7 @@ sequenceDiagram
 
     Q->>R: 5 snapshot: state, now_serving, issued, name, sale_starts_at, full_booked_at (one HMGET of queue:{ev})
     alt SCHEDULED
-        Q-->>C: 409 SALE_NOT_OPEN {queue_state NOT_OPEN, sale_starts_at}
+        Q-->>C: 409 SALE_NOT_OPEN {queue_state SCHEDULED, sale_starts_at}
     else CLOSED
         Q-->>C: 410 SALE_CLOSED {queue_state CLOSED}
     else missing / unknown state
@@ -69,10 +69,8 @@ sequenceDiagram
         Q-->>C: 200 rejoined true, state, same queue_token + cookie
     end
 
-    alt 7 FULL_BOOKED
-        Q-->>C: 409 FULL_BOOKED {queue_state FULL_BOOKED, full_booked_at}
-    else 8 issued − now_serving ≥ QUEUE_CAPACITY
-        Q-->>C: 503 QUEUE_FULL {queue_state FULL, queue_capacity}
+    alt 8 issued − now_serving ≥ QUEUE_CAPACITY
+        Q-->>C: 503 QUEUE_FULL {queue_state FULL_QUEUE, queue_capacity}
     end
 
     Q->>R: 9 SET acct NX (logged in) · HINCRBY issued · HSET token · ZADD by_ticket
@@ -110,7 +108,8 @@ order wins.
      `now_serving` (`JoinRepaired`). A served ticket is never re-added
    - Turn has come: `state` is the booking row's status; no row yet = pending grant (`QUEUED`). A failed
      lookup is 503, never a guess
-7. **Fully booked**: new joiners get 409 `FULL_BOOKED`; rejoiners kept their place in step 6
+7. **Fully booked**: no gate. In `FULL_BOOKED` a new customer joins like in `OPEN` and waits for seats that come
+   back when holds expire (the home page shows the button enabled, 03-events §3.2)
 8. **Capacity**: `issued − now_serving ≥ QUEUE_CAPACITY` → 503 `QUEUE_FULL` (fail fast, no buffering)
 9. **Issue**: `SET acct NX` (logged in; a lost race waits up to 2 s for the winner's token and returns that
    place) → `HINCRBY issued` → `HSET token` (+ TTL) → `ZADD by_ticket`. Token before `by_ticket`, so
@@ -147,11 +146,10 @@ Join never runs the admission Lua, never publishes and never writes to Aurora.
 | 401 | `UNAUTHORIZED` | logged-in `queue_token` presented by another account or by a guest; clears the cookie |
 | 403 | `CAPTCHA_FAILED` | explicit CAPTCHA rejection |
 | 404 | `NOT_FOUND` | event id that cannot be a Redis hash tag |
-| 409 | `SALE_NOT_OPEN` | state `SCHEDULED`; data `{queue_state: NOT_OPEN, sale_starts_at}` |
-| 409 | `FULL_BOOKED` | state `FULL_BOOKED`, new joiners only; data `{queue_state: FULL_BOOKED, full_booked_at}` (new code, 2026-11-06) |
+| 409 | `SALE_NOT_OPEN` | state `SCHEDULED`; data `{queue_state: SCHEDULED, sale_starts_at}` |
 | 410 | `SALE_CLOSED` | state `CLOSED`; data `{queue_state: CLOSED}` |
 | 429 | `TOO_MANY_REQUESTS` | rate limit; data `{retry_after}` (seconds) and a `Retry-After` header |
-| 503 | `QUEUE_FULL` | data `{queue_state: FULL, queue_capacity}` |
+| 503 | `QUEUE_FULL` | data `{queue_state: FULL_QUEUE, queue_capacity}` |
 | 503 | `QUEUE_NOT_READY` | event never seeded or unknown state (new code) |
 | 503 | `INTERNAL_ERROR` | Redis down or a failed write; fail closed, retry later (new code: any 5xx without its own code) |
 
@@ -180,11 +178,13 @@ Join never runs the admission Lua, never publishes and never writes to Aurora.
   `account_id`, from any device. Otherwise 401 and the cookie is cleared, so the next join is fresh. A logged-in caller
   with a guest token gets its own place. Unknown or other-event tokens are ignored (`join_token_binding.feature`).
 - **DECIDED (2026-11-06): token in body and cookie**, cookie `Domain=my-rusuh.my.id` (`COOKIE_DOMAIN`).
-- **DECIDED (2026-11-06): `FULL_BOOKED` refuses new joiners** (409), like a waiting room's "reject" mode; people
-  already in line keep their place and wait for returned seats. Joining works again when the state goes back
-  to `OPEN`.
+- **`FULL_BOOKED` accepts new joiners** (2026-11-11). Everyone in line, old or new, waits for seats that come back;
+  the queue capacity still caps the line. `queue_state` values in error data use the home page enum
+  (`SCHEDULED`, `OPEN`, `FULL_QUEUE`, `FULL_BOOKED`, `CLOSED`).
+- **OPEN: frozen `.feature` files** `join_gates.feature`, `join_rejoin.feature`, `join_token_binding.feature` assert
+  the old 409 `FULL_BOOKED`. Proposed: edit those scenarios (Erma's approval needed, the files are frozen).
 - **Capacity overshoot accepted:** the gate reads then INCRs (not atomic), so up to (parallel joins − 1) extra
-  numbers can pass `QUEUE_CAPACITY` under a race. The cap is a safety net; the home page shows `FULL` first.
+  numbers can pass `QUEUE_CAPACITY` under a race. The cap is a safety net; the home page shows `FULL_QUEUE` first.
 - **Crash between `INCR` and `HSET`:** a harmless gap (admission-ctl only grants `by_ticket` members).
   **Between `HSET` and `ZADD`:** repaired by the next rejoin (step 6).
 - A **guest** whose join response failed will retry and get a new token. The orphaned first token can still
@@ -201,12 +201,13 @@ Join never runs the admission Lua, never publishes and never writes to Aurora.
 
 All in `services/queue/features/` (godog, strict) plus Go unit tests under `internal/`.
 
-- [x] unit: gate order (shape → identity → rate limit → CAPTCHA → state → rejoin → sold out → capacity), each branch returns the right code and later gates are not called
+- [x] unit: gate order (shape → identity → rate limit → CAPTCHA → state → rejoin → capacity), each branch returns the right code and later gates are not called
 - [x] unit: guest without device id → 400. Logged-in without device id → OK
 - [x] integration: rejoin by account (another device) and by token (cookie / header) → same place, `rejoined: true`
 - [x] integration: token ownership: guest token from another device → 401 `DEVICE_MISMATCH`; logged-in token of another account or a guest → 401 `UNAUTHORIZED`; cookie cleared (`join_token_binding.feature`)
 - [x] integration: capacity reached → `QUEUE_FULL`, `issued` not incremented; a rejoiner is not refused
-- [x] integration: `FULL_BOOKED` → 409 for new joiners, rejoiners keep their place
+- [ ] unit: error data says `SCHEDULED` (`SALE_NOT_OPEN`) and `FULL_QUEUE` (`QUEUE_FULL`)
+- [ ] integration: `FULL_BOOKED` → a new joiner gets a place (200 queued), a rejoiner keeps theirs
 - [x] unit: places free + a controller that grants at once → join still answers queued within 100 ms (`TestJoin_withFreePlacesStillAnswersQueuedAtOnce`)
 - [ ] e2e after step 3: real admission-ctl admits the joiner on the next tick and `/me` returns `GRANTED`
 - [x] concurrency: 10k parallel joins → `ticket_no` 1..10k each once, `by_ticket` size = 10k; 10 parallel joins of one account → one place

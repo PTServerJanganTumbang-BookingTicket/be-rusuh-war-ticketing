@@ -170,14 +170,14 @@ migrations. Only one table is this service's own:
 
 | Object | Migration | Why payment-api needs it |
 |---|---|---|
-| `payment_events` with `gateway_event_id UNIQUE` | `0011_payment_events` | The webhook's idempotency guard, and where a charge response is stored for replay |
-| `bookings.paid_at` | `0013_bookings_paid_at` | The gateway's settlement time, which §5.4 reports. Before it, `paid_at` was substituted with the payment DEADLINE — a timestamp in the future of the response carrying it |
-| `payment_method_switches` | `0014_payment_method_switches` | The operator kill switch: turn a method, or one bank under it, off mid-sale with no deploy. Append-only; subtracts from the code catalogue and never defines it |
+| `payment_events` with `gateway_event_id UNIQUE` | `0013_payment_events` | The webhook's idempotency guard, and where a charge response is stored for replay |
+| `bookings.paid_at` | `0015_bookings_paid_at` | The gateway's settlement time, which §5.4 reports. Before it, `paid_at` was substituted with the payment DEADLINE — a timestamp in the future of the response carrying it |
+| `payment_method_switches` | `0016_payment_method_switches` | The operator kill switch: turn a method, or one bank under it, off mid-sale with no deploy. Append-only; subtracts from the code catalogue and never defines it |
 | `bookings.grant_token` + partial unique index | `0006`–`0010` | The ownership key every query binds on |
 | `booking_items` | `0006`–`0010` | One row per NIK (BR-02). The authority on price, and what tickets are issued from |
 | `nik_claims` | `0006`–`0010` | Released on expiry, or BR-02 would block the customer from ever buying again |
 | `tickets.booking_item_id` + partial unique index | `0006`–`0010` | The double-QR guard: an index on `booking_id` alone would not collide across two attempts for one booking |
-| Partial index on `bookings (payment_expires_at)` | `0011_payment_events` | ADR-006 §8.12(c) moved the deadline sweep off `expiries:{ev}` and onto this index, so nothing in Redis has to be kept in step with a booking's deadline. `0007` and `0009` did the same for the `GRANTED` and `SELECTING` deadlines |
+| Partial index on `bookings (payment_expires_at)` | `0013_payment_events` | ADR-006 §8.12(c) moved the deadline sweep off `expiries:{ev}` and onto this index, so nothing in Redis has to be kept in step with a booking's deadline. `0007` and `0009` did the same for the `GRANTED` and `SELECTING` deadlines |
 
 `booking_items` deliberately carries **no** per-seat email: migration `0010`
 dropped `holder_email`, and §8.15 sends every e-ticket of a booking to

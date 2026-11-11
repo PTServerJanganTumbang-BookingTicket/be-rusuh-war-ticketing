@@ -138,7 +138,6 @@ func TestJoinGateRejectionsCarryTheirStatusAndCodeAndNeverIssueATicket(t *testin
 		{"a scheduled sale is 409", []any{"state", "SCHEDULED", "sale_starts_at", "2026-12-01T10:00:00Z"}, nil, usecase.JoinInput{CaptchaToken: "c"}, 409, domain.CodeSaleNotOpen},
 		{"a closed sale is 410", []any{"state", "CLOSED"}, nil, usecase.JoinInput{CaptchaToken: "c"}, 410, domain.CodeSaleClosed},
 		{"an event without a state is 503 not ready", []any{"name", "Konser"}, nil, usecase.JoinInput{CaptchaToken: "c"}, 503, domain.CodeQueueNotReady},
-		{"a sold-out sale is 409 full booked", []any{"state", "FULL_BOOKED", "now_serving", 10, "issued", 20, "full_booked_at", 1792847380}, nil, usecase.JoinInput{CaptchaToken: "c"}, 409, domain.CodeFullBooked},
 		{"a queue at capacity is 503 queue full", nil, func(c *usecase.Config) { c.Capacity = 10 }, usecase.JoinInput{CaptchaToken: "c"}, 503, domain.CodeQueueFull},
 	}
 	for _, c := range cases {
@@ -247,5 +246,28 @@ func TestAJoinedCallerSeesTheirPositionAsTicketMinusNowServing(t *testing.T) {
 	}
 	if res.Engagement.TicketNo != 21 || res.NowServing != 10 || res.Position() != 11 {
 		t.Fatalf("ticket %d now_serving %d position %d", res.Engagement.TicketNo, res.NowServing, res.Position())
+	}
+}
+
+func TestJoin_whenFullyBookedANewCustomerStillGetsAPlace(t *testing.T) {
+	e := gates(t, nil, "state", "FULL_BOOKED", "now_serving", 10, "issued", 20, "full_booked_at", 1792847380)
+	before := e.issued(t)
+	res, ae := e.tryJoin(usecase.JoinInput{CaptchaToken: "c"})
+	if ae != nil {
+		t.Fatalf("join refused: %+v", ae)
+	}
+	if res.Engagement.TicketNo != before+1 {
+		t.Fatalf("ticket_no = %d, want %d", res.Engagement.TicketNo, before+1)
+	}
+}
+
+func TestJoin_errorDataUsesTheHomePageStateNames(t *testing.T) {
+	_, ae := gates(t, nil, "state", "SCHEDULED", "sale_starts_at", "2026-12-01T10:00:00Z").tryJoin(usecase.JoinInput{CaptchaToken: "c"})
+	if ae == nil || ae.Data.(map[string]any)["queue_state"] != "SCHEDULED" {
+		t.Fatalf("scheduled data = %+v", ae)
+	}
+	_, ae = gates(t, func(c *usecase.Config) { c.Capacity = 10 }).tryJoin(usecase.JoinInput{CaptchaToken: "c"})
+	if ae == nil || ae.Data.(map[string]any)["queue_state"] != "FULL_QUEUE" {
+		t.Fatalf("full queue data = %+v", ae)
 	}
 }

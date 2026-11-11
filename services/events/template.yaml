@@ -1,0 +1,93 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: rusuh-events — home page list and event detail (docs/03-events) behind API Gateway HTTP API
+
+Parameters:
+  VpcSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Private subnets with reachability to Aurora and Redis
+  SecurityGroupIds:
+    Type: List<AWS::EC2::SecurityGroup::Id>
+    Description: Security group permitting Aurora (5432) and Redis (6379) egress
+  DatabaseUrlSecretArn:
+    Type: String
+    Description: Secrets Manager secret holding the Aurora connection string (use a READER-endpoint secret when one exists)
+  TurnstileSiteKey:
+    Type: String
+    Description: Cloudflare Turnstile public site key, returned as captcha.site_key
+  RedisAddr:
+    Type: String
+    Description: ElastiCache (cluster mode) configuration endpoint, host:port
+
+Parameters:
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues: [dev, prod]
+    Description: >
+      Suffixes every physical resource name. Without it the hardcoded names
+      below collide and two environments cannot share an account and region.
+
+
+Globals:
+  Function:
+    Timeout: 10
+    MemorySize: 256
+    Runtime: provided.al2023
+    Architectures:
+      - arm64
+
+Resources:
+  EventsFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      FunctionName: !Sub rusuh-${Environment}-events
+      Handler: bootstrap
+      CodeUri: .
+      VpcConfig:
+        SubnetIds: !Ref VpcSubnetIds
+        SecurityGroupIds: !Ref SecurityGroupIds
+      Environment:
+        Variables:
+          APP_ENV: production
+          REDIS_ADDR: !Ref RedisAddr
+          REDIS_CLUSTER: "true"
+          DATABASE_MAX_CONNS: "2"
+          QUEUE_CAPACITY: "300000"
+          EVENTS_CACHE_MAX_AGE_SECONDS: "30"
+          TURNSTILE_SITE_KEY: !Ref TurnstileSiteKey
+          DATABASE_READER_URL: !Sub "{{resolve:secretsmanager:${DatabaseUrlSecretArn}}}"
+      Policies:
+        - AWSLambdaVPCAccessExecutionRole
+      Events:
+        ListEvents:
+          Type: HttpApi
+          Properties:
+            Path: /events
+            Method: GET
+        GetEvent:
+          Type: HttpApi
+          Properties:
+            Path: /events/{event_id}
+            Method: GET
+        HealthCheck:
+          Type: HttpApi
+          Properties:
+            Path: /sys/ping
+            Method: GET
+
+  # Declared explicitly because SAM does not create it: Lambda would, on first
+  # invoke, with retention set to NEVER EXPIRE. For a POC that is a slow leak
+  # of storage cost with no upside.
+  EventsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/rusuh-${Environment}-events
+      RetentionInDays: 14
+
+Outputs:
+  ApiUrl:
+    Description: Base URL of the events HTTP API
+    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com"

@@ -155,7 +155,7 @@ sequenceDiagram
   A client that still posts `policy_version` is **accepted**, not rejected: the
   decoder ignores the extra member, so an unchanged frontend keeps registering.
 
-  **This needs migration `0012_drop_consent_policy_version`.** The column was
+  **This needs migration `0014_drop_consent_policy_version`.** The column was
   `TEXT NOT NULL` with no default, and the INSERT stopped supplying it — so
   against a schema at `0011` or earlier, every registration fails the not-null
   constraint and the whole transaction rolls back. Nothing is half-written, but
@@ -183,5 +183,5 @@ sequenceDiagram
 - [x] `RegisterAccount` adapter — four-table transaction with index conflict handling
 - [x] `INikVerifier` outbound port + `nik-verify` HTTP client adapter
 - [x] `consent_records` append-only trigger in migration `0001_user_domain.up.sql`
-- [x] migration `0012_drop_consent_policy_version` — drops the `NOT NULL` column
+- [x] migration `0014_drop_consent_policy_version` — drops the `NOT NULL` column
       the INSERT no longer writes

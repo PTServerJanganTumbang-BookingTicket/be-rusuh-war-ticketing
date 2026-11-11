@@ -1,0 +1,229 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: rusuh-events — raw CloudFormation (no SAM transform, SCP workaround)
+
+Parameters:
+  DeployRevision:
+    Type: String
+    Default: unset
+    Description: >
+      Commit SHA of the deploy that last touched this stack. Nothing reads it; it forces an update so the
+      {{resolve:secretsmanager:...}} references below are re-read on every deploy (CloudFormation does not detect a
+      rotated secret behind a dynamic reference).
+
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues: [dev, prod]
+    Description: Suffixes every physical resource name.
+
+  LambdaS3Bucket:
+    Type: String
+    Description: S3 bucket containing the Lambda deployment package
+
+  LambdaS3Key:
+    Type: String
+    Description: S3 key of the Lambda deployment package (bootstrap.zip)
+
+  EnableDirectApiAccess:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: >
+      Create a per-service API Gateway endpoint. Set to false when using the
+      unified API Gateway (rusuh-prod-api) as the single entry point.
+      Direct access is useful for debugging but exposes an additional endpoint.
+
+  VpcSubnetIds:
+    Type: AWS::SSM::Parameter::Value<List<AWS::EC2::Subnet::Id>>
+    Default: /rusuh/prod/vpc/private-subnet-ids
+    Description: Private subnets with reachability to Aurora and Redis
+
+  SecurityGroupIds:
+    Type: AWS::SSM::Parameter::Value<List<AWS::EC2::SecurityGroup::Id>>
+    Default: /rusuh/prod/vpc/lambda-security-group-ids
+    Description: Security group permitting Aurora (5432) and Redis (6379) egress
+
+  RedisAddr:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/redis/addr
+    Description: ElastiCache endpoint, host:port
+
+  TurnstileSiteKey:
+    Type: String
+    Description: >
+      Cloudflare Turnstile PUBLIC site key. GET /events/{event_id} returns it as captcha.site_key so the client can fetch
+      a token before the sale opens. Not a secret (the secret key is queue's TurnstileSecretArn).
+
+  QueueCapacity:
+    Type: String
+    Default: "300000"
+    Description: Same value as queue's QueueCapacity. It decides when the home page says FULL_QUEUE.
+
+  CacheMaxAgeSeconds:
+    Type: String
+    Default: "30"
+    Description: Cache-Control max-age of a normal answer (CloudFront honours it).
+
+Conditions:
+  CreateDirectApi: !Equals [!Ref EnableDirectApiAccess, "true"]
+
+Resources:
+  # ============================================================================
+  # IAM Role for Lambda
+  # ============================================================================
+  EventsFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub rusuh-${Environment}-events-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: CloudWatchLogs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/rusuh-${Environment}-events:*
+
+  # ============================================================================
+  # Lambda Function
+  # ============================================================================
+  # The database URL is read at deploy time (dynamic reference), so the role needs no Secrets Manager access.
+  #
+  # REDIS_CLUSTER is "false": the foundation provisions a single-node ElastiCache cache cluster, not a cluster-mode
+  # replication group, and a cluster client cannot talk to it. Switch to "true" together with a cluster-mode Redis.
+  EventsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub rusuh-${Environment}-events
+      Runtime: provided.al2023
+      Architectures:
+        - arm64
+      Handler: bootstrap
+      Role: !GetAtt EventsFunctionRole.Arn
+      Timeout: 10
+      MemorySize: 256
+      Code:
+        S3Bucket: !Ref LambdaS3Bucket
+        S3Key: !Ref LambdaS3Key
+      VpcConfig:
+        SubnetIds: !Ref VpcSubnetIds
+        SecurityGroupIds: !Ref SecurityGroupIds
+      Environment:
+        Variables:
+          DEPLOY_REVISION: !Ref DeployRevision
+          APP_ENV: production
+          REDIS_ADDR: !Ref RedisAddr
+          REDIS_CLUSTER: "false"
+          DATABASE_MAX_CONNS: "2"
+          QUEUE_CAPACITY: !Ref QueueCapacity
+          EVENTS_CACHE_MAX_AGE_SECONDS: !Ref CacheMaxAgeSeconds
+          TURNSTILE_SITE_KEY: !Ref TurnstileSiteKey
+          # The foundation has one Aurora secret (the writer). This service only reads; point DATABASE_READER_URL at a
+          # reader-endpoint secret when one exists. Until then the config falls back to DATABASE_URL.
+          DATABASE_URL: !Sub '{{resolve:secretsmanager:rusuh-${Environment}/database-url:SecretString:url}}'
+
+  # ============================================================================
+  # CloudWatch Log Group (explicit retention)
+  # ============================================================================
+  EventsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/rusuh-${Environment}-events
+      RetentionInDays: 14
+
+  # ============================================================================
+  # HTTP API (API Gateway v2) — ONLY if EnableDirectApiAccess is true
+  # ============================================================================
+  EventsApi:
+    Type: AWS::ApiGatewayV2::Api
+    Condition: CreateDirectApi
+    Properties:
+      Name: !Sub rusuh-${Environment}-events-api
+      ProtocolType: HTTP
+      Description: HTTP API for events service (direct access)
+
+  EventsApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: CreateDirectApi
+    Properties:
+      LogGroupName: !Sub /aws/apigateway/rusuh-${Environment}-events-api
+      RetentionInDays: 14
+
+  EventsApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Condition: CreateDirectApi
+    Properties:
+      ApiId: !Ref EventsApi
+      StageName: $default
+      AutoDeploy: true
+      AccessLogSettings:
+        DestinationArn: !GetAtt EventsApiLogGroup.Arn
+        Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","routeKey":"$context.routeKey","status":"$context.status","protocol":"$context.protocol","responseLength":"$context.responseLength","integrationErrorMessage":"$context.integrationErrorMessage"}'
+
+  EventsLambdaIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Condition: CreateDirectApi
+    Properties:
+      ApiId: !Ref EventsApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt EventsFunction.Arn
+      PayloadFormatVersion: "2.0"
+
+  RouteListEvents:
+    Type: AWS::ApiGatewayV2::Route
+    Condition: CreateDirectApi
+    Properties:
+      ApiId: !Ref EventsApi
+      RouteKey: GET /events
+      Target: !Sub integrations/${EventsLambdaIntegration}
+
+  RouteGetEvent:
+    Type: AWS::ApiGatewayV2::Route
+    Condition: CreateDirectApi
+    Properties:
+      ApiId: !Ref EventsApi
+      RouteKey: GET /events/{event_id}
+      Target: !Sub integrations/${EventsLambdaIntegration}
+
+  RouteHealthCheck:
+    Type: AWS::ApiGatewayV2::Route
+    Condition: CreateDirectApi
+    Properties:
+      ApiId: !Ref EventsApi
+      RouteKey: GET /sys/ping
+      Target: !Sub integrations/${EventsLambdaIntegration}
+
+  EventsFunctionDirectApiPermission:
+    Type: AWS::Lambda::Permission
+    Condition: CreateDirectApi
+    Properties:
+      FunctionName: !Ref EventsFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${EventsApi}/*/*
+
+Outputs:
+  ApiUrl:
+    Condition: CreateDirectApi
+    Description: Base URL of the events HTTP API (direct access)
+    Value: !Sub "https://${EventsApi}.execute-api.${AWS::Region}.amazonaws.com"
+
+  FunctionArn:
+    Description: ARN of the events Lambda function
+    Value: !GetAtt EventsFunction.Arn
+
+  FunctionName:
+    Description: Name of the events Lambda function
+    Value: !Ref EventsFunction

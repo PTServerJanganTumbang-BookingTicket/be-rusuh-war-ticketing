@@ -1,0 +1,11 @@
+# Docker build context is the repository root (services/<name>/Dockerfile copies pkg/ and one service).
+.git
+.github
+coverage
+docs
+infra
+migrations
+**/vendor
+**/bin
+**/*.out
+**/.env

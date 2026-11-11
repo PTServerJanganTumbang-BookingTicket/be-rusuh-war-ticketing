@@ -960,6 +960,14 @@ Resources:
       Value: !Join [",", [!Ref PrivateSubnetA, !Ref PrivateSubnetB]]
       Description: Both subnets, for anything that needs two AZs
 
+  SsmPublicSubnetIds:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /rusuh/${Environment}/vpc/public-subnet-ids
+      Type: StringList
+      Value: !Join [",", [!Ref PublicSubnetA, !Ref PublicSubnetB]]
+      Description: Both public subnets, for the internet-facing ALB (an ALB needs two zones)
+
   SsmLambdaSecurityGroup:
     Type: AWS::SSM::Parameter
     Properties:

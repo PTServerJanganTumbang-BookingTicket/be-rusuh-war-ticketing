@@ -94,7 +94,9 @@ func newMux(pool *pgxpool.Pool, rdb *goredis.Client, cfg paymentcfg.Config) (*Se
 	// §8.17). It reads grant:{token} itself through pkg/rediskeys.
 	guard := grantauth.Middleware(rdb, grantauth.Config{
 		DevicePepper: []byte(cfg.App.DevicePepper),
-		Sessions:     sessions,
+		// main's grantauth takes a TokenVerifier interface; *token.Issuer
+		// satisfies it with Verify(string) (token.Claims, error).
+		Tokens: sessions,
 	})
 
 	mux := http.NewServeMux()

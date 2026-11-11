@@ -26,7 +26,7 @@ on:
       force_deploy:
         description: >
           Force deploy specific services regardless of changed files.
-          Comma-separated: booking,queue,nik-verify,user,notification,outbox-publisher,all
+          Comma-separated: booking,queue,events,nik-verify,user,notification,outbox-publisher,ecs,all
           Use "all" to redeploy everything. Useful for reruns.
         type: string
         default: ""
@@ -46,11 +46,15 @@ jobs:
       modules: ${{ steps.set.outputs.modules }}
       booking: ${{ steps.filter.outputs.booking }}
       queue: ${{ steps.filter.outputs.queue }}
+      events: ${{ steps.filter.outputs.events }}
       user: ${{ steps.filter.outputs.user }}
       nik_verify: ${{ steps.filter.outputs.nik_verify }}
       notification: ${{ steps.filter.outputs.notification }}
       outbox_publisher: ${{ steps.filter.outputs.outbox_publisher }}
       payment_api: ${{ steps.filter.outputs.payment_api }}
+      sse_server: ${{ steps.filter.outputs.sse_server }}
+      admission_ctl: ${{ steps.filter.outputs.admission_ctl }}
+      ecs_infra: ${{ steps.filter.outputs.ecs_infra }}
       pkg: ${{ steps.filter.outputs.pkg }}
       infra: ${{ steps.filter.outputs.infra }}
       api_gateway: ${{ steps.filter.outputs.api_gateway }}
@@ -70,6 +74,10 @@ jobs:
               - 'go.work'
             queue:
               - 'services/queue/**'
+              - 'pkg/**'
+              - 'go.work'
+            events:
+              - 'services/events/**'
               - 'pkg/**'
               - 'go.work'
             user:
@@ -102,6 +110,8 @@ jobs:
               - 'go.work'
             infra:
               - 'infra/foundation/**'
+            ecs_infra:
+              - 'infra/ecs/**'
             api_gateway:
               - 'infra/api-gateway/**'
             migrations:
@@ -114,11 +124,12 @@ jobs:
 
           # force_deploy=all overrides path detection entirely
           if [ "$FORCE" = "all" ]; then
-            mods=("pkg" "services/booking" "services/queue" "services/user" "services/nik-verify" "services/notification" "services/outbox-publisher" "services/payment-api" "services/sse-server" "services/admission-ctl")
+            mods=("pkg" "services/booking" "services/queue" "services/events" "services/user" "services/nik-verify" "services/notification" "services/outbox-publisher" "services/payment-api" "services/sse-server" "services/admission-ctl")
           else
             if [ "${{ steps.filter.outputs.pkg }}" = "true" ]; then mods+=("pkg"); fi
             if [ "${{ steps.filter.outputs.booking }}" = "true" ] || echo "$FORCE" | grep -q "booking"; then mods+=("services/booking"); fi
             if [ "${{ steps.filter.outputs.queue }}" = "true" ] || echo "$FORCE" | grep -q "queue"; then mods+=("services/queue"); fi
+            if [ "${{ steps.filter.outputs.events }}" = "true" ] || echo "$FORCE" | grep -q "events"; then mods+=("services/events"); fi
             if [ "${{ steps.filter.outputs.user }}" = "true" ] || echo "$FORCE" | grep -q "user"; then mods+=("services/user"); fi
             if [ "${{ steps.filter.outputs.nik_verify }}" = "true" ] || echo "$FORCE" | grep -q "nik-verify"; then mods+=("services/nik-verify"); fi
             if [ "${{ steps.filter.outputs.notification }}" = "true" ] || echo "$FORCE" | grep -q "notification"; then mods+=("services/notification"); fi
@@ -148,11 +159,13 @@ jobs:
       environment: ${{ steps.env.outputs.environment }}
       booking: ${{ steps.env.outputs.booking }}
       queue: ${{ steps.env.outputs.queue }}
+      events: ${{ steps.env.outputs.events }}
       user: ${{ steps.env.outputs.user }}
       nik_verify: ${{ steps.env.outputs.nik_verify }}
       notification: ${{ steps.env.outputs.notification }}
       outbox_publisher: ${{ steps.env.outputs.outbox_publisher }}
       payment_api: ${{ steps.env.outputs.payment_api }}
+      ecs: ${{ steps.env.outputs.ecs }}
       foundation_changed: ${{ needs.detect-changes.outputs.infra }}
       api_gateway_changed: ${{ needs.detect-changes.outputs.api_gateway }}
       any_service_changed: ${{ steps.env.outputs.any_service_changed }}
@@ -161,11 +174,15 @@ jobs:
         env:
           B: ${{ needs.detect-changes.outputs.booking }}
           Q: ${{ needs.detect-changes.outputs.queue }}
+          V: ${{ needs.detect-changes.outputs.events }}
           U: ${{ needs.detect-changes.outputs.user }}
           N: ${{ needs.detect-changes.outputs.nik_verify }}
           T: ${{ needs.detect-changes.outputs.notification }}
           O: ${{ needs.detect-changes.outputs.outbox_publisher }}
           P: ${{ needs.detect-changes.outputs.payment_api }}
+          S: ${{ needs.detect-changes.outputs.sse_server }}
+          A: ${{ needs.detect-changes.outputs.admission_ctl }}
+          E: ${{ needs.detect-changes.outputs.ecs_infra }}
           FORCE: ${{ inputs.force_deploy }}
         run: |
           set -eu
@@ -183,22 +200,29 @@ jobs:
 
           b=$(is_changed "$B" "booking")
           q=$(is_changed "$Q" "queue")
+          v=$(is_changed "$V" "events")
           u=$(is_changed "$U" "user")
           n=$(is_changed "$N" "nik-verify")
           t=$(is_changed "$T" "notification")
           o=$(is_changed "$O" "outbox-publisher")
           p=$(is_changed "$P" "payment-api")
+          # The two ECS services deploy together (one stack, one image tag), so any of them, or the stack, rebuilds both.
+          ecs=false
+          for f in "$S" "$A" "$E"; do [ "$f" = "true" ] && ecs=true; done
+          [ "$ecs" = "false" ] && ecs=$(is_changed false "ecs")
 
           echo "booking=$b"           >> "$GITHUB_OUTPUT"
           echo "queue=$q"             >> "$GITHUB_OUTPUT"
+          echo "events=$v"            >> "$GITHUB_OUTPUT"
           echo "user=$u"              >> "$GITHUB_OUTPUT"
           echo "nik_verify=$n"        >> "$GITHUB_OUTPUT"
           echo "notification=$t"      >> "$GITHUB_OUTPUT"
           echo "outbox_publisher=$o"  >> "$GITHUB_OUTPUT"
           echo "payment_api=$p"       >> "$GITHUB_OUTPUT"
+          echo "ecs=$ecs"              >> "$GITHUB_OUTPUT"
 
           any=false
-          for f in "$b" "$q" "$u" "$n" "$t" "$o" "$p"; do
+          for f in "$b" "$q" "$v" "$u" "$n" "$t" "$o" "$p"; do
             [ "$f" = "true" ] && any=true
           done
           echo "any_service_changed=$any" >> "$GITHUB_OUTPUT"
@@ -206,10 +230,12 @@ jobs:
           echo "environment        : $environment"
           echo "booking            : $b"
           echo "queue              : $q"
+          echo "events             : $v"
           echo "user               : $u"
           echo "nik_verify         : $n"
           echo "notification       : $t"
           echo "outbox_publisher   : $o"
+          echo "ecs                : $ecs"
           echo "any service changed: $any"
 
   golangci-lint:
@@ -321,7 +347,9 @@ jobs:
       needs.detect-changes.outputs.user == 'true' ||
       needs.detect-changes.outputs.nik_verify == 'true' ||
       needs.detect-changes.outputs.outbox_publisher == 'true' ||
-      needs.detect-changes.outputs.payment_api == 'true'
+      needs.detect-changes.outputs.payment_api == 'true' ||
+      needs.detect-changes.outputs.sse_server == 'true' ||
+      needs.detect-changes.outputs.admission_ctl == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -482,6 +510,8 @@ jobs:
           ENV_NAME: ${{ needs.resolve-env.outputs.environment }}
           NEEDS_QUEUE: ${{ needs.resolve-env.outputs.queue }}
           NEEDS_BOOKING: ${{ needs.resolve-env.outputs.booking }}
+          NEEDS_EVENTS: ${{ needs.resolve-env.outputs.events }}
+          TURNSTILE_SITE_KEY: ${{ secrets.TURNSTILE_SITE_KEY }}
           DEVICE_PEPPER_SECRET_ARN: ${{ vars.DEVICE_PEPPER_SECRET_ARN }}
           TURNSTILE_SECRET_ARN: ${{ vars.TURNSTILE_SECRET_ARN }}
           ETICKET_SIGNING_KEY_SECRET_ARN: ${{ vars.ETICKET_SIGNING_KEY_SECRET_ARN }}
@@ -576,6 +606,11 @@ jobs:
           fi
           if [ "$NEEDS_BOOKING" = "true" ]; then
             check_arn ETICKET_SIGNING_KEY_SECRET_ARN "$ETICKET_SIGNING_KEY_SECRET_ARN"
+          fi
+
+          if [ "$NEEDS_EVENTS" = "true" ] && [ -z "$TURNSTILE_SITE_KEY" ]; then
+            echo "::error::The GitHub secret TURNSTILE_SITE_KEY is empty and events is being deployed (public Turnstile site key, returned as captcha.site_key)."
+            fail=1
           fi
 
           [ "$fail" -eq 0 ] || exit 1
@@ -767,6 +802,34 @@ jobs:
             TurnstileSecretArn=${{ vars.TURNSTILE_SECRET_ARN }}
             CookieDomain=${{ vars.COOKIE_DOMAIN }}
             SseBaseUrl=${{ vars.SSE_BASE_URL }}
+            CaptchaProvider=${{ vars.CAPTCHA_PROVIDER || 'mock' }}
+            QueueCapacity=${{ vars.QUEUE_CAPACITY || '300000' }}
+            SaleWindowSeconds=${{ vars.SALE_WINDOW_SECONDS || '21600' }}
+
+  deploy-events:
+    name: Deploy events
+    needs: [resolve-env, preflight]
+    if: always() && needs.preflight.result == 'success' && needs.resolve-env.outputs.events == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-env.outputs.environment }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/cfn-deploy
+        with:
+          service: events
+          stack-name: rusuh-${{ needs.resolve-env.outputs.environment }}-events
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          environment: ${{ needs.resolve-env.outputs.environment }}
+          parameter-overrides: >-
+            Environment=${{ needs.resolve-env.outputs.environment }}
+            EnableDirectApiAccess=${{ vars.ENABLE_DIRECT_API_ACCESS || 'false' }}
+            DeployRevision=${{ github.sha }}
+            TurnstileSiteKey=${{ secrets.TURNSTILE_SITE_KEY }}
+            QueueCapacity=${{ vars.QUEUE_CAPACITY || '300000' }}
 
   deploy-nik-verify:
     name: Deploy nik-verify
@@ -920,7 +983,7 @@ jobs:
   # ══════════════════════════════════════════════════════════════════════════
   #  UNIFIED API GATEWAY — Single entry point for frontend
   #
-  #  Deploys after all HTTP services (booking, queue, nik-verify, user) are up.
+  #  Deploys after all HTTP services (booking, queue, events, nik-verify, user) are up.
   #  Creates routes that proxy to the individual Lambda functions.
   # ══════════════════════════════════════════════════════════════════════════
   deploy-api-gateway:
@@ -928,11 +991,12 @@ jobs:
     # payment-api is in this list because the gateway declares a Lambda
     # permission and an integration naming rusuh-${ENV}-payment-api: deploying
     # the gateway before that function exists fails the whole stack.
-    needs: [resolve-env, deploy-booking, deploy-queue, deploy-nik-verify, deploy-user, deploy-payment-api]
+    needs: [resolve-env, deploy-booking, deploy-queue, deploy-events, deploy-nik-verify, deploy-user, deploy-payment-api]
     if: >-
       always() &&
       needs.deploy-booking.result != 'failure' &&
       needs.deploy-queue.result != 'failure' &&
+      needs.deploy-events.result != 'failure' &&
       needs.deploy-nik-verify.result != 'failure' &&
       needs.deploy-user.result != 'failure' &&
       needs.deploy-payment-api.result != 'failure' &&
@@ -965,21 +1029,119 @@ jobs:
             --query 'Stacks[0].Outputs[?OutputKey==`ApiUrl`].OutputValue' --output text
 
   # ══════════════════════════════════════════════════════════════════════════
+  #  ECS - admission-ctl and sse-server (DEPLOY.md, ECS section)
+  #  Not behind the API gateway and not part of the Lambda waves: it needs the foundation (and its public-subnet
+  #  parameter), not the preflight, and nothing else waits for it.
+  # ══════════════════════════════════════════════════════════════════════════
+  deploy-ecs:
+    name: Deploy ECS (admission-ctl, sse-server)
+    needs: [resolve-env, quality-gate, deploy-foundation]
+    if: >-
+      always() &&
+      needs.quality-gate.result == 'success' &&
+      needs.deploy-foundation.result != 'failure' &&
+      needs.resolve-env.outputs.ecs == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-env.outputs.environment }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: The foundation must publish the public subnets
+        env:
+          ENV: ${{ needs.resolve-env.outputs.environment }}
+        run: |
+          set -euo pipefail
+          if [ "$ENV" != "prod" ]; then
+            echo "::error::Environment is '$ENV' but infra/ecs/template-cfn.yaml resolves /rusuh/prod/... by default."
+            exit 1
+          fi
+          if ! aws ssm get-parameter --name "/rusuh/${ENV}/vpc/public-subnet-ids" >/dev/null 2>&1; then
+            echo "::error::/rusuh/${ENV}/vpc/public-subnet-ids is missing. Deploy the foundation (workflow_dispatch with deploy_foundation=true)."
+            exit 1
+          fi
+      - name: Deploy the image repositories
+        env:
+          ENV: ${{ needs.resolve-env.outputs.environment }}
+        run: |
+          set -euo pipefail
+          aws cloudformation deploy \
+            --template-file infra/ecs/ecr.yaml \
+            --stack-name "rusuh-${ENV}-ecr" \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides "Environment=${ENV}" \
+            --tags Project=rusuh ManagedBy=github-actions
+      - name: Build and push both images
+        env:
+          ENV: ${{ needs.resolve-env.outputs.environment }}
+          REGION: ${{ vars.AWS_REGION }}
+        run: |
+          set -euo pipefail
+          account=$(aws sts get-caller-identity --query Account --output text)
+          registry="${account}.dkr.ecr.${REGION}.amazonaws.com"
+          aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$registry"
+          for svc in admission-ctl sse-server; do
+            image="${registry}/rusuh-${ENV}/${svc}:${GITHUB_SHA}"
+            docker build -f "services/${svc}/Dockerfile" -t "$image" .
+            docker push "$image"
+          done
+      - name: Deploy the ECS stack
+        env:
+          ENV: ${{ needs.resolve-env.outputs.environment }}
+        run: |
+          set -euo pipefail
+          # CloudFormation waits for both services to reach a steady state, and the deployment circuit breaker rolls
+          # a failing one back, so a bad image fails this step instead of passing silently.
+          aws cloudformation deploy \
+            --template-file infra/ecs/template-cfn.yaml \
+            --stack-name "rusuh-${ENV}-ecs" \
+            --capabilities CAPABILITY_IAM \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides \
+              "Environment=${ENV}" \
+              "ImageTag=${GITHUB_SHA}" \
+              "MaxConcurrentSlots=${{ vars.MAX_CONCURRENT_SLOTS || '100' }}" \
+            --tags Project=rusuh ManagedBy=github-actions
+      - name: Smoke - the stream server answers on the load balancer
+        env:
+          ENV: ${{ needs.resolve-env.outputs.environment }}
+        run: |
+          set -euo pipefail
+          url=$(aws cloudformation describe-stacks --stack-name "rusuh-${ENV}-ecs" \
+            --query "Stacks[0].Outputs[?OutputKey=='StreamUrl'].OutputValue" --output text)
+          echo "stream server: $url"
+          for i in $(seq 1 20); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${url}/health" || echo 000)
+            echo "attempt $i: /health -> $code"
+            [ "$code" = "200" ] && exit 0
+            sleep 15
+          done
+          echo "::error::The stream server did not answer 200 on /health through the load balancer."
+          exit 1
+
+  # ══════════════════════════════════════════════════════════════════════════
   #  SMOKE TEST
   # ══════════════════════════════════════════════════════════════════════════
   smoke:
     name: Smoke test
-    needs: [resolve-env, deploy-booking, deploy-queue, deploy-nik-verify, deploy-user, deploy-api-gateway, deploy-payment-api]
+    needs: [resolve-env, deploy-booking, deploy-queue, deploy-events, deploy-nik-verify, deploy-user, deploy-api-gateway, deploy-payment-api]
     if: >-
       always() &&
       needs.deploy-booking.result != 'failure' &&
       needs.deploy-queue.result != 'failure' &&
+      needs.deploy-events.result != 'failure' &&
       needs.deploy-nik-verify.result != 'failure' &&
       needs.deploy-user.result != 'failure' &&
       needs.deploy-api-gateway.result != 'failure' &&
       needs.deploy-payment-api.result != 'failure' &&
       needs.resolve-env.outputs.any_service_changed == 'true'
     runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-env.outputs.environment }}
     permissions:
       id-token: write
       contents: read
@@ -1018,7 +1180,7 @@ jobs:
             echo ""
             echo "Testing direct service endpoints (ENABLE_DIRECT_API_ACCESS=true)..."
             fail=0
-            for svc in booking queue nik-verify user payment-api; do
+            for svc in booking queue events nik-verify user payment-api; do
               url=$(aws cloudformation describe-stacks --stack-name "rusuh-${ENV}-${svc}" \
                 --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue" \
                 --output text 2>/dev/null || true)

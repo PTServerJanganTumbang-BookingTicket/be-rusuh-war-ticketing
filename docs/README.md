@@ -23,9 +23,9 @@ source below, the source wins and the plan gets fixed.
 | [`01-authentication/`](01-authentication/README.md) | Authentication | `services/user` | **documented** — branch `feature/user-notif-nikverify-outboxpublisher` |
 | [`02-accounts/`](02-accounts/README.md) | Accounts | `services/user` | **documented** — branch |
 | [`02-accounts/tickets/`](02-accounts/tickets/README.md) | Accounts › Tickets (`GET /users/me/tickets`, `GET /tickets/{ticket_id}/eticket`) | `services/user` | **documented** — the list is done; the e-ticket's `?t=` token path is not implemented (§6.2) |
-| `03-events/` | Events | `services/events` | not started |
+| [`03-events/`](03-events/README.md) | Events | `services/events` | **built** (both endpoints, templates, CI job, gateway routes; CloudFront open) |
 | [`04-queue/`](04-queue/README.md) | Queue | `services/queue`, `services/sse-server`, `services/admission-ctl` | **planning** |
-| [`05-booking/`](05-booking/README.md) | Booking | `services/booking` (+ sweeps in `services/admission-ctl`) | **in progress**: both GET endpoints built; `POST /bookings` planned |
+| [`05-booking/`](05-booking/README.md) | Booking | `services/booking` (+ sweeps in `services/admission-ctl`) | **in progress**: both GET endpoints built; Authorization check and ticket page `account` built; `POST /bookings` planned (B4c–B4f) |
 | [`06-nik/`](06-nik/README.md) | NIK | `services/nik-verify` | **documented** — branch |
 | [`07-payment/`](07-payment/README.md) | Payment | `services/payment-api` | **documented** — branch `feature/payment` |
 | `08-admin/` | Admin | `services/payment-api` | not started — `GET /admin/reconciliation/disputed` is the operator half of the late-settlement path (`07-payment/05-payment-webhook.md` §10) |

@@ -7,7 +7,7 @@
 | **Contract** | Apidog `GET /events/{event_id}/tickets` · api-contracts §4.1 |
 | **Requirements** | FR-11, FR-12, FR-13, FR-17, BR-01, BR-02, BR-03, BR-04 |
 | **Detail** | impl-plan §2.2, §2.4, §5.3 · ADR-005 §6–§7 · ADR-006 §3.2, §8.12, §8.13 |
-| **Status** | built; the `account` field (§3.1 step 8) is planned with `POST /bookings` |
+| **Status** | built, including the `account` field (§3.3, step B4b); it ships after the `Authorization` check (B4a, [00](00-grant-authorization.md)) |
 
 ## 1. Purpose
 
@@ -32,10 +32,12 @@ sequenceDiagram
     participant R as Redis
     participant DB as Aurora (writer)
 
-    C->>G: GET /events/{ev}/tickets + X-Grant-Token (+ X-Device-Id)
+    C->>G: GET /events/{ev}/tickets + X-Grant-Token (+ X-Device-Id, or Authorization for an account grant)
     G->>R: HGETALL grant:{token}
     alt no header / no hash / device mismatch
         G-->>C: 401 GRANT_TOKEN_MISSING / GRANT_TOKEN_INVALID / DEVICE_MISMATCH (400 DEVICE_ID_REQUIRED)
+    else account grant: no, bad or foreign session
+        G-->>C: 401 UNAUTHORIZED / TOKEN_EXPIRED / TOKEN_INVALID (00-grant-authorization)
     end
     G->>B: Grant{event_id, booking_id, ...}
     alt grant.event_id != path event_id
@@ -48,19 +50,23 @@ sequenceDiagram
     else terminal status (LAPSED, EXPIRED, CONFIRMED, ABANDONED)
         B-->>C: 401 GRANT_TOKEN_INVALID
     end
-    B->>DB: SELECT event + ticket_categories ORDER BY sort_order
+    B->>DB: one batch: event · ticket_categories ORDER BY sort_order · accounts (account grant only)
+    alt no event row
+        B-->>C: 404 NOT_FOUND
+    end
     B->>R: MGET stock:{ev}:{cat} ... (one shard, {ev} tag)
     alt any stock key missing
         B-->>C: 503 STOCK_UNINITIALIZED
     end
-    B-->>C: 200 event, session, categories, rules · Cache-Control: no-store
+    B-->>C: 200 event, session, categories, rules, account · Cache-Control: no-store
 ```
 
 ## 3. Steps
 
 ### 3.1 The endpoint
 
-1. `pkg/grantauth` verifies the grant (README §2 rule 2) and puts `Grant` in the context.
+1. `pkg/grantauth` verifies the grant and, for an account grant, the session (README §2 rule 2,
+   [00-grant-authorization.md](00-grant-authorization.md)) and puts `Grant` in the context.
 2. **Event check:** `grant.EventID ≠ {event_id}` → 401 `GRANT_TOKEN_INVALID`.
 3. **Claim, idempotent:** `UPDATE … WHERE id = $grant.BookingID AND grant_token = $grant.Token AND status = 'GRANTED'`.
    0 rows is not an error (already SELECTING, or later).
@@ -79,6 +85,8 @@ sequenceDiagram
 5. **Event:** `SELECT id, name, event_date, venue, image_url FROM events WHERE id = $1`. Missing → 404 `NOT_FOUND`
    (data error: a grant exists for an unknown event).
 6. **Categories:** `SELECT id, name, description, price, max_per_order FROM ticket_categories WHERE event_id = $1 ORDER BY sort_order, id`.
+6a. **Account** (account grant only, §3.3): `SELECT email, nik_masked FROM accounts WHERE id = $grant.AccountID`, in
+   the **same batch** as steps 5 and 6, so it adds no round trip.
 7. **Stock:** one `MGET` of `rediskeys.Event(ev).Stock(cat)` for every category (all on the event's shard). Any key
    missing → 503 `STOCK_UNINITIALIZED` (ADR-005 §8: unknown is not sold out). A negative value is shown as 0.
 8. **Build the response:**
@@ -88,9 +96,7 @@ sequenceDiagram
    - `session = {expires_at, server_time = now}`: the client counts down from `expires_at`, with its clock corrected by
      `server_time` (there is no seconds-left field)
    - `rules = {max_tickets_per_order: MAX_TICKETS_PER_TRANSACTION, one_nik_per_ticket: true}`
-   - `account = {email, nik_masked}` from `accounts` for a logged-in grant (`grant.AccountID`), `null` for a guest. It
-     pre-fills `contact_email` and the first seat; `nik_masked` is `null` when the account has no verified NIK.
-     **Planned** with `POST /bookings`: the built page does not send it yet
+   - `account` from step 6a (§3.3): `{email, nik_masked}` for an account grant, `null` for a guest
    - header `Cache-Control: no-store`
 
 `MAX_TICKETS_PER_TRANSACTION` (default 3, BR-01) is booking config, not a constant, so a test can change it.
@@ -130,6 +136,32 @@ sequenceDiagram
     Note over CTL: next tick COUNT: open and browsing are lower → next customers admitted
 ```
 
+### 3.3 The `account` field (step B4b)
+
+What the logged-in customer sees pre-filled: their email in `contact_email`, and their own NIK, masked, offered for the
+first seat (`use_account_nik: true` on `POST /bookings`). Both can be changed. Contract §4.1 "Aturan field".
+
+- **Read:** `SELECT email, nik_masked FROM accounts WHERE id = $1`, queued in the batch of steps 5 and 6
+  (`Store.Page`), only when `grant.AccountID` is set. A guest grant sends no `accounts` query.
+- **Answer:**
+
+  | Case | `account` |
+  |---|---|
+  | guest grant | `null` |
+  | account grant, account with a verified NIK | `{email, nik_masked: "3171**********22"}` |
+  | account grant, account without a NIK | `{email, nik_masked: null}` |
+  | account grant, no `accounts` row (deleted during the sale) | `null`, logged; the page still renders |
+
+  `nik_masked` needs no extra condition: the check `accounts_nik_all_or_nothing` (migration `0001`) allows `nik_masked` only
+  together with `nik_hmac` and `nik_verified_at`.
+- **Never the full NIK and never `nik_hmac`** (NFR-11). `nik_masked` is what `accounts` stores; nothing is computed.
+- **Only after B4a.** The field shows account data, so it ships only once `pkg/grantauth` checks the session of an
+  account grant; before that a leaked grant alone would show the account's email.
+- **Not from the access token.** The token carries the email but no NIK, and an email changed after login would be
+  stale; `accounts` is the record, and it is already in the batch.
+- **A read failure** of the batch is the existing 503 `INTERNAL_ERROR`; the account query does not get its own
+  fallback (the page would otherwise render a logged-in customer as a guest).
+
 ## 4. Data touched
 
 | Store | Key / table | Op | Notes |
@@ -139,6 +171,7 @@ sequenceDiagram
 | Aurora | `bookings` | UPDATE (claim), SELECT, UPDATE (sweep) | writer |
 | Aurora | `events` | SELECT | `0002` |
 | Aurora | `ticket_categories` | SELECT | `0008` |
+| Aurora | `accounts` | SELECT `email`, `nik_masked` | account grant only, same batch (§3.3) |
 
 ## 5. Responses and errors
 
@@ -192,11 +225,17 @@ Unit (`services/booking/.../usecase`, fakes for ports; `pkg/grantauth` on minire
 - [x] categories come back in `sort_order`
 - [x] the response has no seconds-left field
 - [x] the response carries `Cache-Control: no-store` and the contract envelope
+- [x] an account grant gets `account` with the account's email and masked NIK
+- [x] an account without a NIK gets `account.nik_masked: null`
+- [x] a guest grant gets `account: null` and no `accounts` read runs
+- [x] an account grant whose `accounts` row is gone gets `account: null` and the page renders
+- [x] the response never carries a full NIK or `nik_hmac`
 
 Integration (real Postgres via `pkg/pgtest`, Redis cluster via `REDIS_ADDR`):
 
 - [x] claim UPDATE is a compare-and-set: two concurrent loads → one row updated, both render
 - [x] stock MGET works on the cluster (all keys on the `{ev}` shard)
+- [x] the batch reads `accounts` for an account grant and returns its email and `nik_masked` (real Postgres)
 - [x] admission-ctl: a SELECTING row past its deadline becomes EXPIRED and its grant hash is gone; one second before,
       it stays SELECTING
 - [x] admission-ctl: two sweepers on the same row → exactly one gets it back
@@ -209,4 +248,4 @@ Integration (real Postgres via `pkg/pgtest`, Redis cluster via `REDIS_ADDR`):
 - [x] use case `GetTicketSelection` + handler + route in `services/booking`
 - [x] SELECTING sweep in `services/admission-ctl` (SQL, use case, metric)
 - [x] `make verify` green; independent reviews done
-- [ ] `account {email, nik_masked}` field (with `POST /bookings`)
+- [x] B4b: `account` field (§3.3): `Store.Page` gains the account query, the use case and view gain `Account`, tests

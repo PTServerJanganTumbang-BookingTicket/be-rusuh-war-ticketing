@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"os"
 	"time"
@@ -17,10 +16,12 @@ import (
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/emf"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/eticket"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/grantauth"
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/idgen"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/pgutil"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/token"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/booking/internal/booking/application/usecase"
 	bookinghttp "github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/booking/internal/booking/infrastructure/http"
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/booking/internal/booking/infrastructure/nikverify"
 	bookingpg "github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/booking/internal/booking/infrastructure/postgres"
 	bookingredis "github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/booking/internal/booking/infrastructure/redis"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/booking/internal/config"
@@ -76,7 +77,7 @@ func New(ctx context.Context, cfg config.Config) (http.Handler, Deps, error) {
 }
 
 // NewHandler wires the routes on the given connections. Every booking route sits behind pkg/grantauth.Middleware
-// (docs/05-booking/README.md §3). POST /bookings arrives with build step B4.
+// (docs/05-booking/README.md §3).
 func NewHandler(cfg config.Config, d Deps) (http.Handler, error) {
 	links, err := ticketLinks(cfg)
 	if err != nil {
@@ -85,29 +86,11 @@ func NewHandler(cfg config.Config, d Deps) (http.Handler, error) {
 	mux := http.NewServeMux()
 	apinizer.RegisterHealthCheck(mux, "/sys/ping")
 
-	// The session verifier is what §8.17 added: a grant naming an account is
-	// only honoured alongside that account's own Bearer token, so a leaked
-	// grant cannot be spent in someone else's name. Built with the same
-	// issuer name and TTL user-service signs with.
-	//
-	// No secret means no verifier, and the guard then answers 503 for an
-	// account grant rather than waving it through. config.validate() already
-	// requires the secret outside local, so that degraded state is reachable
-	// only on a developer's machine - where guest flows still work and a
-	// logged-in call tells you plainly what is missing.
-	var sessions *token.Issuer
-	if cfg.Grant.JWTSecret != "" {
-		sessions, err = token.NewIssuer(cfg.Grant.JWTSecret, "rusuh-user", time.Hour)
-		if err != nil {
-			return nil, fmt.Errorf("session verifier: %w", err)
-		}
-	} else {
-		slog.Warn("no JWT_SECRET: account grants will be refused with 503 (ADR-006 §8.17)")
+	sessions, err := token.NewIssuer(cfg.Grant.JWTSecret, "rusuh-user", time.Hour)
+	if err != nil {
+		return nil, fmt.Errorf("access token verifier (JWT_SECRET): %w", err)
 	}
-	grant := grantauth.Middleware(d.Redis, grantauth.Config{
-		DevicePepper: cfg.Grant.DevicePepper,
-		Sessions:     sessions,
-	})
+	grant := grantauth.Middleware(d.Redis, grantauth.Config{DevicePepper: cfg.Grant.DevicePepper, Tokens: sessions})
 	metrics := emf.New("Rusuh/Booking", os.Stdout)
 	store := bookingpg.NewStore(d.DB)
 	ticketPage := usecase.NewTicketPage(usecase.TicketPageDeps{
@@ -121,6 +104,22 @@ func NewHandler(cfg config.Config, d Deps) (http.Handler, error) {
 
 	detail := usecase.NewBookingDetail(usecase.BookingDetailDeps{Details: store, Links: links, Metrics: metrics, Clock: time.Now})
 	mux.Handle("GET /bookings/{booking_id}", grant(bookinghttp.NewBookingDetail(detail)))
+
+	niks, err := nikverify.New(context.Background(), cfg)
+	if err != nil {
+		return nil, fmt.Errorf("nik-verify client: %w", err)
+	}
+	create := usecase.NewCreateBooking(usecase.CreateBookingDeps{
+		Orders:  store,
+		Holds:   bookingredis.NewHolds(d.Redis, int64(cfg.Booking.MaxTicketsPerTransaction), cfg.Booking.NIKLockTTL),
+		Stock:   bookingredis.NewStock(d.Redis),
+		Queue:   bookingredis.NewQueue(d.Redis),
+		NIKs:    niks,
+		Reader:  detail,
+		Metrics: metrics,
+		NewID:   func() string { return idgen.NewPrefixed("BI-") },
+	}, cfg.Booking.MaxTicketsPerTransaction)
+	mux.Handle("POST /bookings", grant(bookinghttp.NewCreateBooking(create)))
 
 	return noStore(mux), nil
 }

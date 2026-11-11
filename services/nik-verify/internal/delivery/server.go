@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/awslabs/aws-lambda-go-api-proxy/httpadapter"
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/apinizer"
@@ -13,6 +14,7 @@ import (
 	nikhttp "github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/nik-verify/internal/nik/infrastructure/http"
 	nikpostgres "github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/nik-verify/internal/nik/infrastructure/postgres"
 	nikredis "github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/nik-verify/internal/nik/infrastructure/redis"
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/nik-verify/internal/nik/port/inbound"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -21,8 +23,15 @@ import (
 type Server struct {
 	Handler *http.ServeMux
 
+	uc    inbound.INikUsecase
 	pool  *pgxpool.Pool
 	redis *goredis.Client
+}
+
+// Events is the Lambda entry point: API Gateway events go to Handler, the internal {"op":"validate"} event goes to the
+// same use case. The local HTTP server (cmd/server) does not use it.
+func (s *Server) Events() *EventHandler {
+	return NewEventHandler(s.uc, httpadapter.NewV2(s.Handler).ProxyWithContext)
 }
 
 // Close releases the pool and Redis client.
@@ -72,5 +81,5 @@ func New(ctx context.Context, cfg config.Config) (*Server, error) {
 	apinizer.RegisterHealthCheck(mux, "/sys/ping")
 	nikhttp.RegisterRoutes(mux, nikhttp.NewNik(uc))
 
-	return &Server{Handler: mux, pool: pool, redis: redisClient}, nil
+	return &Server{Handler: mux, uc: uc, pool: pool, redis: redisClient}, nil
 }

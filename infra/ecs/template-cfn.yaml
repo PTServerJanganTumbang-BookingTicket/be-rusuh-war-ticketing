@@ -1,0 +1,296 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  ECS Fargate for the two services that cannot be Lambdas: admission-ctl (one worker, no load balancer)
+  and sse-server (one task behind an internet-facing ALB). See the ECS section of DEPLOY.md.
+  The VPC, subnets, security group, Redis address and database secret come from the foundation stack
+  (SSM parameters and rusuh-<env>/database-url), as for the Lambda stacks. Plain CloudFormation, no SAM transform.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues: [prod]
+    Description: Only prod exists; the SSM defaults below are the literal /rusuh/prod/... paths.
+
+  ImageTag:
+    Type: String
+    Description: Tag of both images in ECR (the git SHA the pipeline just pushed).
+
+  # ── Infrastructure resolved from the foundation at deploy time ──────────────
+  VpcId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::VPC::Id>
+    Default: /rusuh/prod/vpc/id
+  PrivateSubnetIds:
+    Type: AWS::SSM::Parameter::Value<List<AWS::EC2::Subnet::Id>>
+    Default: /rusuh/prod/vpc/private-subnet-ids
+  PublicSubnetIds:
+    Type: AWS::SSM::Parameter::Value<List<AWS::EC2::Subnet::Id>>
+    Default: /rusuh/prod/vpc/public-subnet-ids
+    Description: Two subnets in two zones; an ALB needs both. Published by the foundation stack.
+  SecurityGroupIds:
+    Type: AWS::SSM::Parameter::Value<List<AWS::EC2::SecurityGroup::Id>>
+    Default: /rusuh/prod/vpc/lambda-security-group-ids
+    Description: >
+      The Lambda security group. Redis and the database already accept it, so the tasks reuse it; the ALB gets
+      one extra inbound rule on it (SseFromAlb).
+  RedisAddr:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/redis/addr
+
+  # ── Sizes: starting values, not load-tested ─────────────────────────────────
+  AdmissionCpu:
+    Type: String
+    Default: "256"
+    AllowedValues: ["256", "512", "1024"]
+  AdmissionMemory:
+    Type: String
+    Default: "512"
+  SseCpu:
+    Type: String
+    Default: "512"
+    AllowedValues: ["256", "512", "1024", "2048"]
+  SseMemory:
+    Type: String
+    Default: "1024"
+  MaxConcurrentSlots:
+    Type: Number
+    Default: 100
+    MinValue: 1
+    Description: Customers allowed inside (choosing seats or paying) at once, per event. Read by admission-ctl.
+  LogRetentionDays:
+    Type: Number
+    Default: 14
+
+Resources:
+  # ── Cluster, logs, execution role ───────────────────────────────────────────
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub rusuh-${Environment}
+
+  AdmissionCtlLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /ecs/rusuh-${Environment}/admission-ctl
+      RetentionInDays: !Ref LogRetentionDays
+
+  SseServerLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /ecs/rusuh-${Environment}/sse-server
+      RetentionInDays: !Ref LogRetentionDays
+
+  # Pulls images and writes logs. The tasks themselves have no task role: neither service calls an AWS API
+  # (metrics leave as CloudWatch EMF log lines, the database URL arrives as an environment variable).
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  # ── admission-ctl: one worker, no port, no load balancer ────────────────────
+  AdmissionCtlTask:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub rusuh-${Environment}-admission-ctl
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: !Ref AdmissionCpu
+      Memory: !Ref AdmissionMemory
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      RuntimePlatform:
+        OperatingSystemFamily: LINUX
+        CpuArchitecture: X86_64
+      ContainerDefinitions:
+        - Name: admission-ctl
+          Image: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/rusuh-${Environment}/admission-ctl:${ImageTag}
+          Essential: true
+          StopTimeout: 30
+          Environment:
+            - Name: REDIS_ADDR
+              Value: !Ref RedisAddr
+            # The foundation Redis is one node, not a cluster (the same setting as queue and booking).
+            - Name: REDIS_CLUSTER
+              Value: "false"
+            - Name: DATABASE_URL
+              Value: !Sub "{{resolve:secretsmanager:rusuh-${Environment}/database-url:SecretString:url}}"
+            - Name: MAX_CONCURRENT_SLOTS
+              Value: !Ref MaxConcurrentSlots
+            - Name: LOG_FORMAT
+              Value: json
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref AdmissionCtlLogs
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+  # Exactly one task, and never two at once: stop the old before starting the new (min 0 %, max 100 %).
+  # admission-ctl is the only writer of grants (docs/04-queue/05-admission-controller.md).
+  AdmissionCtlService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: admission-ctl
+      Cluster: !Ref Cluster
+      LaunchType: FARGATE
+      DesiredCount: 1
+      TaskDefinition: !Ref AdmissionCtlTask
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 0
+        MaximumPercent: 100
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          Subnets: !Ref PrivateSubnetIds
+          SecurityGroups: !Ref SecurityGroupIds
+
+  # ── sse-server: one task behind an internet-facing ALB ──────────────────────
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: SSE ALB - HTTP from the internet
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: HTTP (HTTPS is added with the certificate, see DEPLOY.md, ECS section)
+      Tags:
+        - Key: Name
+          Value: !Sub rusuh-${Environment}-sse-alb
+
+  # The tasks use the Lambda security group; it needs to accept the ALB on the stream port.
+  SseFromAlb:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Select [0, !Ref SecurityGroupIds]
+      IpProtocol: tcp
+      FromPort: 8085
+      ToPort: 8085
+      SourceSecurityGroupId: !Ref AlbSecurityGroup
+      Description: sse-server from the ALB
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub rusuh-${Environment}-sse
+      Type: application
+      Scheme: internet-facing
+      Subnets: !Ref PublicSubnetIds
+      SecurityGroups: [!Ref AlbSecurityGroup]
+      LoadBalancerAttributes:
+        # A waiting customer's stream can be quiet for a long time; the server sends a keepalive comment every 15 s.
+        - Key: idle_timeout.timeout_seconds
+          Value: "3600"
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub rusuh-${Environment}-sse
+      VpcId: !Ref VpcId
+      TargetType: ip
+      Protocol: HTTP
+      Port: 8085
+      HealthCheckPath: /health
+      HealthCheckIntervalSeconds: 15
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      TargetGroupAttributes:
+        - Key: slow_start.duration_seconds
+          Value: "30"
+        # Open streams are cut after this on a redeploy; clients reconnect and the first frame restores their place.
+        - Key: deregistration_delay.timeout_seconds
+          Value: "60"
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  SseServerTask:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub rusuh-${Environment}-sse-server
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: !Ref SseCpu
+      Memory: !Ref SseMemory
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      RuntimePlatform:
+        OperatingSystemFamily: LINUX
+        CpuArchitecture: X86_64
+      ContainerDefinitions:
+        - Name: sse-server
+          Image: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/rusuh-${Environment}/sse-server:${ImageTag}
+          Essential: true
+          StopTimeout: 30
+          PortMappings:
+            - ContainerPort: 8085
+              Protocol: tcp
+          Environment:
+            - Name: APP_ENV
+              Value: !Ref Environment
+            - Name: APP_PORT
+              Value: "8085"
+            - Name: REDIS_ADDR
+              Value: !Ref RedisAddr
+            - Name: REDIS_CLUSTER
+              Value: "false"
+            - Name: LOG_FORMAT
+              Value: json
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref SseServerLogs
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+  SseServerService:
+    Type: AWS::ECS::Service
+    DependsOn: Listener
+    Properties:
+      ServiceName: sse-server
+      Cluster: !Ref Cluster
+      LaunchType: FARGATE
+      DesiredCount: 1
+      TaskDefinition: !Ref SseServerTask
+      HealthCheckGracePeriodSeconds: 60
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          Subnets: !Ref PrivateSubnetIds
+          SecurityGroups: !Ref SecurityGroupIds
+      LoadBalancers:
+        - ContainerName: sse-server
+          ContainerPort: 8085
+          TargetGroupArn: !Ref TargetGroup
+
+Outputs:
+  ClusterName:
+    Value: !Ref Cluster
+  StreamUrl:
+    Description: Base URL of the stream server (HTTP until the certificate and domain exist).
+    Value: !Sub http://${LoadBalancer.DNSName}

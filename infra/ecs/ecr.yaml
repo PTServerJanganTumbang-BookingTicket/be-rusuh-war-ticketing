@@ -1,0 +1,40 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Container image repositories for the services that run on ECS (admission-ctl, sse-server).
+  A stack of its own so the repositories exist before the first image is pushed; the ECS stack
+  (template-cfn.yaml) then refers to the images by tag. See the ECS section of DEPLOY.md.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: prod
+
+Resources:
+  AdmissionCtlRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub rusuh-${Environment}/admission-ctl
+      # Tags are git SHAs, and a re-run of the same commit pushes the same tag again.
+      ImageTagMutability: MUTABLE
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {"rules":[{"rulePriority":1,"description":"keep the last 10 images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":10},"action":{"type":"expire"}}]}
+
+  SseServerRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub rusuh-${Environment}/sse-server
+      ImageTagMutability: MUTABLE
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {"rules":[{"rulePriority":1,"description":"keep the last 10 images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":10},"action":{"type":"expire"}}]}
+
+Outputs:
+  AdmissionCtlRepositoryUri:
+    Value: !GetAtt AdmissionCtlRepository.RepositoryUri
+  SseServerRepositoryUri:
+    Value: !GetAtt SseServerRepository.RepositoryUri

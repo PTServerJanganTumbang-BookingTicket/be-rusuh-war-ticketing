@@ -135,8 +135,9 @@ git push origin HEAD:test-deployment
 ```
 
 Roughly 20–25 minutes. Order: quality gate → foundation (VPC, Aurora, Redis,
-secrets, artifact bucket, 13 SSM parameters) → preflight → three services →
-two services → smoke test.
+secrets, artifact bucket, 14 SSM parameters) → preflight → three services →
+two services → smoke test. The ECS job (admission-ctl, sse-server) runs
+alongside, after the foundation: see the ECS section of `DEPLOY.md`.
 
 `workflow_dispatch` is **not** available from a feature branch — GitHub reads
 it only from the default branch — so a push is the only route until `main`
@@ -149,9 +150,9 @@ The pipeline does not migrate. This is deliberate (see the note in
 the schema** — `/sys/ping` touches no tables, so services report healthy
 against an empty database.
 
-Connect with a SQL client and run `migrations/0001`–`0004` `.up.sql` in order;
-`0002`, `0003` and `0004` all have foreign keys to `accounts`. Connection
-details:
+Connect with a SQL client and run every `migrations/*.up.sql` in order (0001 to
+0011 today; `migrations/README.md` lists them). `0002`, `0003` and `0004` all
+have foreign keys to `accounts`, and `events` needs 0011. Connection details:
 
 ```bash
 aws secretsmanager get-secret-value --region ap-southeast-1 \

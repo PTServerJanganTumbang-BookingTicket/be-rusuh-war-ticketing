@@ -1,13 +1,9 @@
 // Package grantauth checks the grant on every booking and payment endpoint (api-contracts §4, §5).
 //
-// X-Grant-Token proves the caller holds a slot, and for a guest X-Device-Id proves it is the device that
-// received it (ADR-006 §8.9, no rebind). The middleware reads grant:<token> (written by admission-ctl,
-// ADR-006 §8.13) and puts the Grant in the request context.
-//
-// A grant belonging to a logged-in account additionally requires Authorization: Bearer for the SAME
-// account (ADR-006 §8.17, contract v2.20). A leaked or copied grant must not be enough to buy in
-// someone's name. The session only CHECKS: bookings.account_id still comes from the grant, so a dead
-// session is a visible error rather than the wrong attribution.
+// X-Grant-Token proves the caller holds a slot. A guest also sends X-Device-Id, which proves it is the device that
+// received the slot (ADR-006 §8.9, no rebind). A grant that belongs to an account also needs that account's access
+// token in Authorization: Bearer, so a leaked grant alone is not enough (ADR-006 §8.17). The middleware reads
+// grant:<token> (written by admission-ctl, ADR-006 §8.13) and puts the Grant in the request context.
 //
 // It does not decide access alone: the hash can outlive its booking, so every use case also checks the
 // booking row (docs/05-booking/README.md §3).
@@ -38,18 +34,15 @@ const (
 	CodeGrantTokenInvalid = "GRANT_TOKEN_INVALID"
 	CodeDeviceIDRequired  = "DEVICE_ID_REQUIRED"
 	CodeDeviceMismatch    = "DEVICE_MISMATCH"
-	// CodeUnauthorized is Appendix A's UNAUTHORIZED for an account grant whose
-	// Authorization header is missing or belongs to another account. TOKEN_EXPIRED
-	// and TOKEN_INVALID are apperror's: they are the same two codes §1.4 uses, and
-	// one definition per wire string is the point.
-	CodeUnauthorized = "UNAUTHORIZED"
+	CodeUnauthorized      = "UNAUTHORIZED"
+	CodeTokenExpired      = "TOKEN_EXPIRED"
+	CodeTokenInvalid      = "TOKEN_INVALID"
 )
 
 // Request headers.
 const (
-	HeaderGrantToken    = "X-Grant-Token"
-	HeaderDeviceID      = "X-Device-Id"
-	HeaderAuthorization = "Authorization"
+	HeaderGrantToken = "X-Grant-Token"
+	HeaderDeviceID   = "X-Device-Id"
 )
 
 // Grant is the content of grant:<token>. Exactly one of AccountID (logged-in) and DeviceHash (guest) is set.
@@ -62,15 +55,16 @@ type Grant struct {
 	DeviceHash string
 }
 
-// Config holds the device pepper, the same DEVICE_PEPPER queue's join uses, and the session verifier
-// for ADR-006 §8.17.
-//
-// Sessions is required: without it an account grant cannot be checked, and the middleware answers 503
-// rather than letting the request through. Failing closed is the whole point of §8.17 — a guard that
-// skips the check when misconfigured is the hole it was written to close. Guest grants never touch it.
+// TokenVerifier checks an access token; *token.Issuer is one. It errors with token.ErrExpired or token.ErrInvalid.
+type TokenVerifier interface {
+	Verify(raw string) (token.Claims, error)
+}
+
+// Config holds the device pepper (the same DEVICE_PEPPER queue's join uses) and the verifier of access tokens for
+// account grants (the same JWT_SECRET user-service signs with).
 type Config struct {
 	DevicePepper []byte
-	Sessions     *token.Issuer
+	Tokens       TokenVerifier
 }
 
 type ctxKey struct{}
@@ -89,12 +83,16 @@ func ErrInvalid() error {
 // Middleware verifies the grant and calls next with the Grant in the context. Checks, in order:
 // missing header → 401 GRANT_TOKEN_MISSING; no hash, or a hash with both or neither identity → 401
 // GRANT_TOKEN_INVALID; guest without X-Device-Id → 400 DEVICE_ID_REQUIRED; guest from another device →
-// 401 DEVICE_MISMATCH; account grant without a Bearer for the same account → 401 UNAUTHORIZED /
-// TOKEN_EXPIRED / TOKEN_INVALID (§8.17). Redis unreachable → 503: no credential check, no access.
+// 401 DEVICE_MISMATCH (a guest grant ignores Authorization); account grant without Authorization, or with the
+// session of another account → 401 UNAUTHORIZED, an expired token → 401 TOKEN_EXPIRED, an unreadable or badly signed
+// one → 401 TOKEN_INVALID. Redis unreachable → 503: no credential check, no access.
 //
-// The session is checked LAST, after grant and device, as §8.17 specifies: the weaker credential
-// cannot be used to probe the stronger one, and a guest never needs a session at all.
+// cfg.Tokens is required: it panics at construction without it, so a missing JWT_SECRET fails at start, not on the
+// first account request.
 func Middleware(rdb goredis.UniversalClient, cfg Config) func(http.Handler) http.Handler {
+	if cfg.Tokens == nil {
+		panic("grantauth: Config.Tokens is required (account grants need their access token checked)")
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			g, err := verify(r, rdb, cfg)
@@ -142,61 +140,48 @@ func verify(r *http.Request, rdb goredis.UniversalClient, cfg Config) (Grant, er
 		if subtle.ConstantTimeCompare([]byte(g.DeviceHash), []byte(DeviceHash(cfg.DevicePepper, device))) != 1 {
 			return Grant{}, apperror.ErrUnauthorized("Grant terdaftar di perangkat lain").WithCode(CodeDeviceMismatch)
 		}
-		// A guest grant ignores Authorization entirely (§8.17): a token sent
-		// alongside one is not an error, it is simply not what binds the grant.
 		return g, nil
 	}
-	if err := checkSession(r, g, cfg); err != nil {
-		return Grant{}, err
-	}
-	return g, nil
+	return g, checkSession(r, g, cfg.Tokens)
 }
 
-// checkSession enforces ADR-006 §8.17 for an account grant.
-//
-// It verifies the session and nothing else: the account id used for attribution is already on the
-// grant, written by admission-ctl from the queue token. v2.3 took it from the header instead, and a
-// stale header meant a booking attributed to the wrong account; here a stale session is a 401 the
-// client can act on by refreshing (§1.4).
-func checkSession(r *http.Request, g Grant, cfg Config) error {
-	if cfg.Sessions == nil {
-		// Fail closed. Letting the request through would silently restore
-		// exactly the gap §8.17 closes, and would do it on the path where a
-		// leaked grant is worth the most.
-		slog.Error("grantauth: no session verifier configured; cannot check an account grant",
-			slog.String("account_id", g.AccountID))
-		return apperror.ErrServiceUnavailable("Layanan sedang sibuk, coba lagi").WithCode(apinizer.ErrorCodeInternal)
-	}
-	raw, ok := bearer(r.Header.Get(HeaderAuthorization))
+// checkSession is the second condition of an account grant: the access token must belong to the account the grant was
+// issued to. The token only checks; the booking's account stays the grant's (api-contracts §4).
+func checkSession(r *http.Request, g Grant, tokens TokenVerifier) error {
+	raw, ok := BearerToken(r.Header.Get("Authorization"))
 	if !ok {
-		return apperror.ErrUnauthorized("Authorization wajib untuk grant milik akun").WithCode(CodeUnauthorized)
+		return apperror.ErrUnauthorized("Sesi tidak valid").WithCode(CodeTokenInvalid)
 	}
-	claims, err := cfg.Sessions.Verify(raw)
+	if raw == "" {
+		return apperror.ErrUnauthorized("Login diperlukan untuk grant ini").WithCode(CodeUnauthorized)
+	}
+	claims, err := tokens.Verify(raw)
 	switch {
 	case errors.Is(err, token.ErrExpired):
-		return apperror.ErrUnauthorized("Sesi kedaluwarsa, muat ulang lalu coba lagi").WithCode(apperror.CodeTokenExpired)
+		return apperror.ErrUnauthorized("Sesi sudah kedaluwarsa").WithCode(CodeTokenExpired)
 	case err != nil:
-		return apperror.ErrUnauthorized("Sesi tidak sah").WithCode(apperror.CodeTokenInvalid)
+		return apperror.ErrUnauthorized("Sesi tidak valid").WithCode(CodeTokenInvalid)
 	}
-	// Another account's valid session answers UNAUTHORIZED, not TOKEN_INVALID:
-	// the token is fine, it is the pairing that is wrong, and the client's fix
-	// is to log in as the right account rather than to refresh.
 	if subtle.ConstantTimeCompare([]byte(claims.Subject), []byte(g.AccountID)) != 1 {
-		slog.Warn("grantauth: session does not match the grant's account")
-		return apperror.ErrUnauthorized("Sesi bukan milik akun pemegang grant").WithCode(CodeUnauthorized)
+		slog.Warn("grantauth: session of another account", slog.String("metric", "GrantAccountMismatch"))
+		return apperror.ErrUnauthorized("Grant milik akun lain").WithCode(CodeUnauthorized)
 	}
 	return nil
 }
 
-// bearer extracts the token from an Authorization header, case-insensitively on the scheme as RFC 7235
-// requires. An empty header and a header with another scheme both read as absent.
-func bearer(header string) (string, bool) {
-	const prefix = "bearer "
-	if len(header) <= len(prefix) || !strings.EqualFold(header[:len(prefix)], prefix) {
+// BearerToken reads an Authorization header. No header is ("", true); "Bearer <token>" (scheme case-insensitive,
+// token trimmed) is (token, true); anything else, including "Bearer" with no token, is ("", false). Queue's join and
+// /queue/me read the header the same way.
+func BearerToken(h string) (string, bool) {
+	if h == "" {
+		return "", true
+	}
+	const prefix = "Bearer "
+	if len(h) <= len(prefix) || !strings.EqualFold(h[:len(prefix)], prefix) {
 		return "", false
 	}
-	raw := strings.TrimSpace(header[len(prefix):])
-	return raw, raw != ""
+	tok := strings.TrimSpace(h[len(prefix):])
+	return tok, tok != ""
 }
 
 // WithGrant returns ctx carrying g, as the middleware does. For handler tests.

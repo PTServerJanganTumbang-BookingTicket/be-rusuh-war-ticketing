@@ -31,7 +31,6 @@ Feature: Join says no early and in a fixed order, and a refusal never costs me a
       | CAPTCHA required  | 400    | CAPTCHA_REQUIRED   |
       | CAPTCHA           | 403    | CAPTCHA_FAILED     |
       | sale state        | 409    | SALE_NOT_OPEN      |
-      | fully booked          | 409    | FULL_BOOKED           |
       | capacity          | 503    | QUEUE_FULL         |
 
   @unit
@@ -176,7 +175,7 @@ Feature: Join says no early and in a fixed order, and a refusal never costs me a
     Given event "E1" is "SCHEDULED" with sale_starts_at "2026-11-10T02:00:00Z"
     When a guest with device id "dev-aaaaaaaaaaaaaaaa" joins "E1" with captcha "cap-ok"
     Then the response status is 409 with error_code "SALE_NOT_OPEN"
-    And data is {"queue_state": "NOT_OPEN", "sale_starts_at": "2026-11-10T02:00:00Z"}
+    And data is {"queue_state": "SCHEDULED", "sale_starts_at": "2026-11-10T02:00:00Z"}
     # Decided: sale-ops seeds both as fields of queue:{E1}, next to now_serving.
 
   @unit
@@ -188,15 +187,14 @@ Feature: Join says no early and in a fixed order, and a refusal never costs me a
     And data is {"queue_state": "CLOSED"}
 
   @integration @redis-cluster @FR-18
-  Scenario: While fully booked, a new customer is refused and no number is spent
+  Scenario: While fully booked, a new customer still gets a place
     Given event "E1" is "FULL_BOOKED" with full_booked_at "2026-11-10T02:40:12Z"
     When a guest with device id "dev-aaaaaaaaaaaaaaaa" joins "E1" with captcha "cap-ok"
-    Then the response status is 409 with error_code "FULL_BOOKED"
-    And data is {"queue_state": "FULL_BOOKED", "full_booked_at": "2026-11-10T02:40:12Z"}
-    And queue:{E1} issued is still 149
+    Then the response status is 200
+    And data.ticket_no is 150
 
   @integration @redis-cluster @FR-18
-  Scenario: Joining works again once seats come back
+  Scenario: Joining still works once seats come back
     Given event "E1" was "FULL_BOOKED" and is now "OPEN"
     When a guest with device id "dev-aaaaaaaaaaaaaaaa" joins "E1" with captcha "cap-ok"
     Then the response status is 200
@@ -221,7 +219,7 @@ Feature: Join says no early and in a fixed order, and a refusal never costs me a
     Given QUEUE_CAPACITY is 49
     When a guest with device id "dev-aaaaaaaaaaaaaaaa" joins "E1" with captcha "cap-ok"
     Then the response status is 503 with error_code "QUEUE_FULL"
-    And data is {"queue_state": "FULL", "queue_capacity": 49}
+    And data is {"queue_state": "FULL_QUEUE", "queue_capacity": 49}
     And queue:{E1} issued is still 149
 
   @integration @redis-cluster

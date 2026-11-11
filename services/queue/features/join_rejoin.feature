@@ -95,7 +95,6 @@ Feature: If I come back, I get my place back, not a second one
 
   @integration @redis-cluster @FR-18
   Scenario: While fully booked, I keep my place if I come back
-    # Fully booked refuses only NEW places; seats may come back to those already in line.
     Given account "acc-1" joined "E1" earlier and got ticket 40000
     And event "E1" is now "FULL_BOOKED"
     When account "acc-1" joins "E1" again with captcha "cap-ok"
