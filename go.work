@@ -4,6 +4,7 @@ use (
 	./pkg
 	./services/admission-ctl
 	./services/booking
+	./services/events
 	./services/nik-verify
 	./services/notification
 	./services/outbox-publisher

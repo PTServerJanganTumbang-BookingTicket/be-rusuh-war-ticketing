@@ -4,7 +4,7 @@
 |---|---|
 | **What** | Sample events in Jakarta for local and dev: Postgres catalog + Redis sale state + stock, with real, free-licence photos |
 | **Not an endpoint** | Feeds `GET /events`, `GET /events/{id}`, `GET /events/{id}/tickets`, join and the stream, so the home page, the queue and booking can be tried end to end |
-| **Status** | planning — **waiting for approval (stop 1)**, no seed code written |
+| **Status** | approved 2026-11-11, built in `pkg/seed` (library) + `pkg/seed/cmd/seed` (command); `make seed`, `make seed-reset` |
 
 ## 1. In simple terms
 
@@ -27,10 +27,11 @@ yet), "Malam Wayang Kontemporer" (every seat held), "Ancol Sunset Sessions" (but
 
 ```mermaid
 flowchart LR
-    SQL["seed/jakarta-events.sql<br/>(upsert)"] --> PG[(Postgres<br/>events, ticket_categories)]
-    SH["seed/seed-redis.sh<br/>(HSETNX / SETNX)"] --> R[("Redis<br/>queue:{ev}, stock:{ev}:cat")]
-    MK["make seed"] --> SQL
-    MK --> SH
+    D["pkg/seed data.go<br/>(5 events, categories, credits)"] --> PGF["seed.Postgres<br/>(upsert in one transaction)"]
+    D --> RF["seed.Redis<br/>(HSETNX / SETNX)"]
+    PGF --> PG[(Postgres<br/>events, ticket_categories)]
+    RF --> R[("Redis<br/>queue:{ev}, stock:{ev}:cat")]
+    MK["make seed"] --> D
     PG --> L["GET /events, /events/{id}"]
     R --> L
     R --> Q["join, stream, ticket page"]
@@ -73,8 +74,8 @@ numbers would collide with `by_ticket`; `docs/redis-keys.md`):
 | `queue:{ev}` | `state`, `issued` = 0, `now_serving` = 0, `name`, `sale_starts_at` (ISO 8601 UTC); `full_booked_at` (epoch s) for the FULL_BOOKED event only |
 | `stock:{ev}:<category>` | the category's `available` (0 for sold-out categories) |
 
-Field and key names come from `pkg/rediskeys`, never hand-typed (a Go helper under `tools/`, or the script reads them from
-a small generated file; see OPEN 4).
+Field and key names come from `pkg/rediskeys`, never hand-typed. `full_booked_at` is stamped with the seed time, not a fixed
+date: admission-ctl closes a FULL_BOOKED sale 930 s after it, so a fixed past date would close the demo event at once.
 
 ### 3.4 Pictures
 
@@ -98,13 +99,24 @@ branding on a fictional event).
 1. **Idempotent.** Running `make seed` twice changes nothing the second time.
 2. **Postgres upsert by `id`.** `events` rows are updated in place (a fixed image or description re-applies);
    `ticket_categories` update name, price, capacity and sort order but **never `available`** (that is a live snapshot).
-3. **Redis is create-only.** No overwrite, no delete. State and stock of a running sale are never touched.
-4. **Local and dev only.** Not a migration, not run by the pipeline, and the script refuses a `REDIS_ADDR` / `DATABASE_URL`
-   that is not the local compose stack unless `SEED_ALLOW_REMOTE=1`.
+3. **Redis is create-only.** No overwrite, no delete. State and stock of a running sale are never touched. The one
+   exception is `make seed-reset`, which deletes only the five sample events' keys first (tickets issued for them are lost).
+4. **Local and dev only.** Not a migration, not run by the pipeline, and the command refuses a `REDIS_ADDR` / `DATABASE_URL`
+   whose host is not localhost / 127.0.0.1 / ::1 unless `SEED_ALLOW_REMOTE=1`.
 5. **No secrets in the seed.** The DB password comes from `.env` (`POSTGRES_PASSWORD`), like `make deps-up`.
 6. **Future dates.** Open and scheduled events are dated after 2026-11-11; the closed expo is the only past one.
 
-## 5. OPEN
+## 5. Decisions on the OPEN items (all taken as proposed)
+
+1. Credits live in the Go data (`ImageCredit`) and §3.4; frontend shows them (no API field, no Apidog change).
+2. Hotlinks accepted for local/dev; copy to our own bucket before a real launch.
+3. `make seed-reset` added, local guard applies.
+4. Go (`pkg/seed`, not `tools/`: it is in the `pkg` module so CI tests and the coverage gate already cover it).
+5. FULL_BOOKED event seeded with stock 0, as in §3.2.
+
+Category ids are `cat_<event>_<tier>` because `ticket_categories.id` is the primary key (a plain `VIP` would collide).
+
+### Original open items (kept for the record)
 
 - **OPEN 1: attribution.** CC BY-SA needs a credit next to the image. Proposal: keep the credit in the seed SQL comments
   and in §3.4 now; ask the frontend team to show "Foto: <author> / Wikimedia Commons, CC BY-SA" on the detail page (the API
@@ -121,11 +133,22 @@ branding on a fictional event).
 
 ## 6. Checklist
 
-- [ ] Plan approved (this file)
-- [ ] `seed/jakarta-events.sql` (or the Go data) with the five events and categories, image credits in comments
-- [ ] `tools/seed` (or script) creating Redis keys with `HSETNX`/`SETNX` from `pkg/rediskeys`
-- [ ] `make seed` (+ `make seed-reset` if OPEN 3 is approved), reads `POSTGRES_PASSWORD` from `.env`
-- [ ] Tests: seeding twice leaves `issued`, `now_serving` and `available` untouched (real Postgres/Redis, `pgtest`);
-      the five events come back from the catalog query; remote guard refuses without `SEED_ALLOW_REMOTE`
-- [ ] README note: how to run it and the picture credits
+- [x] Plan approved (this file)
+- [x] Data: five events and 11 categories with image credits (`pkg/seed/data.go`)
+- [x] `seed.Postgres` (upsert, `available` never rewritten), `seed.Redis` (create-only), `seed.ResetRedis`, `seed.CheckLocal`
+- [x] `make seed` / `make seed-reset`, password from `.env`
+- [x] Tests: data is complete and unique; Redis create-only and a re-seed leaves `issued`, `now_serving`, state and stock
+      alone; reset touches only the sample events; guard cases; Postgres SQL on a fake (CI) and on real Postgres (`pgtest`)
+- [x] Run end to end: `make seed` into a fresh migrated database + the real Redis cluster, second run created 0,
+      `GET /events` from the real events service returned all five with the right `queue_state`
 - [ ] `make verify`, then stop for review
+
+## 7. How to run
+
+```bash
+cp -n .env.example .env     # set POSTGRES_PASSWORD
+make deps-up
+# apply migrations/*.up.sql first (see services/admission-ctl/README.md), then:
+make seed
+make seed-reset             # optional: wipe the sample events' Redis state and seed again
+```

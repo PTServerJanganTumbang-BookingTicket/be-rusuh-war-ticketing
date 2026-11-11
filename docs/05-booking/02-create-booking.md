@@ -56,7 +56,7 @@ sequenceDiagram
     else nik-verify or Dukcapil unreachable
         B-->>C: 503 DUKCAPIL_UNAVAILABLE (fail closed)
     end
-    B->>DB: BEGIN; SELECT … FOR UPDATE WHERE id AND grant_token (same check, under the lock)
+    B->>DB: BEGIN, SELECT … FOR UPDATE WHERE id AND grant_token (same check, under the lock)
     alt already HELD or later (a concurrent submit won)
         B->>DB: COMMIT
         B-->>C: 200 the existing booking (idempotent retry)
@@ -365,7 +365,7 @@ Integration (real Postgres + Redis cluster):
 - [ ] move nik-verify's `valueobject.Normalize` / `IsValidFormat` to a shared `pkg` so booking and nik-verify use one rule
 - [ ] nik-verify client, `rediskeys` builder for `nik:used`, `hold_booking.lua` + `release_hold.lua`
       (`docs/lua-scripts.md`)
-- [ ] migration `0011` with the HELD → EXPIRED sweep: partial index `bookings (payment_expires_at) WHERE status = 'HELD'`
+- [ ] migration `0012` with the HELD → EXPIRED sweep: partial index `bookings (payment_expires_at) WHERE status = 'HELD'`
 - [ ] tests first, then the use case `CreateBooking`, the handler, and mounting `POST /bookings`
 - [ ] HELD sweep in admission-ctl
 - [ ] ticket page `account {email, nik_masked}` (01 §3.1 step 8)

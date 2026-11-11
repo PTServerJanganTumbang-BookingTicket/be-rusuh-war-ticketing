@@ -21,7 +21,8 @@ deploy the foundation stack.
                         ▼
     ┌───────────────────┼───────────────────┐
     ▼                   ▼                   ▼
- booking            nik-verify         notification     ← wave 1
+ booking, queue,       nik-verify         notification     ← wave 1
+ events
                         │                   │        each publishes its own
                         │                   │        SSM parameter
                         ▼                   ▼
@@ -215,6 +216,7 @@ touch your reputation, which makes it the right target for pipeline testing:
 | Secret | Value |
 |---|---|
 | `AWS_DEPLOY_ROLE_ARN` | `RoleArn` from step 1 |
+| `TURNSTILE_SITE_KEY` | events — **required**. The public Turnstile site key (`0x4AAAAAAA…`), returned as `captcha.site_key`. The template gets it as a parameter. Queue's secret key is separate (`TURNSTILE_SECRET_ARN`) |
 | `SONAR_TOKEN` | optional; Sonar is skipped when unset |
 | `DUKCAPIL_EXTRA_HEADER_VALUE` | optional; value for `DUKCAPIL_EXTRA_HEADER_NAME`. A secret rather than a variable so the deploy log, which echoes its arguments, masks it |
 

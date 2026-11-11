@@ -1,0 +1,32 @@
+package main
+
+import (
+	"context"
+	"log/slog"
+	"os"
+
+	"github.com/aws/aws-lambda-go/lambda"
+	"github.com/awslabs/aws-lambda-go-api-proxy/httpadapter"
+
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/dotenv"
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/events/internal/config"
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/events/internal/delivery"
+)
+
+func main() {
+	dotenv.LoadEnv()
+
+	cfg, err := config.Load()
+	if err != nil {
+		slog.Error("Failed to load config", slog.Any("err", err))
+		os.Exit(1)
+	}
+
+	// Connections are opened once per Lambda execution environment and reused across invocations.
+	handler, _, err := delivery.New(context.Background(), cfg)
+	if err != nil {
+		slog.Error("Failed to start", slog.Any("err", err))
+		os.Exit(1)
+	}
+	lambda.Start(httpadapter.NewV2(handler).ProxyWithContext)
+}
