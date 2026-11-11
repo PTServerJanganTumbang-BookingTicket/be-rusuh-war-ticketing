@@ -347,6 +347,7 @@ the next tick's COUNT automatically, with no counter to decrement.
 - [x] BROADCAST + heartbeat + `rate_per_min` ([§3.5](#35-rate_per_min), config `ETA_SEED_SLOT_MINUTES`)
 - [x] FULL_BOOKED → CLOSED + `sse-status` on each state change
 - [x] discover events and stock categories from Redis (`SCAN queue:{*}`, `stock:{ev}:*`, refresh every `EVENT_REFRESH_SECONDS`); remove `EVENT_IDS` / `STOCK_CATEGORIES`
-- [ ] ECS service: 1 task, deployment min 0 % / max 100 %, `CtlHeartbeatAge` alarm
+- [x] ECS service: 1 task, deployment min 0 % / max 100 % (`infra/ecs`, `DEPLOY.md`; not deployed yet)
+- [ ] `CtlHeartbeatAge` alarm
 
 **Deferred (production path, ADR-006 §9):** leader lease + epoch + standby, qpersist drain → `queue_entries` + rebuild.

@@ -26,7 +26,7 @@ on:
       force_deploy:
         description: >
           Force deploy specific services regardless of changed files.
-          Comma-separated: booking,queue,events,nik-verify,user,notification,outbox-publisher,all
+          Comma-separated: booking,queue,events,nik-verify,user,notification,outbox-publisher,ecs,all
           Use "all" to redeploy everything. Useful for reruns.
         type: string
         default: ""
@@ -51,6 +51,9 @@ jobs:
       nik_verify: ${{ steps.filter.outputs.nik_verify }}
       notification: ${{ steps.filter.outputs.notification }}
       outbox_publisher: ${{ steps.filter.outputs.outbox_publisher }}
+      sse_server: ${{ steps.filter.outputs.sse_server }}
+      admission_ctl: ${{ steps.filter.outputs.admission_ctl }}
+      ecs_infra: ${{ steps.filter.outputs.ecs_infra }}
       pkg: ${{ steps.filter.outputs.pkg }}
       infra: ${{ steps.filter.outputs.infra }}
       api_gateway: ${{ steps.filter.outputs.api_gateway }}
@@ -102,6 +105,8 @@ jobs:
               - 'go.work'
             infra:
               - 'infra/foundation/**'
+            ecs_infra:
+              - 'infra/ecs/**'
             api_gateway:
               - 'infra/api-gateway/**'
             migrations:
@@ -153,6 +158,7 @@ jobs:
       nik_verify: ${{ steps.env.outputs.nik_verify }}
       notification: ${{ steps.env.outputs.notification }}
       outbox_publisher: ${{ steps.env.outputs.outbox_publisher }}
+      ecs: ${{ steps.env.outputs.ecs }}
       foundation_changed: ${{ needs.detect-changes.outputs.infra }}
       api_gateway_changed: ${{ needs.detect-changes.outputs.api_gateway }}
       any_service_changed: ${{ steps.env.outputs.any_service_changed }}
@@ -166,6 +172,9 @@ jobs:
           N: ${{ needs.detect-changes.outputs.nik_verify }}
           T: ${{ needs.detect-changes.outputs.notification }}
           O: ${{ needs.detect-changes.outputs.outbox_publisher }}
+          S: ${{ needs.detect-changes.outputs.sse_server }}
+          A: ${{ needs.detect-changes.outputs.admission_ctl }}
+          E: ${{ needs.detect-changes.outputs.ecs_infra }}
           FORCE: ${{ inputs.force_deploy }}
         run: |
           set -eu
@@ -188,6 +197,10 @@ jobs:
           n=$(is_changed "$N" "nik-verify")
           t=$(is_changed "$T" "notification")
           o=$(is_changed "$O" "outbox-publisher")
+          # The two ECS services deploy together (one stack, one image tag), so any of them, or the stack, rebuilds both.
+          ecs=false
+          for f in "$S" "$A" "$E"; do [ "$f" = "true" ] && ecs=true; done
+          [ "$ecs" = "false" ] && ecs=$(is_changed false "ecs")
 
           echo "booking=$b"           >> "$GITHUB_OUTPUT"
           echo "queue=$q"             >> "$GITHUB_OUTPUT"
@@ -196,6 +209,7 @@ jobs:
           echo "nik_verify=$n"        >> "$GITHUB_OUTPUT"
           echo "notification=$t"      >> "$GITHUB_OUTPUT"
           echo "outbox_publisher=$o"  >> "$GITHUB_OUTPUT"
+          echo "ecs=$ecs"              >> "$GITHUB_OUTPUT"
 
           any=false
           for f in "$b" "$q" "$v" "$u" "$n" "$t" "$o"; do
@@ -211,6 +225,7 @@ jobs:
           echo "nik_verify         : $n"
           echo "notification       : $t"
           echo "outbox_publisher   : $o"
+          echo "ecs                : $ecs"
           echo "any service changed: $any"
 
   golangci-lint:
@@ -321,7 +336,9 @@ jobs:
       needs.detect-changes.outputs.booking == 'true' ||
       needs.detect-changes.outputs.user == 'true' ||
       needs.detect-changes.outputs.nik_verify == 'true' ||
-      needs.detect-changes.outputs.outbox_publisher == 'true'
+      needs.detect-changes.outputs.outbox_publisher == 'true' ||
+      needs.detect-changes.outputs.sse_server == 'true' ||
+      needs.detect-changes.outputs.admission_ctl == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -828,6 +845,102 @@ jobs:
           echo "Unified API URL:"
           aws cloudformation describe-stacks --stack-name "rusuh-${ENV}-api" \
             --query 'Stacks[0].Outputs[?OutputKey==`ApiUrl`].OutputValue' --output text
+
+  # ══════════════════════════════════════════════════════════════════════════
+  #  ECS - admission-ctl and sse-server (DEPLOY.md, ECS section)
+  #  Not behind the API gateway and not part of the Lambda waves: it needs the foundation (and its public-subnet
+  #  parameter), not the preflight, and nothing else waits for it.
+  # ══════════════════════════════════════════════════════════════════════════
+  deploy-ecs:
+    name: Deploy ECS (admission-ctl, sse-server)
+    needs: [resolve-env, quality-gate, deploy-foundation]
+    if: >-
+      always() &&
+      needs.quality-gate.result == 'success' &&
+      needs.deploy-foundation.result != 'failure' &&
+      needs.resolve-env.outputs.ecs == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-env.outputs.environment }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: The foundation must publish the public subnets
+        env:
+          ENV: ${{ needs.resolve-env.outputs.environment }}
+        run: |
+          set -euo pipefail
+          if [ "$ENV" != "prod" ]; then
+            echo "::error::Environment is '$ENV' but infra/ecs/template-cfn.yaml resolves /rusuh/prod/... by default."
+            exit 1
+          fi
+          if ! aws ssm get-parameter --name "/rusuh/${ENV}/vpc/public-subnet-ids" >/dev/null 2>&1; then
+            echo "::error::/rusuh/${ENV}/vpc/public-subnet-ids is missing. Deploy the foundation (workflow_dispatch with deploy_foundation=true)."
+            exit 1
+          fi
+      - name: Deploy the image repositories
+        env:
+          ENV: ${{ needs.resolve-env.outputs.environment }}
+        run: |
+          set -euo pipefail
+          aws cloudformation deploy \
+            --template-file infra/ecs/ecr.yaml \
+            --stack-name "rusuh-${ENV}-ecr" \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides "Environment=${ENV}" \
+            --tags Project=rusuh ManagedBy=github-actions
+      - name: Build and push both images
+        env:
+          ENV: ${{ needs.resolve-env.outputs.environment }}
+          REGION: ${{ vars.AWS_REGION }}
+        run: |
+          set -euo pipefail
+          account=$(aws sts get-caller-identity --query Account --output text)
+          registry="${account}.dkr.ecr.${REGION}.amazonaws.com"
+          aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$registry"
+          for svc in admission-ctl sse-server; do
+            image="${registry}/rusuh-${ENV}/${svc}:${GITHUB_SHA}"
+            docker build -f "services/${svc}/Dockerfile" -t "$image" .
+            docker push "$image"
+          done
+      - name: Deploy the ECS stack
+        env:
+          ENV: ${{ needs.resolve-env.outputs.environment }}
+        run: |
+          set -euo pipefail
+          # CloudFormation waits for both services to reach a steady state, and the deployment circuit breaker rolls
+          # a failing one back, so a bad image fails this step instead of passing silently.
+          aws cloudformation deploy \
+            --template-file infra/ecs/template-cfn.yaml \
+            --stack-name "rusuh-${ENV}-ecs" \
+            --capabilities CAPABILITY_IAM \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides \
+              "Environment=${ENV}" \
+              "ImageTag=${GITHUB_SHA}" \
+              "MaxConcurrentSlots=${{ vars.MAX_CONCURRENT_SLOTS || '100' }}" \
+            --tags Project=rusuh ManagedBy=github-actions
+      - name: Smoke - the stream server answers on the load balancer
+        env:
+          ENV: ${{ needs.resolve-env.outputs.environment }}
+        run: |
+          set -euo pipefail
+          url=$(aws cloudformation describe-stacks --stack-name "rusuh-${ENV}-ecs" \
+            --query "Stacks[0].Outputs[?OutputKey=='StreamUrl'].OutputValue" --output text)
+          echo "stream server: $url"
+          for i in $(seq 1 20); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${url}/health" || echo 000)
+            echo "attempt $i: /health -> $code"
+            [ "$code" = "200" ] && exit 0
+            sleep 15
+          done
+          echo "::error::The stream server did not answer 200 on /health through the load balancer."
+          exit 1
 
   # ══════════════════════════════════════════════════════════════════════════
   #  SMOKE TEST

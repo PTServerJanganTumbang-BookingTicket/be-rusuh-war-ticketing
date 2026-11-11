@@ -275,6 +275,16 @@ Resources:
                   - scheduler:*
                   - logs:*
                 Resource: "*"
+              # Containers: admission-ctl and sse-server (DEPLOY.md, ECS section). Not scoped by resource for the same
+              # reason as the statement below: creating a cluster, a load balancer or a repository takes actions
+              # that accept no resource ARN, so the containment is the branch-scoped trust policy and rusuh-* naming.
+              - Sid: Containers
+                Effect: Allow
+                Action:
+                  - ecs:*
+                  - ecr:*
+                  - elasticloadbalancing:*
+                Resource: "*"
               - Sid: Foundation
                 Effect: Allow
                 Action:
@@ -448,6 +458,7 @@ Resources:
                       - lambda.amazonaws.com
                       - codebuild.amazonaws.com
                       - rds.amazonaws.com
+                      - ecs-tasks.amazonaws.com
               - Sid: CreateServiceLinkedRoles
                 Effect: Allow
                 Action: iam:CreateServiceLinkedRole
@@ -456,6 +467,8 @@ Resources:
                   StringEquals:
                     iam:AWSServiceName:
                       - rds.amazonaws.com
+                      - ecs.amazonaws.com
+                      - elasticloadbalancing.amazonaws.com
                       - elasticache.amazonaws.com
                       - ops.apigateway.amazonaws.com
 
