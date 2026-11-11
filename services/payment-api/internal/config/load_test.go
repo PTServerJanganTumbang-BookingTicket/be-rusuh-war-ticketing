@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"testing"
 	"time"
 
@@ -21,7 +22,25 @@ func setRequired(t *testing.T) {
 	t.Setenv("JWT_SECRET", "jwt-secret")
 }
 
+// defaulted lists every variable Load reads with a default. TestLoad_Defaults clears them, so a value from the
+// developer's shell or .env (REDIS_ADDR pointing at a local Redis, say) cannot leak into the defaults it checks.
+var defaulted = []string{
+	"APP_ENV", "APP_PORT", "DATABASE_CONN_LIFETIME", "DATABASE_MAX_CONNS", "LOG_FORMAT", "LOG_LEVEL",
+	"MAX_PAYMENT_ATTEMPTS", "MIDTRANS_BASE_URL", "MIDTRANS_TIMEOUT_MS", "MIN_RETRY_REMAINING_SECONDS",
+	"PAYMENT_BREAKER_FAILURE_THRESHOLD", "PAYMENT_BREAKER_OPEN_SECONDS", "PAYMENT_ICON_BASE",
+	"PAYMENT_SWITCH_CACHE_SECONDS", "PAYMENT_TTL_SECONDS", "REDIS_ADDR", "REDIS_DB", "SETTLED_TOMBSTONE_SECONDS",
+}
+
+func clearDefaulted(t *testing.T) {
+	t.Helper()
+	for _, k := range defaulted {
+		t.Setenv(k, "") // restores the original value when the test ends
+		require.NoError(t, os.Unsetenv(k))
+	}
+}
+
 func TestLoad_Defaults(t *testing.T) {
+	clearDefaulted(t)
 	setRequired(t)
 
 	cfg, err := Load()

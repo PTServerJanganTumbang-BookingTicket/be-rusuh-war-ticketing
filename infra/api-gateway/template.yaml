@@ -99,14 +99,6 @@ Resources:
       IntegrationUri: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:rusuh-${Environment}-events
       PayloadFormatVersion: "2.0"
 
-  NikVerifyIntegration:
-    Type: AWS::ApiGatewayV2::Integration
-    Properties:
-      ApiId: !Ref UnifiedApi
-      IntegrationType: AWS_PROXY
-      IntegrationUri: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:rusuh-${Environment}-nik-verify
-      PayloadFormatVersion: "2.0"
-
   QueueIntegration:
     Type: AWS::ApiGatewayV2::Integration
     Properties:

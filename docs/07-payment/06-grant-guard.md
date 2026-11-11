@@ -329,9 +329,8 @@ Rules:
    account was checked once, when the app asked for the code; the session then lives until its grant ends (at most
    `GRANT_TOKEN_TTL_SECONDS` from `granted_at`) and reaches one booking only.
 
-Contract §5 lists "`X-Grant-Token` (+ `X-Device-Id` / `Authorization`)" as the credential a session may not be sent
-with. Only `X-Grant-Token` triggers the 400: a WebView may inherit default headers, and neither `X-Device-Id` nor
-`Authorization` can grant anything on its own (contract wording fix pending in `documentations`).
+Only `X-Grant-Token` next to a session is a 400. A stray `X-Device-Id` or `Authorization` is ignored: a WebView may
+inherit default headers, and neither can grant anything on its own (contract §5).
 
 ### Tests
 

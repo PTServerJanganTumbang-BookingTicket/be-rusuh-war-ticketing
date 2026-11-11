@@ -91,9 +91,7 @@ later request.
 - **Not atomic across steps 2–4, on purpose.** If the grant disappears between step 3 and step 4 the new session is
   dead on arrival: the guard reads the grant on every request and answers `401 PAYMENT_SESSION_INVALID`. A Lua script
   would only make that window smaller, not remove a risk.
-- **Values store the grant token only**, not `{booking_id, grant_token}` as ADR-007 and contract §9 describe. The
-  booking id lives in the grant hash already. The docs need a one-line wording fix (task below); the behaviour is the
-  same.
+- **Values store the grant token only.** The booking id lives in the grant hash already.
 - **The session is not bound to a device.** It lives in the page's memory only; copying it out requires code running in
   the page, which could also just use it there. Its reach is one booking, until the grant ends.
 
@@ -119,5 +117,4 @@ later request.
       webhook)
 - [x] templates: route in `services/payment-api/template.yaml` **and** `template-cfn.yaml`, and in
       `infra/api-gateway/template.yaml`
-- [ ] docs (`documentations`, ask first): ADR-007 and contract §9 say the keys hold `{booking_id, grant_token}`; change
-      to "the grant token". ADR-007 rule 2 and contract §5.7 say `GETDEL`; change to "read and delete atomically"
+- [x] docs (`documentations`): ADR-007 and the contract say the keys hold the grant token, read and deleted at once
