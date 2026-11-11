@@ -1,7 +1,7 @@
 name: SAM deploy
 description: >
-  Build and deploy one service stack. Factored out because five deploy jobs
-  otherwise repeat the same thirty lines, and a fix applied to four of them is
+  Build and deploy one service stack. Factored out because six deploy jobs
+  otherwise repeat the same thirty lines, and a fix applied to five of them is
   worse than no fix at all.
 
 inputs:

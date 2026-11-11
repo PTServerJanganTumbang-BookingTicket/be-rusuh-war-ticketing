@@ -20,9 +20,15 @@ type RegisterRequest struct {
 
 // ConsentRequest carries explicit agreement to third-party NIK processing.
 // The checkbox must not be pre-checked in the UI (FR-31c).
+//
+// One field, deliberately. The client used to send policy_version as well, and
+// it was written straight into the immutable consent record — which made the
+// client the authority on which policy the customer had just agreed to, for a
+// record whose whole purpose is to be trustworthy evidence. A field like that
+// is worse than absent: it looks like provenance and is not. A sent value is
+// now ignored rather than rejected, so an unchanged client still registers.
 type ConsentRequest struct {
-	Accepted      bool   `json:"accepted"`
-	PolicyVersion string `json:"policy_version" validate:"required"`
+	Accepted bool `json:"accepted"`
 }
 
 // RefreshSessionRequest is the payload for POST /auth/refresh.

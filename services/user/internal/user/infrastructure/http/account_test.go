@@ -29,6 +29,117 @@ func authed(t *testing.T, mux *http.ServeMux, method, path, body string) *httpte
 	return rec
 }
 
+// ── GET /accounts/me (contract §1.8) ─────────────────────────────────────────
+
+func TestGetMyAccount_ReturnsEmailAndMaskedNIK(t *testing.T) {
+	mux, uc := newTestServer(t)
+	expectAuth(uc, "USR-001")
+	uc.EXPECT().GetMyAccount(gomock.Any(), "USR-001").
+		Return(dto.AccountProfileResponse{Email: "alex@example.com", NIKMasked: "3171********xx22"}, nil)
+
+	rec := authed(t, mux, http.MethodGet, "/accounts/me", "")
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	data := decode(t, rec)["data"].(map[string]any)
+	assert.Equal(t, "alex@example.com", data["email"])
+	assert.Equal(t, "3171********xx22", data["nik_masked"])
+	assert.Len(t, data, 2)
+
+	// The account stores no name, so there is none to return (FR-15a, §1.8).
+	assert.NotContains(t, data, "name")
+	// And no field carries the sixteen digits (FR-32c).
+	assert.NotContains(t, rec.Body.String(), "3171000000000022")
+
+	meta := metaOf(t, rec)
+	assert.Equal(t, float64(200), meta["code"])
+	assert.Equal(t, "Success", meta["message"])
+	assert.NotEmpty(t, meta["server_time"], "every response carries the server clock (BR-10)")
+}
+
+// The route exists. Registering the handler and forgetting the route is the
+// failure this catches, and it looks exactly like a 404 from the gateway.
+func TestGetMyAccount_IsRoutedAndDistinctFromSavedNIKs(t *testing.T) {
+	mux, uc := newTestServer(t)
+	expectAuth(uc, "USR-001")
+	uc.EXPECT().GetMyAccount(gomock.Any(), "USR-001").Return(dto.AccountProfileResponse{Email: "a@example.com"}, nil)
+	uc.EXPECT().GetSavedNIKs(gomock.Any(), "USR-001").Return(dto.SavedNIKsResponse{MaxEntries: 5}, nil)
+
+	assert.Equal(t, http.StatusOK, authed(t, mux, http.MethodGet, "/accounts/me", "").Code)
+	// The sibling path still reaches its own handler: neither pattern shadows
+	// the other.
+	assert.Equal(t, http.StatusOK, authed(t, mux, http.MethodGet, "/accounts/me/saved-niks", "").Code)
+}
+
+func TestGetMyAccount_WithoutABearerTokenIs401(t *testing.T) {
+	mux, _ := newTestServer(t)
+	rec := serve(mux, httptestNewGet("/accounts/me"))
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+	assert.Equal(t, apperror.CodeTokenInvalid, metaOf(t, rec)["error_code"])
+}
+
+// §1.8: a grant is not accepted here. It proves its bearer holds seats and
+// carries no account identity, so there is nothing in it that could answer
+// "whose profile" — and honouring one would hand a profile to any grant holder.
+func TestGetMyAccount_AGrantTokenIsNotACredentialHere(t *testing.T) {
+	mux, _ := newTestServer(t)
+	req := httptestNewGet("/accounts/me")
+	req.Header.Set("X-Grant-Token", "gt_live_grant")
+	req.Header.Set("X-Device-Id", "d3f1a9c4b70e42f88a1c5e6072b9d4af")
+	rec := serve(mux, req)
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
+// The expiry distinction survives the handler: TOKEN_EXPIRED tells the client
+// to refresh (§1.4), TOKEN_INVALID to log in again (§1.1). Collapsing them
+// sends a customer with a merely stale token back to the login screen.
+func TestGetMyAccount_PassesTheSessionErrorCodeThrough(t *testing.T) {
+	for name, tc := range map[string]struct {
+		err  error
+		code string
+	}{
+		"expired": {apperror.ErrUnauthorized("access token has expired").WithCode(apperror.CodeTokenExpired), apperror.CodeTokenExpired},
+		"invalid": {apperror.ErrUnauthorized("invalid access token").WithCode(apperror.CodeTokenInvalid), apperror.CodeTokenInvalid},
+	} {
+		t.Run(name, func(t *testing.T) {
+			mux, uc := newTestServer(t)
+			uc.EXPECT().ValidateAccessToken(gomock.Any(), "good-token").Return("", tc.err)
+
+			rec := authed(t, mux, http.MethodGet, "/accounts/me", "")
+			require.Equal(t, http.StatusUnauthorized, rec.Code)
+			assert.Equal(t, tc.code, metaOf(t, rec)["error_code"])
+		})
+	}
+}
+
+func TestGetMyAccount_UsecaseFailureIsReportedWithoutDetail(t *testing.T) {
+	mux, uc := newTestServer(t)
+	expectAuth(uc, "USR-001")
+	uc.EXPECT().GetMyAccount(gomock.Any(), "USR-001").
+		Return(dto.AccountProfileResponse{}, apperror.ErrInternal("failed to read account"))
+
+	rec := authed(t, mux, http.MethodGet, "/accounts/me", "")
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
+	assert.NotContains(t, rec.Body.String(), "accounts")
+}
+
+// A read changes nothing, so it is not CSRF-guarded like the write handlers.
+// A cross-origin GET that 403s here would break a profile page served from a
+// second origin for no security gain.
+func TestGetMyAccount_IsNotOriginCheckedBecauseItChangesNothing(t *testing.T) {
+	uc := newMockUsecase(t)
+	mux := http.NewServeMux()
+	RegisterRoutes(mux, NewUser(uc, Options{SecureCookies: true, CookieDomain: "rusuh.id"}))
+	expectAuth(uc, "USR-001")
+	uc.EXPECT().GetMyAccount(gomock.Any(), "USR-001").Return(dto.AccountProfileResponse{Email: "a@example.com"}, nil)
+
+	req := httptestNewGet("/accounts/me")
+	req.Header.Set("Authorization", bearer)
+	req.Header.Set("Origin", "https://evil.example.com")
+	assert.Equal(t, http.StatusOK, serve(mux, req).Code)
+}
+
+// ── GET /accounts/me/saved-niks ──────────────────────────────────────────────
+
 func TestGetSavedNIKs_ReturnsMaskedOnly(t *testing.T) {
 	mux, uc := newTestServer(t)
 	expectAuth(uc, "USR-001")

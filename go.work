@@ -8,6 +8,7 @@ use (
 	./services/nik-verify
 	./services/notification
 	./services/outbox-publisher
+	./services/payment-api
 	./services/queue
 	./services/sse-server
 	./services/user

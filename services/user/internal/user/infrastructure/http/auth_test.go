@@ -125,22 +125,89 @@ func TestVerifyMagicLink_Unauthorized(t *testing.T) {
 	assert.Equal(t, apperror.CodeTokenInvalid, metaOf(t, rec)["error_code"])
 }
 
-func TestVerifyEmail_Success(t *testing.T) {
+// The token is a QUERY PARAMETER (§1.7), because this URL is clicked out of an
+// email client: there is no cookie on that request, and nothing in the
+// registration flow ever set one. This handler used to read `magic_token`,
+// which meant every verification email's link answered 400.
+func TestVerifyEmail_ReadsTheCookieNotAQueryParam(t *testing.T) {
+	// Same channel as §1.3, and for the same reason: notification emails a
+	// link to APP_BASE_URL — the frontend — which reads the token out of its
+	// own query string and sets the cookie before calling here. A query
+	// parameter on this endpoint would copy a single-use credential into this
+	// service's access logs, the load balancer's, and CloudWatch.
 	mux, uc := newTestServer(t)
 	uc.EXPECT().VerifyEmail(gomock.Any(), "tok-xyz").Return(nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/verify-email", nil)
 	req.AddCookie(&http.Cookie{Name: "magic_token", Value: "tok-xyz"})
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusOK, rec.Code)
+	rec := serve(mux, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	// data {email_verified: true}, not a bare {}: the client reads a value
+	// instead of inferring success from the status code.
+	data := decode(t, rec)["data"].(map[string]any)
+	assert.Equal(t, true, data["email_verified"])
+	assert.Equal(t, "Email verified", metaOf(t, rec)["message"])
 }
 
-func TestVerifyEmail_RequiresCookie(t *testing.T) {
+func TestVerifyEmail_ClearsTheSpentCookie(t *testing.T) {
+	// Single-use. Left set, a burnt credential rides along on every later
+	// request to this origin.
+	mux, uc := newTestServer(t)
+	uc.EXPECT().VerifyEmail(gomock.Any(), "tok-xyz").Return(nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/verify-email", nil)
+	req.AddCookie(&http.Cookie{Name: "magic_token", Value: "tok-xyz"})
+	rec := serve(mux, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var magic *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "magic_token" {
+			magic = c
+		}
+	}
+	require.NotNil(t, magic, "the spent single-use cookie must be cleared")
+	assert.Equal(t, -1, magic.MaxAge)
+}
+
+func TestVerifyEmail_DoesNotMintASession(t *testing.T) {
+	// A distinct token purpose: confirming an address must not hand back a
+	// session, or "please confirm your email" becomes a login bypass.
+	mux, uc := newTestServer(t)
+	uc.EXPECT().VerifyEmail(gomock.Any(), "tok-xyz").Return(nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/verify-email", nil)
+	req.AddCookie(&http.Cookie{Name: "magic_token", Value: "tok-xyz"})
+	rec := serve(mux, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	for _, c := range rec.Result().Cookies() {
+		assert.NotEqual(t, "access_token", c.Name, "verification must not issue a session")
+	}
+	assert.NotContains(t, decode(t, rec)["data"], "access_token")
+}
+
+func TestVerifyEmail_RequiresTheCookie(t *testing.T) {
+	mux, _ := newTestServer(t)
+	rec := serve(mux, httptestNewGet("/auth/verify-email"))
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Equal(t, apperror.CodeTokenInvalid, metaOf(t, rec)["error_code"])
+}
+
+func TestVerifyEmail_QueryParamIsNotAccepted(t *testing.T) {
+	// §1.7 declared `?token=` until v2.24; the contract has been corrected to
+	// the cookie. This test is what kept the two from being confused again.
+	mux, _ := newTestServer(t)
+	rec := serve(mux, httptestNewGet("/auth/verify-email?token=tok-xyz"))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestVerifyEmail_EmptyCookieIsRefused(t *testing.T) {
 	mux, _ := newTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/auth/verify-email", nil)
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
+	req.AddCookie(&http.Cookie{Name: "magic_token", Value: ""})
+	rec := serve(mux, req)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 

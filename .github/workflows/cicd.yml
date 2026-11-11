@@ -51,6 +51,7 @@ jobs:
       nik_verify: ${{ steps.filter.outputs.nik_verify }}
       notification: ${{ steps.filter.outputs.notification }}
       outbox_publisher: ${{ steps.filter.outputs.outbox_publisher }}
+      payment_api: ${{ steps.filter.outputs.payment_api }}
       sse_server: ${{ steps.filter.outputs.sse_server }}
       admission_ctl: ${{ steps.filter.outputs.admission_ctl }}
       ecs_infra: ${{ steps.filter.outputs.ecs_infra }}
@@ -95,6 +96,10 @@ jobs:
               - 'services/outbox-publisher/**'
               - 'pkg/**'
               - 'go.work'
+            payment_api:
+              - 'services/payment-api/**'
+              - 'pkg/**'
+              - 'go.work'
             sse_server:
               - 'services/sse-server/**'
               - 'pkg/**'
@@ -119,7 +124,7 @@ jobs:
 
           # force_deploy=all overrides path detection entirely
           if [ "$FORCE" = "all" ]; then
-            mods=("pkg" "services/booking" "services/queue" "services/events" "services/user" "services/nik-verify" "services/notification" "services/outbox-publisher" "services/sse-server" "services/admission-ctl")
+            mods=("pkg" "services/booking" "services/queue" "services/events" "services/user" "services/nik-verify" "services/notification" "services/outbox-publisher" "services/payment-api" "services/sse-server" "services/admission-ctl")
           else
             if [ "${{ steps.filter.outputs.pkg }}" = "true" ]; then mods+=("pkg"); fi
             if [ "${{ steps.filter.outputs.booking }}" = "true" ] || echo "$FORCE" | grep -q "booking"; then mods+=("services/booking"); fi
@@ -129,6 +134,7 @@ jobs:
             if [ "${{ steps.filter.outputs.nik_verify }}" = "true" ] || echo "$FORCE" | grep -q "nik-verify"; then mods+=("services/nik-verify"); fi
             if [ "${{ steps.filter.outputs.notification }}" = "true" ] || echo "$FORCE" | grep -q "notification"; then mods+=("services/notification"); fi
             if [ "${{ steps.filter.outputs.outbox_publisher }}" = "true" ] || echo "$FORCE" | grep -q "outbox-publisher"; then mods+=("services/outbox-publisher"); fi
+            if [ "${{ steps.filter.outputs.payment_api }}" = "true" ] || echo "$FORCE" | grep -q "payment-api"; then mods+=("services/payment-api"); fi
             if [ "${{ steps.filter.outputs.sse_server }}" = "true" ]; then mods+=("services/sse-server"); fi
             if [ "${{ steps.filter.outputs.admission_ctl }}" = "true" ]; then mods+=("services/admission-ctl"); fi
           fi
@@ -158,6 +164,7 @@ jobs:
       nik_verify: ${{ steps.env.outputs.nik_verify }}
       notification: ${{ steps.env.outputs.notification }}
       outbox_publisher: ${{ steps.env.outputs.outbox_publisher }}
+      payment_api: ${{ steps.env.outputs.payment_api }}
       ecs: ${{ steps.env.outputs.ecs }}
       foundation_changed: ${{ needs.detect-changes.outputs.infra }}
       api_gateway_changed: ${{ needs.detect-changes.outputs.api_gateway }}
@@ -172,6 +179,7 @@ jobs:
           N: ${{ needs.detect-changes.outputs.nik_verify }}
           T: ${{ needs.detect-changes.outputs.notification }}
           O: ${{ needs.detect-changes.outputs.outbox_publisher }}
+          P: ${{ needs.detect-changes.outputs.payment_api }}
           S: ${{ needs.detect-changes.outputs.sse_server }}
           A: ${{ needs.detect-changes.outputs.admission_ctl }}
           E: ${{ needs.detect-changes.outputs.ecs_infra }}
@@ -197,6 +205,7 @@ jobs:
           n=$(is_changed "$N" "nik-verify")
           t=$(is_changed "$T" "notification")
           o=$(is_changed "$O" "outbox-publisher")
+          p=$(is_changed "$P" "payment-api")
           # The two ECS services deploy together (one stack, one image tag), so any of them, or the stack, rebuilds both.
           ecs=false
           for f in "$S" "$A" "$E"; do [ "$f" = "true" ] && ecs=true; done
@@ -209,10 +218,11 @@ jobs:
           echo "nik_verify=$n"        >> "$GITHUB_OUTPUT"
           echo "notification=$t"      >> "$GITHUB_OUTPUT"
           echo "outbox_publisher=$o"  >> "$GITHUB_OUTPUT"
+          echo "payment_api=$p"       >> "$GITHUB_OUTPUT"
           echo "ecs=$ecs"              >> "$GITHUB_OUTPUT"
 
           any=false
-          for f in "$b" "$q" "$v" "$u" "$n" "$t" "$o"; do
+          for f in "$b" "$q" "$v" "$u" "$n" "$t" "$o" "$p"; do
             [ "$f" = "true" ] && any=true
           done
           echo "any_service_changed=$any" >> "$GITHUB_OUTPUT"
@@ -337,6 +347,7 @@ jobs:
       needs.detect-changes.outputs.user == 'true' ||
       needs.detect-changes.outputs.nik_verify == 'true' ||
       needs.detect-changes.outputs.outbox_publisher == 'true' ||
+      needs.detect-changes.outputs.payment_api == 'true' ||
       needs.detect-changes.outputs.sse_server == 'true' ||
       needs.detect-changes.outputs.admission_ctl == 'true'
     runs-on: ubuntu-latest
@@ -490,8 +501,13 @@ jobs:
           DUKCAPIL_BASE_URL: ${{ vars.DUKCAPIL_BASE_URL }}
           DUKCAPIL_EXTRA_HEADER_NAME: ${{ vars.DUKCAPIL_EXTRA_HEADER_NAME }}
           HAS_EXTRA_HEADER_VALUE: ${{ secrets.DUKCAPIL_EXTRA_HEADER_VALUE != '' }}
+          # Booleans, not the values: preflight has no business holding either key.
+          HAS_MIDTRANS_SERVER_KEY: ${{ secrets.MIDTRANS_SERVER_KEY != '' }}
+          HAS_MIDTRANS_SIGNATURE_SECRET_KEY: ${{ secrets.MIDTRANS_SIGNATURE_SECRET_KEY != '' }}
           APP_BASE_URL: ${{ vars.APP_BASE_URL }}
           NEEDS_NOTIFICATION: ${{ needs.resolve-env.outputs.notification }}
+          NEEDS_PAYMENT_API: ${{ needs.resolve-env.outputs.payment_api }}
+          ENV_NAME: ${{ needs.resolve-env.outputs.environment }}
           NEEDS_QUEUE: ${{ needs.resolve-env.outputs.queue }}
           NEEDS_BOOKING: ${{ needs.resolve-env.outputs.booking }}
           NEEDS_EVENTS: ${{ needs.resolve-env.outputs.events }}
@@ -538,8 +554,34 @@ jobs:
             fail=1
           fi
 
-          # Secrets Manager ARNs for the queue and booking Lambdas. Missing or malformed values would only show up
-          # as a failed CloudFormation deploy (or a Lambda that cannot start), so fail early with the variable name.
+          # Not fatal, and deliberately not a value check: reading the secret
+          # here would need GetSecretValue on the deploy role and would put a
+          # payment credential one masking bug away from the build log.
+          #
+          # Worth a warning anyway, because the failure it causes is the worst
+          # one this pipeline can ship. The secret is created by the foundation
+          # stack holding REPLACE_ME; with that value the service starts,
+          # charges nobody successfully, and rejects EVERY notification
+          # Midtrans sends - so a customer pays and no ticket is ever issued.
+          if [ "$NEEDS_PAYMENT_API" = "true" ]; then
+            if [ "$HAS_MIDTRANS_SERVER_KEY" != "true" ]; then
+              echo "::warning::MIDTRANS_SERVER_KEY secret is empty, so seed-payment-secrets will leave"
+              echo "::warning::rusuh-${ENV_NAME}/midtrans-server-key as it is. If that is still REPLACE_ME,"
+              echo "::warning::no charge can be authenticated and no customer can start paying."
+            fi
+            if [ "$HAS_MIDTRANS_SIGNATURE_SECRET_KEY" != "true" ]; then
+              echo "::warning::MIDTRANS_SIGNATURE_SECRET_KEY secret is empty, so seed-payment-secrets will"
+              echo "::warning::leave rusuh-${ENV_NAME}/midtrans-signature-secret-key as it is. If that is"
+              echo "::warning::still REPLACE_ME the service runs, takes money, and rejects EVERY callback"
+              echo "::warning::as a forgery - no booking confirmed and the seats resold."
+            fi
+            echo "::warning::payment-api is being deployed. Confirm the Midtrans dashboard's Payment"
+            echo "::warning::Notification URL points at this stack's webhook path. Not checked here,"
+            echo "::warning::and until it is set no settlement ever reaches the service."
+          fi
+
+          # Secrets Manager ARNs for the queue, booking and payment Lambdas. Missing or malformed values would only
+          # show up as a failed CloudFormation deploy (or a Lambda that cannot start), so fail early with the name.
           check_arn() {
             local name="$1" value="$2"
             case "$value" in
@@ -548,6 +590,14 @@ jobs:
               *)  echo "::error::$name is not a Secrets Manager ARN: '$value'."; fail=1 ;;
             esac
           }
+          # Only the stacks that take these ARNs as parameters are checked. payment-api
+          # needs the same device pepper (ADR-006 section 8.9) and the same JWT secret
+          # (section 8.17), but its template resolves both by secret NAME - the name is
+          # deterministic from Environment, so the dynamic reference does not depend on
+          # an SSM-resolved value - and it is passed no ARN to validate. A mismatch
+          # there surfaces as DEVICE_MISMATCH on every guest checkout, or 401 on every
+          # logged-in payment, and nowhere else; see the open item in
+          # docs/07-payment/06-grant-guard.md section 6.
           if [ "$NEEDS_QUEUE" = "true" ] || [ "$NEEDS_BOOKING" = "true" ]; then
             check_arn DEVICE_PEPPER_SECRET_ARN "$DEVICE_PEPPER_SECRET_ARN"
           fi
@@ -584,6 +634,9 @@ jobs:
             /rusuh/${ENV}/nik/pepper-kms-key-arn
             /rusuh/${ENV}/auth/jwt-secret-arn
             /rusuh/${ENV}/dukcapil/api-key-secret-arn
+            /rusuh/${ENV}/device/pepper-secret-arn
+            /rusuh/${ENV}/midtrans/server-key-secret-arn
+            /rusuh/${ENV}/midtrans/signature-secret-key-secret-arn
             /rusuh/${ENV}/redis/addr
             /rusuh/${ENV}/ses/configuration-set
             /rusuh/${ENV}/ses/from-address
@@ -610,6 +663,87 @@ jobs:
             exit 1
           fi
           echo "All infrastructure parameters present."
+
+  # ══════════════════════════════════════════════════════════════════════════
+  #  SECRET SEEDING — must finish before any stack that resolves these
+  # ══════════════════════════════════════════════════════════════════════════
+  #
+  # The two Midtrans keys are the only secrets a human has to supply: every
+  # other rusuh-* secret is either generated by the foundation or belongs to a
+  # resource it creates. They are held as GitHub secrets and written here so a
+  # rebuilt environment needs no manual step.
+  #
+  # This job runs BEFORE the deploy waves and that ordering is load-bearing.
+  # CloudFormation resolves {{resolve:secretsmanager:...}} at DEPLOY time and
+  # bakes the result into the Lambda's environment, so a value written after
+  # the stack deploys does not reach the function until the next deploy. Seeded
+  # afterwards, a correct key would still behave exactly like a wrong one.
+  #
+  # put-secret-value only, never create-secret: the foundation owns which
+  # secrets exist, and a pipeline that can invent them hides a missing
+  # foundation deploy behind a new empty secret.
+  seed-payment-secrets:
+    name: Seed Midtrans secrets
+    needs: [resolve-env, preflight]
+    if: >-
+      always() && needs.preflight.result == 'success' &&
+      needs.resolve-env.outputs.payment_api == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-env.outputs.environment }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Write the Midtrans keys into Secrets Manager
+        env:
+          ENV: ${{ needs.resolve-env.outputs.environment }}
+          MIDTRANS_SERVER_KEY: ${{ secrets.MIDTRANS_SERVER_KEY }}
+          MIDTRANS_SIGNATURE_SECRET_KEY: ${{ secrets.MIDTRANS_SIGNATURE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+
+          # An empty GitHub secret SKIPS rather than writes. Clearing or
+          # renaming one would otherwise overwrite a working key with "", and
+          # the service would then boot, report healthy and fail every payment
+          # - the exact failure this job exists to prevent.
+          seed() {
+            local secret_id="$1" json_key="$2" value="$3" label="$4"
+
+            if [ -z "$value" ]; then
+              echo "::warning::$label is empty; leaving $secret_id unchanged."
+              return 0
+            fi
+
+            # describe, not get-secret-value: confirms the secret exists
+            # without this job ever reading a secret it did not bring.
+            if ! aws secretsmanager describe-secret --secret-id "$secret_id" >/dev/null 2>&1; then
+              echo "::error::$secret_id does not exist. Deploy the foundation first"
+              echo "::error::(workflow_dispatch with deploy_foundation=true)."
+              return 1
+            fi
+
+            # jq builds the JSON so the key never has to survive shell quoting,
+            # and nothing echoes the value.
+            aws secretsmanager put-secret-value \
+              --secret-id "$secret_id" \
+              --secret-string "$(jq -n --arg k "$json_key" --arg v "$value" '{($k): $v}')" \
+              --query VersionId --output text >/dev/null
+
+            echo "  seeded $secret_id ($json_key)"
+          }
+
+          fail=0
+          seed "rusuh-${ENV}/midtrans-server-key" \
+               server_key "$MIDTRANS_SERVER_KEY" MIDTRANS_SERVER_KEY || fail=1
+          seed "rusuh-${ENV}/midtrans-signature-secret-key" \
+               signature_secret_key "$MIDTRANS_SIGNATURE_SECRET_KEY" MIDTRANS_SIGNATURE_SECRET_KEY || fail=1
+
+          [ "$fail" -eq 0 ]
 
   # ══════════════════════════════════════════════════════════════════════════
   #  WAVE 1 — Using cfn-deploy (raw CloudFormation, no SAM transform)
@@ -747,6 +881,50 @@ jobs:
             DeployRevision=${{ github.sha }}
             AppBaseUrl=${{ vars.APP_BASE_URL }}
 
+  # payment-api is in wave 1 because it consumes nothing any other stack
+  # publishes - only foundation's parameters. The webhook it exposes is called
+  # by Midtrans, not by another service here.
+  deploy-payment-api:
+    name: Deploy payment-api
+    needs: [resolve-env, preflight, seed-payment-secrets]
+    # The seed must have SUCCEEDED, not merely not-failed: deploying over an
+    # unseeded secret bakes REPLACE_ME into the function's environment.
+    if: >-
+      always() && needs.preflight.result == 'success' &&
+      needs.seed-payment-secrets.result == 'success' &&
+      needs.resolve-env.outputs.payment_api == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-env.outputs.environment }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      # cfn-deploy, not sam-deploy: an SCP denies CreateChangeSet on the
+      # Serverless transform, so services/payment-api/template-cfn.yaml is the
+      # deployed template. template.yaml stays as the SAM description.
+      - uses: ./.github/actions/cfn-deploy
+        with:
+          service: payment-api
+          stack-name: rusuh-${{ needs.resolve-env.outputs.environment }}-payment-api
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          environment: ${{ needs.resolve-env.outputs.environment }}
+          # MIDTRANS_BASE_URL is passed rather than left to the template
+          # default so that moving a POC to real money is a repo-variable
+          # change with an audit trail, not a template edit. Unset means
+          # sandbox: a forgotten variable charges nobody.
+          #
+          # The window and attempt limits stay on their template defaults -
+          # they are product policy (BR-05), not per-environment wiring, and
+          # the template constrains their ranges.
+          parameter-overrides: >-
+            Environment=${{ needs.resolve-env.outputs.environment }}
+            EnableDirectApiAccess=${{ vars.ENABLE_DIRECT_API_ACCESS || 'false' }}
+            DeployRevision=${{ github.sha }}
+            MidtransBaseUrl=${{ vars.MIDTRANS_BASE_URL || 'https://api.sandbox.midtrans.com' }}
+            PaymentIconBase=${{ vars.PAYMENT_ICON_BASE || 'https://cdn.rusuh.id/icons' }}
+
   # ══════════════════════════════════════════════════════════════════════════
   #  WAVE 2 — Depends on Wave 1's SSM parameters
   # ══════════════════════════════════════════════════════════════════════════
@@ -810,7 +988,10 @@ jobs:
   # ══════════════════════════════════════════════════════════════════════════
   deploy-api-gateway:
     name: Deploy unified API gateway
-    needs: [resolve-env, deploy-booking, deploy-queue, deploy-events, deploy-nik-verify, deploy-user]
+    # payment-api is in this list because the gateway declares a Lambda
+    # permission and an integration naming rusuh-${ENV}-payment-api: deploying
+    # the gateway before that function exists fails the whole stack.
+    needs: [resolve-env, deploy-booking, deploy-queue, deploy-events, deploy-nik-verify, deploy-user, deploy-payment-api]
     if: >-
       always() &&
       needs.deploy-booking.result != 'failure' &&
@@ -818,6 +999,7 @@ jobs:
       needs.deploy-events.result != 'failure' &&
       needs.deploy-nik-verify.result != 'failure' &&
       needs.deploy-user.result != 'failure' &&
+      needs.deploy-payment-api.result != 'failure' &&
       (needs.resolve-env.outputs.any_service_changed == 'true' ||
        needs.resolve-env.outputs.api_gateway_changed == 'true')
     runs-on: ubuntu-latest
@@ -947,7 +1129,7 @@ jobs:
   # ══════════════════════════════════════════════════════════════════════════
   smoke:
     name: Smoke test
-    needs: [resolve-env, deploy-booking, deploy-queue, deploy-events, deploy-nik-verify, deploy-user, deploy-api-gateway]
+    needs: [resolve-env, deploy-booking, deploy-queue, deploy-events, deploy-nik-verify, deploy-user, deploy-api-gateway, deploy-payment-api]
     if: >-
       always() &&
       needs.deploy-booking.result != 'failure' &&
@@ -956,6 +1138,7 @@ jobs:
       needs.deploy-nik-verify.result != 'failure' &&
       needs.deploy-user.result != 'failure' &&
       needs.deploy-api-gateway.result != 'failure' &&
+      needs.deploy-payment-api.result != 'failure' &&
       needs.resolve-env.outputs.any_service_changed == 'true'
     runs-on: ubuntu-latest
     environment: ${{ needs.resolve-env.outputs.environment }}
@@ -997,7 +1180,7 @@ jobs:
             echo ""
             echo "Testing direct service endpoints (ENABLE_DIRECT_API_ACCESS=true)..."
             fail=0
-            for svc in booking queue events nik-verify user; do
+            for svc in booking queue events nik-verify user payment-api; do
               url=$(aws cloudformation describe-stacks --stack-name "rusuh-${ENV}-${svc}" \
                 --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue" \
                 --output text 2>/dev/null || true)

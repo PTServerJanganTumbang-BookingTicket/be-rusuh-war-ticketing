@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/user/internal/user/domain/dto"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/user/internal/user/domain/entity"
 )
 
@@ -20,6 +21,32 @@ func TestToSavedNIKItem_UsesTheStoredMask(t *testing.T) {
 	assert.Equal(t, "3171**********33", item.NIKMasked)
 	assert.Equal(t, "2026-10-20T08:11:00Z", item.VerifiedAt)
 	assert.Equal(t, "VERIFIED", item.Status)
+}
+
+func TestToAccountProfile_CarriesOnlyEmailAndTheMask(t *testing.T) {
+	now := time.Date(2026, 11, 3, 9, 12, 0, 0, time.UTC)
+	p := ToAccountProfile(entity.Account{
+		ID: "USR-001", Email: "alex@example.com",
+		EmailVerifiedAt: &now,
+		NIKHmac:         "deadbeef", NIKMasked: "3171********xx22",
+		NIKVerifiedAt: &now, DukcapilRef: "DKP-99", CreatedAt: now,
+	})
+	// Compared whole, not field by field: that is what pins the response to two
+	// fields. The hash is what the gate matches against and the ref is audit
+	// material, neither has any business on a profile page, and the account
+	// stores no name to return at all (FR-15a).
+	assert.Equal(t, dto.AccountProfileResponse{
+		Email:     "alex@example.com",
+		NIKMasked: "3171********xx22",
+	}, p)
+}
+
+// An account created by a magic-link sign-in has no NIK yet. The mapper reports
+// that as an empty mask rather than inventing a placeholder.
+func TestToAccountProfile_UnregisteredAccountHasAnEmptyMask(t *testing.T) {
+	p := ToAccountProfile(entity.Account{ID: "USR-002", Email: "new@example.com"})
+	assert.Equal(t, "new@example.com", p.Email)
+	assert.Empty(t, p.NIKMasked)
 }
 
 func TestToUserSummary_CarriesTheMaskNotTheHash(t *testing.T) {

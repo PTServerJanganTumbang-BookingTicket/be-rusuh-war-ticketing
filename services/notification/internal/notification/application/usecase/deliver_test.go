@@ -138,13 +138,13 @@ func TestDeliver_MissingOutboxIDIsDropped(t *testing.T) {
 	require.NoError(t, uc.Deliver(context.Background(), env))
 }
 
-func TestDeliver_TicketGoesToTheHolderNotTheBuyer(t *testing.T) {
-	// FR-26: one email per NIK holder.
+func TestDeliver_TicketGoesToTheContactEmail(t *testing.T) {
+	// FR-26 via ADR-006 §8.15: one email per seat, all to the buyer.
 	uc, d := newTestUsecase(t)
 	env := envelope(t, "evt-1", events.TypeTicketIssue, events.TicketIssuePayload{
 		TicketID: "TKT-001", BookingID: "RB-00912",
-		HolderEmail: "friend@example.com",
-		EventName:   "Konser A", EventDate: "2026-12-25", EventVenue: "GBK",
+		ContactEmail: "buyer@example.com",
+		EventName:    "Konser A", EventDate: "2026-12-25", EventVenue: "GBK",
 		Category: "VIP", NIKMasked: "3171**********22", QRValue: "TKT-001.nonce",
 	})
 	d.dedupe.EXPECT().MarkSentIfNew(gomock.Any(), gomock.Any(), gomock.Any()).Return(true, nil)
@@ -154,7 +154,7 @@ func TestDeliver_TicketGoesToTheHolderNotTheBuyer(t *testing.T) {
 		func(_ context.Context, m entity.Message) error { sent = m; return nil })
 
 	require.NoError(t, uc.Deliver(context.Background(), env))
-	assert.Equal(t, "friend@example.com", sent.To)
+	assert.Equal(t, "buyer@example.com", sent.To)
 	assert.Contains(t, sent.Subject, "Konser A")
 	assert.Contains(t, sent.HTMLBody, "3171**********22")
 	assert.NotContains(t, sent.HTMLBody, "TKT-001.nonce", "the QR value is not in the email body")

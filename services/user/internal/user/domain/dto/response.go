@@ -5,6 +5,15 @@ type RegisterResponse struct {
 	UserID string `json:"user_id"`
 }
 
+// VerifyEmailResponse is returned by GET /auth/verify-email (contract §1.7).
+//
+// One field, and it is always true: reaching this point means the token was
+// redeemed. It exists so the client reads a value rather than inferring
+// success from the status code, which is what an empty data {} would force.
+type VerifyEmailResponse struct {
+	EmailVerified bool `json:"email_verified"`
+}
+
 // VerifyMagicLinkResponse is returned by GET /auth/verify.
 type VerifyMagicLinkResponse struct {
 	AccessToken  string      `json:"access_token"`
@@ -45,6 +54,26 @@ type RedirectContext struct {
 	EventID   string `json:"event_id,omitempty"`
 	BookingID string `json:"booking_id,omitempty"`
 	Message   string `json:"message,omitempty"`
+}
+
+// AccountProfileResponse is returned by GET /accounts/me (contract §1.8).
+//
+// Two fields, and there is no third. In particular there is no name: the
+// account does not store one, because Dukcapil validates the NIK alone and a
+// name is collected at no point in this system (FR-15a).
+//
+// NIKMasked is sent even when empty rather than omitted, so the profile page
+// reads one shape on every account. An account can exist without a bound NIK —
+// a magic-link sign-in creates one before registration finishes — and for that
+// account the field is "", which the page renders as "not yet verified". An
+// omitted field would make the client tell that apart by absence instead.
+type AccountProfileResponse struct {
+	Email string `json:"email"`
+	// NIKMasked is the MASKED NIK Terdaftar. The full sixteen digits are never
+	// returned by any endpoint (FR-32c), and the field is named for the mask so
+	// that a client author cannot mistake it for something it can send back as
+	// a `nik` (contract §1.8).
+	NIKMasked string `json:"nik_masked"`
 }
 
 // SavedNIKsResponse is returned by GET /accounts/me/saved-niks.

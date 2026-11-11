@@ -86,8 +86,8 @@ func (r *UserRepository) RegisterAccount(ctx context.Context, reg portout.Regist
 
 	c := reg.Consent
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO consent_records (id, account_id, policy_version, consented_at) VALUES ($1, $2, $3, $4)`,
-		c.ID, c.AccountID, c.PolicyVersion, c.ConsentedAt,
+		`INSERT INTO consent_records (id, account_id, consented_at) VALUES ($1, $2, $3)`,
+		c.ID, c.AccountID, c.ConsentedAt,
 	); err != nil {
 		return entity.Account{}, apperror.ErrInternal("failed to record consent")
 	}

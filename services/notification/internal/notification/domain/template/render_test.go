@@ -85,7 +85,7 @@ func TestRender_HTMLEscapesUserControlledValues(t *testing.T) {
 	// someone else's inbox.
 	_, out, err := renderer().Render(envelopeOf(t, events.TypeTicketIssue,
 		events.TicketIssuePayload{
-			TicketID: "TKT-1", HolderEmail: "h@example.com",
+			TicketID: "TKT-1", ContactEmail: "h@example.com",
 			EventName: `Konser <script>alert(1)</script>`,
 			Category:  `VIP" onload="x`,
 		}))
@@ -94,17 +94,48 @@ func TestRender_HTMLEscapesUserControlledValues(t *testing.T) {
 	assert.Contains(t, out.HTMLBody, "&lt;script&gt;")
 }
 
-func TestRender_TicketIssueAddressesTheHolder(t *testing.T) {
+// ADR-006 §8.15: every e-ticket of a booking goes to contact_email. The seat
+// never carried an address, so there is no holder inbox to address - one link
+// per seat still goes out, and the buyer forwards each on.
+func TestRender_TicketIssueAddressesTheContactEmail(t *testing.T) {
 	rec, out, err := renderer().Render(envelopeOf(t, events.TypeTicketIssue,
 		events.TicketIssuePayload{
-			TicketID: "TKT-001", HolderEmail: "friend@example.com",
+			TicketID: "TKT-001", ContactEmail: "buyer@example.com",
 			EventName: "Konser A", EventDate: "2026-12-25", EventVenue: "GBK",
 			Category: "VIP", NIKMasked: "3171**********22",
 		}))
 	require.NoError(t, err)
-	assert.Equal(t, "friend@example.com", rec.Email, "FR-26: one email per NIK holder")
+	assert.Equal(t, "buyer@example.com", rec.Email, "FR-26 via §8.15: one link per seat, to the buyer")
 	assert.Contains(t, out.HTMLBody, "https://rusuh.id/tickets/TKT-001/eticket")
 	assert.Contains(t, out.HTMLBody, "3171**********22")
+}
+
+// Rows written before §8.15 are still in the outbox when this deploys, and
+// they carry holder_email and no contact_email. Dropping them would lose a
+// paid customer's e-ticket, so the old field is read - and only read.
+func TestRender_TicketIssue_FallsBackToTheLegacyHolderEmail(t *testing.T) {
+	rec, _, err := renderer().Render(envelopeOf(t, events.TypeTicketIssue,
+		events.TicketIssuePayload{
+			TicketID: "TKT-001", LegacyHolderEmail: "in-flight@example.com",
+			EventName: "Konser A", EventDate: "2026-12-25", EventVenue: "GBK",
+			Category: "VIP", NIKMasked: "3171**********22",
+		}))
+	require.NoError(t, err)
+	assert.Equal(t, "in-flight@example.com", rec.Email)
+}
+
+// With both present the new field wins: a row re-enqueued by a replay must not
+// be routed by a field the producer no longer writes.
+func TestRender_TicketIssue_ContactEmailBeatsTheLegacyField(t *testing.T) {
+	rec, _, err := renderer().Render(envelopeOf(t, events.TypeTicketIssue,
+		events.TicketIssuePayload{
+			TicketID: "TKT-001", ContactEmail: "buyer@example.com",
+			LegacyHolderEmail: "stale@example.com",
+			EventName:         "Konser A", EventDate: "2026-12-25", EventVenue: "GBK",
+			Category: "VIP", NIKMasked: "3171**********22",
+		}))
+	require.NoError(t, err)
+	assert.Equal(t, "buyer@example.com", rec.Email)
 }
 
 func TestRender_PaymentFailedNotice_DisputedStatesFundsReceived(t *testing.T) {

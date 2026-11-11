@@ -84,10 +84,30 @@ func (c *UserController) VerifyMagicLink(w http.ResponseWriter, r *http.Request)
 	apinizer.WriteEnvelope(w, http.StatusOK, "Login successful", resp)
 }
 
-// VerifyEmail handles GET /auth/verify-email (FR-31).
+// VerifyEmail handles GET /auth/verify-email (FR-31, contract §1.7).
 //
 // A distinct endpoint and a distinct token purpose: confirming an address must
 // not mint a session, or "please confirm your email" becomes a login bypass.
+//
+// The token arrives in the `magic_token` COOKIE, the same channel §1.3 uses,
+// and the two flows are the same shape: notification emails a link to
+// APP_BASE_URL — the FRONTEND, not this API — the frontend page reads the
+// token out of its own query string, sets the cookie, and calls here. The
+// login email points at `/auth/login`, which is not an API route at all, which
+// is what makes the pattern unambiguous.
+//
+// Why the cookie rather than passing the token through as a query parameter:
+// the token is single-use proof of control over an address, and a query
+// parameter would copy it into this service's access logs, the load balancer's
+// logs, CloudWatch, and the Referer of anything the response links to. It
+// still travels in one URL — the frontend's, which is unavoidable for any
+// emailed link — but it stops there. HttpOnly keeps it out of script on later
+// pages and SameSite=Strict stops another origin submitting it.
+//
+// api-contracts §1.7 declared a `token` query parameter until v2.24, which
+// contradicted both §1.3 and the delivery path above; the contract was the
+// side that was wrong and has been corrected. Nothing broke in between only
+// because `?token=` was always answered 400 TOKEN_INVALID.
 func (c *UserController) VerifyEmail(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie(magicTokenCookie)
 	if err != nil || cookie.Value == "" {
@@ -100,8 +120,12 @@ func (c *UserController) VerifyEmail(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	// Single-use, so the spent cookie goes. Leaving it set means a burnt
+	// credential rides along on every later request to this origin.
 	c.clearCookie(w, magicTokenCookie)
-	apinizer.WriteEnvelope(w, http.StatusOK, "Email verified", nil)
+	// data {email_verified: true}, per §1.7. A bare {} would make the client
+	// infer success from the status code alone.
+	apinizer.WriteEnvelope(w, http.StatusOK, "Email verified", dto.VerifyEmailResponse{EmailVerified: true})
 }
 
 // Register handles POST /auth/register (FR-29, FR-30, FR-31a..d).

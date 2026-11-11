@@ -143,6 +143,10 @@ Resources:
           SALE_WINDOW_SECONDS: "21600"
           JWT_SECRET: !Sub '{{resolve:secretsmanager:rusuh-${Environment}/jwt-signing:SecretString}}'
           ETICKET_SIGNING_KEY: !Sub '{{resolve:secretsmanager:${ETicketSigningKeySecretArn}:SecretString}}'
+          # ADR-006 §8.17: the grant guard verifies the account session behind
+          # an account grant, so booking needs the same signing secret
+          # user-service issues with. Without it every logged-in call is 503.
+          JWT_SECRET: !Sub '{{resolve:secretsmanager:rusuh-${Environment}/jwt-signing:SecretString}}'
 
   # ============================================================================
   # CloudWatch Log Group (explicit retention)
