@@ -192,3 +192,97 @@ func TestTheServersEntryPointServesBothKindsOfEvent(t *testing.T) {
 		t.Fatalf("internal event: %s (%v) calls=%d", out, err, len(uc.calls))
 	}
 }
+
+// ── Regression: lambda.StartHandlerFunc vs lambda.Start ───────────────────
+//
+// lambda.StartHandlerFunc is generic-based. For a handler with signature
+// func(context.Context, []byte) ([]byte, error) it instantiates TIn=[]byte
+// and calls json.Unmarshal(eventJSON, &[]byte{}) before the handler runs.
+// A JSON object cannot be unmarshalled into []byte, so EVERY API Gateway
+// request failed with:
+//
+//   json: cannot unmarshal object into Go value of type []uint8
+//
+// lambda.Start uses reflection and special-cases []byte: it passes the raw
+// JSON bytes directly to the handler without any unmarshalling step.
+//
+// These tests protect that contract by calling Invoke with realistic API
+// Gateway HTTP API v2 payloads that would have caused the runtime to panic
+// under StartHandlerFunc.
+
+// TestInvokeHandlesAFullAPIGatewayHTTPAPIv2EventWithoutError checks that
+// Invoke receives the raw JSON bytes of an API Gateway event and routes it to
+// the proxy — the scenario that broke under lambda.StartHandlerFunc.
+func TestInvokeHandlesAFullAPIGatewayHTTPAPIv2EventWithoutError(t *testing.T) {
+	p := &fakeProxy{resp: events.APIGatewayV2HTTPResponse{StatusCode: http.StatusOK, Body: `{}`}}
+	// A realistic, complete API Gateway HTTP API v2 event matching exactly
+	// what the runtime delivers after the lambda.Start fix.
+	payload := `{
+		"version": "2.0",
+		"routeKey": "POST /nik/validate",
+		"rawPath": "/nik/validate",
+		"rawQueryString": "",
+		"headers": {
+			"content-type": "application/json",
+			"x-forwarded-for": "203.0.113.1",
+			"x-forwarded-port": "443",
+			"x-forwarded-proto": "https"
+		},
+		"requestContext": {
+			"accountId": "699475956139",
+			"apiId": "abc123",
+			"domainName": "abc123.execute-api.ap-southeast-1.amazonaws.com",
+			"http": {
+				"method": "POST",
+				"path": "/nik/validate",
+				"protocol": "HTTP/1.1",
+				"sourceIp": "203.0.113.1",
+				"userAgent": "rusuh-user/1.0"
+			},
+			"stage": "$default"
+		},
+		"body": "{\"nik\":\"3171000000000022\"}",
+		"isBase64Encoded": false
+	}`
+
+	_, err := NewEventHandler(&fakeUsecase{resp: valid}, p.proxy).Invoke(context.Background(), []byte(payload))
+	if err != nil {
+		// If this fails with "cannot unmarshal object into go value of type
+		// []uint8" it means the caller is using lambda.StartHandlerFunc.
+		t.Fatalf("Invoke must not return an error for a valid API Gateway event: %v", err)
+	}
+	if len(p.got) != 1 {
+		t.Fatalf("proxy called %d times, want 1 — event was not forwarded", len(p.got))
+	}
+	if p.got[0].RawPath != "/nik/validate" {
+		t.Fatalf("proxy received path %q, want /nik/validate", p.got[0].RawPath)
+	}
+}
+
+// TestInvokeDistinguishesBothEventTypesInOneContainer verifies that the same
+// Invoke function dispatches correctly to both paths in a single warm container
+// — the main reason the two-payload design exists.
+func TestInvokeDistinguishesBothEventTypesInOneContainer(t *testing.T) {
+	uc := &fakeUsecase{resp: valid}
+	p := &fakeProxy{resp: events.APIGatewayV2HTTPResponse{StatusCode: http.StatusOK}}
+	h := NewEventHandler(uc, p.proxy)
+
+	// 1. API Gateway event → proxy, not use case.
+	apigwPayload := `{"version":"2.0","routeKey":"POST /nik/validate","rawPath":"/nik/validate",` +
+		`"requestContext":{"http":{"method":"POST"}},"body":"{\"nik\":\"3171000000000022\"}"}`
+	if _, err := h.Invoke(context.Background(), []byte(apigwPayload)); err != nil {
+		t.Fatalf("API Gateway event: %v", err)
+	}
+	if len(p.got) != 1 || len(uc.calls) != 0 {
+		t.Fatalf("after API Gateway event: proxy=%d (want 1) uc=%d (want 0)", len(p.got), len(uc.calls))
+	}
+
+	// 2. Internal event → use case, not proxy.
+	internalPayload := `{"op":"validate","nik":"3171000000000022"}`
+	if _, err := h.Invoke(context.Background(), []byte(internalPayload)); err != nil {
+		t.Fatalf("internal event: %v", err)
+	}
+	if len(p.got) != 1 || len(uc.calls) != 1 {
+		t.Fatalf("after internal event: proxy=%d (want 1) uc=%d (want 1)", len(p.got), len(uc.calls))
+	}
+}
