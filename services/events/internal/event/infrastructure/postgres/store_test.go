@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/pgtest"
 )
 
@@ -76,7 +78,8 @@ func TestGetOfAnUnknownEventIsNotAnError(t *testing.T) {
 
 func TestStoreReturnsErrorsWhenTheDatabaseIsGone(t *testing.T) {
 	s := seed(t)
-	s.pool.Close()
+	pool := s.db.(*pgxpool.Pool)
+	pool.Close()
 	if _, _, err := s.List(context.Background(), 1, 0); err == nil {
 		t.Fatal("List must fail on a closed pool")
 	}

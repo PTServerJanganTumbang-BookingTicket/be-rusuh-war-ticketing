@@ -12,11 +12,17 @@ import (
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/events/internal/event/domain"
 )
 
+// db is the part of the pool the store uses. *pgxpool.Pool satisfies it; store_unit_test.go fakes it so the Go side
+// (scanning, binding, error handling) is covered where there is no database (CI). store_test.go proves the SQL.
+type db interface {
+	SendBatch(ctx context.Context, b *pgx.Batch) pgx.BatchResults
+}
+
 // Store implements outbound.Events.
-type Store struct{ pool *pgxpool.Pool }
+type Store struct{ db db }
 
 // NewStore wraps the pool (the reader endpoint).
-func NewStore(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
+func NewStore(pool *pgxpool.Pool) *Store { return &Store{db: pool} }
 
 const eventColumns = `id, name, category, event_date, event_time, venue, location_city, image_url, description, sale_starts_at`
 
@@ -43,7 +49,7 @@ func (s *Store) List(ctx context.Context, limit, offset int) ([]domain.Event, in
 	var b pgx.Batch
 	b.Queue(ListSQL, limit, offset)
 	b.Queue(CountSQL)
-	br := s.pool.SendBatch(ctx, &b)
+	br := s.db.SendBatch(ctx, &b)
 	defer func() { _ = br.Close() }()
 
 	rows, err := br.Query()
@@ -75,7 +81,7 @@ func (s *Store) Get(ctx context.Context, id string) (domain.Event, []domain.Cate
 	var b pgx.Batch
 	b.Queue(GetEventSQL, id)
 	b.Queue(CategoriesSQL, id)
-	br := s.pool.SendBatch(ctx, &b)
+	br := s.db.SendBatch(ctx, &b)
 	defer func() { _ = br.Close() }()
 
 	ev, err := scanEvent(br.QueryRow())
