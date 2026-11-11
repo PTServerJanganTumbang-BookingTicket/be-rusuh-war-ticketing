@@ -406,11 +406,11 @@ Integration (real Postgres + Redis cluster):
       load test; no 429 (contract v2.23)
 - [x] migration `0010`: the terms columns, their check and `booking_items.holder_email` are gone (the HELD update
       writes neither)
-- [ ] B4c: move nik-verify's `valueobject.Normalize` / `IsValidFormat` to a shared `pkg` so booking and nik-verify use one rule
+- [x] B4c: nik-verify's `Normalize` / `IsValidFormat` live in `pkg/nikformat`; nik-verify delegates to it, booking will call it
 - [ ] B4d: nik-verify: internal `{op: validate}` event in the Lambda entry point (agreed with nik-verify's owner)
 - [ ] B4d: booking: `NIKVerifier` port, Lambda-invoke adapter, fake; `NIK_VERIFY_FUNCTION_NAME` / `NIK_VERIFY_TIMEOUT_MS` in
       config; template env and the `lambda:InvokeFunction` statement
-- [ ] B4c: `rediskeys` builder for `nik:used`, `hold_booking.lua` + `release_hold.lua`
+- [x] B4c: `rediskeys` builder for `nik:used`, `hold_booking.lua` + `release_hold.lua`
       (`docs/lua-scripts.md`)
 - [ ] B4f: migration `0012` with the HELD → EXPIRED sweep: partial index `bookings (payment_expires_at) WHERE status = 'HELD'`
 - [ ] B4e: tests and the use case `CreateBooking`, the handler, and mounting `POST /bookings`

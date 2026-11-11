@@ -93,7 +93,7 @@ keep its admission place for ever, so that sweep ships with the ticket page.
 |---|---|
 | ~~B4a~~ | built: `Authorization: Bearer` check for account grants in `pkg/grantauth`; `JWT_SECRET` in booking. [00-grant-authorization.md](00-grant-authorization.md) |
 | ~~B4b~~ | built: ticket page `account {email, nik_masked}`. [01 §3.3](01-get-ticket-selection-page.md) |
-| **B4c** | Building blocks for `POST /bookings`: shared NIK `Normalize` / `IsValidFormat` in `pkg`, the `nik:used` key, `hold_booking.lua` + `release_hold.lua`. Plan: [02 §4, §8](02-create-booking.md) |
+| ~~B4c~~ | built: `pkg/nikformat` (shared `Normalize` / `IsValidFormat`), `rediskeys` `NIKUsed`, `hold_booking.lua` + `release_hold.lua` with `redisscript.Hold` / `Release`. [02 §4, §8](02-create-booking.md), [lua-scripts.md §4](../lua-scripts.md) |
 | **B4d** | nik-verify's internal `{op: validate}` Lambda event (needs nik-verify's owner), booking's `NIKVerifier` port, Lambda-invoke adapter, fake, IAM statement. Plan: [02 §3.1 step 4, §4](02-create-booking.md) |
 | **B4e** | `POST /bookings`: use case, handler, route. Needs B4a, B4c, B4d. Plan: [02](02-create-booking.md) |
 | **B4f** | HELD → EXPIRED sweep in admission-ctl, with migration `0012` (partial index). Can run next to B4e. Plan: [02 §3.4](02-create-booking.md) |

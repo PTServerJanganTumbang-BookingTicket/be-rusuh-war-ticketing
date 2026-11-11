@@ -8,35 +8,20 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"strings"
+
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/nikformat"
 )
 
 // Length is the fixed length of an Indonesian NIK.
-const Length = 16
+const Length = nikformat.Length
 
-// Normalize strips everything that is not a digit and trims surrounding space.
-//
-// This must run before hashing, always. "3171 0000 0000 0022" and
-// "3171000000000022" are the same identity to a human and to Dukcapil, but
-// different inputs to HMAC — and because the pepper can never be rotated
-// (ADR-005 §8), a NIK hashed two different ways is a BR-02 hole that cannot be
-// repaired later without re-collecting the plaintext.
-func Normalize(raw string) string {
-	var b strings.Builder
-	b.Grow(len(raw))
-	for _, r := range raw {
-		if r >= '0' && r <= '9' {
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
-}
+// Normalize strips everything that is not a digit and trims surrounding space. The rule lives in pkg/nikformat, shared
+// with booking, so both read a typed NIK the same way; it must run before hashing, always (see there).
+func Normalize(raw string) string { return nikformat.Normalize(raw) }
 
-// IsValidFormat reports whether the normalised NIK is syntactically usable.
-// Format is checked before Dukcapil is called: a malformed NIK is the caller's
-// mistake and must not cost a paid API call (NFR-12).
-func IsValidFormat(normalized string) bool {
-	return len(normalized) == Length
-}
+// IsValidFormat reports whether the normalised NIK is syntactically usable: exactly 16 digits, checked before
+// Dukcapil is called so a malformed NIK never costs a paid call (NFR-12).
+func IsValidFormat(normalized string) bool { return nikformat.IsValidFormat(normalized) }
 
 // Hash returns the keyed HMAC-SHA256 of a normalised NIK, hex-encoded.
 //
