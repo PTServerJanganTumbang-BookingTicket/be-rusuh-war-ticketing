@@ -7,7 +7,7 @@
 | **Contract** | Apidog `POST /bookings` · api-contracts §4.3 |
 | **Requirements** | FR-13, FR-13a, FR-13b, FR-14, FR-15, FR-15b, FR-15c, FR-16, FR-26, BR-01, BR-02, BR-05, NFR-02, NFR-04, NFR-11 |
 | **Detail** | ADR-005 §7 (deadlines), §8 (hold, NIK proof, idempotency) as amended by ADR-006 §4.3 (no pause) · impl-plan §5.4, §14.2 |
-| **Status** | approved (B4c–B4f); updated for the nik-verify Lambda call and contract v2.23, awaiting re-approval |
+| **Status** | approved; B4c, B4d (booking side) and B4e built; the HELD → EXPIRED sweep (B4f) and nik-verify's internal event are open |
 
 ## 1. Purpose
 
@@ -110,7 +110,10 @@ stateDiagram-v2
    answers 200 **whatever the body says and even when nik-verify is down**, and no Dukcapil call is spent on a booking
    that is already held or over. It does not replace step 5: two submits can both pass it, and the lock decides.
 2. **Body checks** → 400, nothing touched:
-   - `event_id` must equal `grant.EventID`, else 401 `GRANT_TOKEN_INVALID` (same rule as the ticket page).
+   - `event_id` missing → `VALIDATION_ERROR`; present but not `grant.EventID` → 401 `GRANT_TOKEN_INVALID` (same rule as the
+     ticket page).
+   - the body is one JSON value: trailing data after it is a malformed body (400 `VALIDATION_ERROR`); unknown fields from an
+     old client are ignored; the body is limited to 64 KB.
    - `tickets`: 1 to `MAX_TICKETS_PER_TRANSACTION` (3) seats **in total** → `QTY_EXCEEDED`; empty → `VALIDATION_ERROR`.
    - each seat carries **exactly one** of `nik` (typed), `saved_nik_id` (Daftar NIK Teman) or `use_account_nik: true`
      (the logged-in customer's own registered NIK); zero or two → `VALIDATION_ERROR` with the seat index.
@@ -173,6 +176,10 @@ stateDiagram-v2
    clock while the row is locked. The sweep's `UPDATE … WHERE status = 'SELECTING'` waits for the lock, then sees `HELD`
    and skips the row. If the sweep got the row first, this `SELECT` sees `EXPIRED`. The hold Lua therefore never runs for
    a booking the sweep will end.
+5a. **From the hold on, the request cannot cancel the work.** A request already cancelled before step 5 holds nothing (the
+   customer left). Otherwise the hold and the transaction run on a context detached from the request, under their own 5 s
+   deadline (the NIK checks, up to 3 s, come before): a client that hangs up, or a Lambda deadline, must not leave the
+   hold's answer unknown, because the script probably ran and the customer's own NIKs would stay locked for the sale window.
 6. **Hold** (`pkg/redisscript` `hold_booking.lua`, ADR-005 §8 logic, written fresh): keys
    `stock:{ev}:<cat>` per category and `nik:used:{ev}:<hmac>` per seat, all on the event's shard. Phase 1 checks every
    category, phase 2 claims every NIK (`SET NX EX`), phase 3 decrements; any failure undoes what the script did.
@@ -356,47 +363,47 @@ Messages never contain a NIK, only `index`. A `saved_nik_id` that is unknown, an
 
 Unit (fakes; Lua on miniredis, which runs the real script):
 
-- [ ] a submit on a `HELD` (or later) booking answers 200 with the existing booking even with an invalid body or
+- [x] a submit on a `HELD` (or later) booking answers 200 with the existing booking even with an invalid body or
       nik-verify down, and calls nik-verify zero times
-- [ ] `GRANTED`, `SELECTING` past its deadline and an ended booking are answered before the body is read or nik-verify called
-- [ ] each body rule answers 400 with its code and seat index, and touches neither Redis nor Aurora
-- [ ] a typed NIK with spaces, dots or dashes is accepted exactly when nik-verify's `Normalize` accepts it
-- [ ] the same NIK typed with spaces and without is one NIK (same `nik_hmac` from nik-verify → duplicate)
-- [ ] a seat with zero or two of `nik` / `saved_nik_id` / `use_account_nik` is refused with its index
-- [ ] `use_account_nik` uses the account's own NIK, only once per order, never for a guest or an account without a NIK
-- [ ] `saved_nik_id` of this account resolves without nik-verify; another account's or an unknown id → same 400
-- [ ] a typed NIK equal to a saved or the account NIK in the same order is a duplicate
-- [ ] an `event_id` of another event is rejected as `GRANT_TOKEN_INVALID`
-- [ ] a NIK nik-verify calls invalid is refused with its index and code; nik-verify unreachable, slow or answering
+- [x] `GRANTED`, `SELECTING` past its deadline and an ended booking are answered before the body is read or nik-verify called
+- [x] each body rule answers 400 with its code and seat index, and touches neither Redis nor Aurora
+- [x] a typed NIK with spaces, dots or dashes is accepted exactly when nik-verify's `Normalize` accepts it
+- [x] the same NIK typed with spaces and without is one NIK (same `nik_hmac` from nik-verify → duplicate)
+- [x] a seat with zero or two of `nik` / `saved_nik_id` / `use_account_nik` is refused with its index
+- [x] `use_account_nik` uses the account's own NIK, only once per order, never for a guest or an account without a NIK
+- [x] `saved_nik_id` of this account resolves without nik-verify; another account's or an unknown id → same 400
+- [x] a typed NIK equal to a saved or the account NIK in the same order is a duplicate
+- [x] an `event_id` of another event is rejected as `GRANT_TOKEN_INVALID`
+- [x] a NIK nik-verify calls invalid is refused with its index and code; nik-verify unreachable, slow or answering
       `DUKCAPIL_UNAVAILABLE` → 503, no hold
-- [ ] the invoke adapter sends `{op: validate, nik}`, reads `nik_hmac`, `nik_masked`, `valid`, `status`, and treats an
+- [x] the invoke adapter sends `{op: validate, nik}`, reads `nik_hmac`, `nik_masked`, `valid`, `status`, and treats an
       Invoke error, a throttle, the 3 s deadline and a response with `FunctionError` set as unavailable
-- [ ] nik-verify: the internal event returns the same answer as `POST /nik/validate` for the same NIK, plus `nik_hmac`;
+- [x] nik-verify: the internal event returns the same answer as `POST /nik/validate` for the same NIK, plus `nik_hmac`;
       an API Gateway event still goes to the HTTP routes
-- [ ] hold Lua: all-or-nothing across categories (one short category holds nothing), 3 seats across 3 categories pass,
+- [x] hold Lua: all-or-nothing across categories (one short category holds nothing), 3 seats across 3 categories pass,
       a taken NIK releases the NIKs claimed before it, missing stock key is `STOCK_UNINITIALIZED` not `NO_STOCK`
-- [ ] release Lua gives back exactly what the hold took
-- [ ] each refusal leaves the booking `SELECTING` and answers its code
-- [ ] a short category while another has seats answers `INSUFFICIENT_STOCK` with that category and its `available`
-- [ ] every category at 0 answers `TICKETS_UNAVAILABLE` with `queue_state` `FULL_BOOKED` (and `full_booked_at`), and with
+- [x] release Lua gives back exactly what the hold took
+- [x] each refusal leaves the booking `SELECTING` and answers its code
+- [x] a short category while another has seats answers `INSUFFICIENT_STOCK` with that category and its `available`
+- [x] every category at 0 answers `TICKETS_UNAVAILABLE` with `queue_state` `FULL_BOOKED` (and `full_booked_at`), and with
       `CLOSED` once the queue is closed
-- [ ] every category at 0 while the queue hash still says `OPEN` answers `FULL_BOOKED` with `full_booked_at` `null`
-- [ ] a `GRANTED` booking past its deadline answers `BOOKING_EXPIRED`; within it, `BOOKING_STATUS_INVALID`
-- [ ] a missing stock key in the follow-up read answers `STOCK_UNINITIALIZED`, never `TICKETS_UNAVAILABLE`
-- [ ] a failure after the hold compensates once and answers 503
-- [ ] the 201 body equals what `GET /bookings/{id}` returns for the same booking, `expires_at` 10 minutes after `held_at` (no `ttl_seconds`)
-- [ ] a second submit after `HELD` answers 200 with the same booking and runs no hold
+- [x] every category at 0 while the queue hash still says `OPEN` answers `FULL_BOOKED` with `full_booked_at` `null`
+- [x] a `GRANTED` booking past its deadline answers `BOOKING_EXPIRED`; within it, `BOOKING_STATUS_INVALID`
+- [x] a missing stock key in the follow-up read answers `STOCK_UNINITIALIZED`, never `TICKETS_UNAVAILABLE`
+- [x] a failure after the hold compensates once and answers 503
+- [x] the 201 body equals what `GET /bookings/{id}` returns for the same booking, `expires_at` 10 minutes after `held_at` (no `ttl_seconds`)
+- [x] a second submit after `HELD` answers 200 with the same booking and runs no hold
 
 Integration (real Postgres + Redis cluster):
 
-- [ ] hold → `HELD` row, `payment_expires_at = held_at + 600 s`, items in the order sent, one `nik_claims` per NIK
-- [ ] two concurrent submits of one booking: one hold, both answer with the same booking
-- [ ] two bookings racing for the last seat: one `HELD`, one `INSUFFICIENT_STOCK` (partly) or `TICKETS_UNAVAILABLE`
+- [x] hold → `HELD` row, `payment_expires_at = held_at + 600 s`, items in the order sent, one `nik_claims` per NIK
+- [x] two concurrent submits of one booking: one hold, both answer with the same booking
+- [x] two bookings racing for the last seat: one `HELD`, one `INSUFFICIENT_STOCK` (partly) or `TICKETS_UNAVAILABLE`
       (when it was the last seat of the event), stock ends at 0, never below
-- [ ] two bookings with the same NIK: one wins, the other `NIK_ALREADY_USED`; `nik_claims` refuses a forced second row
+- [x] two bookings with the same NIK: one wins, the other `NIK_ALREADY_USED`; `nik_claims` refuses a forced second row
 - [ ] submit at the deadline while the SELECTING sweep runs: exactly one wins; if the sweep wins, no stock or NIK is held
 - [ ] HELD sweep: a failure after the `UPDATE` rolls the status back too, so no `EXPIRED` booking keeps its `nik_claims`
-- [ ] a `nik_claims` conflict inside the hold transaction rolls back, releases the hold and answers `NIK_ALREADY_USED`
+- [x] a `nik_claims` conflict inside the hold transaction rolls back, releases the hold and answers `NIK_ALREADY_USED`
 - [ ] HELD sweep: past `payment_expires_at` → `EXPIRED`, stock back, NIK keys and claims gone, grant gone; one second before,
       untouched; `AWAITING_PAYMENT` never touched; two sweepers end it once; the sweep query uses its partial index
 
@@ -414,7 +421,7 @@ Integration (real Postgres + Redis cluster):
 - [x] B4c: `rediskeys` builder for `nik:used`, `hold_booking.lua` + `release_hold.lua`
       (`docs/lua-scripts.md`)
 - [ ] B4f: migration `0012` with the HELD → EXPIRED sweep: partial index `bookings (payment_expires_at) WHERE status = 'HELD'`
-- [ ] B4e: tests and the use case `CreateBooking`, the handler, and mounting `POST /bookings`
+- [x] B4e: tests and the use case `CreateBooking` (`application/usecase/create_booking.go`), the handler, the Redis hold and queue adapters, the Postgres `Orders` (`infrastructure/postgres/orders.go`), and mounting `POST /bookings`
 - [ ] B4f: HELD sweep in admission-ctl
 - [ ] `make verify`; fresh-subagent review (Lua + admission-ctl), `/code-review` (booking)
 - [ ] 07-payment: the ticket issuer fills `tickets.holder_email` (kept, migration `0002`) and the email payload with

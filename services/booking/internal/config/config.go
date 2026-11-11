@@ -52,6 +52,7 @@ type NIKVerify struct {
 
 // Booking holds the purchase rules and the e-ticket link key.
 type Booking struct {
-	MaxTicketsPerTransaction int    // BR-01
-	ETicketSigningKey        []byte // ETICKET_SIGNING_KEY, the same key notification and user-service use
+	MaxTicketsPerTransaction int           // BR-01
+	ETicketSigningKey        []byte        // ETICKET_SIGNING_KEY, the same key notification and user-service use
+	NIKLockTTL               time.Duration // SALE_WINDOW_SECONDS: the longest a NIK lock may block a NIK if its booking never completes
 }

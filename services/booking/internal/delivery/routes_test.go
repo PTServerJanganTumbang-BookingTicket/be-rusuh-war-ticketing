@@ -68,11 +68,20 @@ func TestTheHealthCheckNeedsNoGrant(t *testing.T) {
 	}
 }
 
-// The scaffold's POST /bookings writes to memory with the wrong response shape. It stays unmounted until the real
-// one (build step B4), so nobody mistakes it for a working endpoint.
-func TestCreateBookingIsNotMountedUntilItIsBuilt(t *testing.T) {
-	if rec := serve(handler(t), http.MethodPost, "/bookings"); rec.Code != http.StatusNotFound {
-		t.Fatalf("POST /bookings = %d, want 404", rec.Code)
+func TestCreateBookingIsMountedBehindTheGrant(t *testing.T) {
+	rec := serve(handler(t), http.MethodPost, "/bookings")
+	if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), "GRANT_TOKEN_MISSING") {
+		t.Fatalf("POST /bookings = %d %s, want 401 GRANT_TOKEN_MISSING", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCreateBookingChecksTheSessionOfAnAccountGrant(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/bookings", strings.NewReader("{}"))
+	req.Header.Set("X-Grant-Token", "gt_acc")
+	rec := httptest.NewRecorder()
+	newRig(t).h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), `"error_code":"UNAUTHORIZED"`) {
+		t.Fatalf("POST /bookings = %d %s, want 401 UNAUTHORIZED (an account grant needs its session)", rec.Code, rec.Body.String())
 	}
 }
 

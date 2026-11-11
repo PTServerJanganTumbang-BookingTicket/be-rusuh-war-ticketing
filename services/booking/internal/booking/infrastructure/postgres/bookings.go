@@ -20,10 +20,12 @@ import (
 // integration tests in bookings_test.go against real Postgres.
 type db interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	SendBatch(ctx context.Context, b *pgx.Batch) pgx.BatchResults
+	Begin(ctx context.Context) (pgx.Tx, error)
 }
 
-// Store implements outbound.Bookings and outbound.Catalog.
+// Store implements outbound.Bookings, outbound.Catalog, outbound.Details and outbound.Orders.
 type Store struct{ db db }
 
 // NewStore wraps the writer pool.

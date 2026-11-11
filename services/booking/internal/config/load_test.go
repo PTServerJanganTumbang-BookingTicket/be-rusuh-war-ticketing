@@ -98,7 +98,7 @@ func TestLoad_portZeroOutOfRange(t *testing.T) {
 func clearB1(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{"APP_ENV", "APP_PORT", "DATABASE_MAX_CONNS", "REDIS_ADDR", "REDIS_PASSWORD",
-		"REDIS_CLUSTER", "DEVICE_PEPPER", "MAX_TICKETS_PER_TRANSACTION", "AWS_LAMBDA_FUNCTION_NAME", "ETICKET_SIGNING_KEY", "JWT_SECRET", "NIK_VERIFY_FUNCTION_NAME", "NIK_VERIFY_TIMEOUT_MS"} {
+		"REDIS_CLUSTER", "DEVICE_PEPPER", "MAX_TICKETS_PER_TRANSACTION", "AWS_LAMBDA_FUNCTION_NAME", "ETICKET_SIGNING_KEY", "JWT_SECRET", "NIK_VERIFY_FUNCTION_NAME", "NIK_VERIFY_TIMEOUT_MS", "SALE_WINDOW_SECONDS"} {
 		t.Setenv(k, "")
 	}
 	t.Setenv("DATABASE_URL", "postgres://local")
@@ -243,5 +243,22 @@ func TestADeadlineBelowOneMillisecondIsRejected(t *testing.T) {
 	t.Setenv("NIK_VERIFY_TIMEOUT_MS", "0")
 	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "NIK_VERIFY_TIMEOUT_MS") {
 		t.Fatalf("err = %v, want NIK_VERIFY_TIMEOUT_MS reported", err)
+	}
+}
+
+// A NIK lock whose booking never completed must expire; the sale window is the longest it may block a NIK.
+func TestTheNIKLockTTLIsTheSaleWindow(t *testing.T) {
+	clearB1(t)
+	cfg, err := Load()
+	if err != nil || cfg.Booking.NIKLockTTL != 6*time.Hour {
+		t.Fatalf("default = %v (%v), want 6 h (SALE_WINDOW_SECONDS 21600, as queue)", cfg.Booking.NIKLockTTL, err)
+	}
+	t.Setenv("SALE_WINDOW_SECONDS", "7200")
+	if cfg, err = Load(); err != nil || cfg.Booking.NIKLockTTL != 2*time.Hour {
+		t.Fatalf("override = %v (%v)", cfg.Booking.NIKLockTTL, err)
+	}
+	t.Setenv("SALE_WINDOW_SECONDS", "0")
+	if _, err = Load(); err == nil || !strings.Contains(err.Error(), "SALE_WINDOW_SECONDS") {
+		t.Fatalf("err = %v, want SALE_WINDOW_SECONDS reported (a lock without an expiry would leak for ever)", err)
 	}
 }

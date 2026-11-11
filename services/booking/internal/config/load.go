@@ -40,6 +40,7 @@ func Load() (Config, error) {
 		},
 		Booking: Booking{
 			MaxTicketsPerTransaction: envutil.EnvInt("MAX_TICKETS_PER_TRANSACTION", 3),
+			NIKLockTTL:               envutil.EnvDuration("SALE_WINDOW_SECONDS", 6*time.Hour),
 			ETicketSigningKey:        []byte(os.Getenv("ETICKET_SIGNING_KEY")),
 		},
 	}
@@ -94,6 +95,9 @@ func (c Config) validate() error {
 	}
 	if c.DB.MaxConns < 1 {
 		errs = append(errs, fmt.Errorf("DATABASE_MAX_CONNS must be at least 1, got %d", c.DB.MaxConns))
+	}
+	if c.Booking.NIKLockTTL < time.Second {
+		errs = append(errs, errors.New("SALE_WINDOW_SECONDS must be at least 1: a NIK lock without an expiry would leak for ever"))
 	}
 	if c.Booking.MaxTicketsPerTransaction < 1 {
 		errs = append(errs, fmt.Errorf("MAX_TICKETS_PER_TRANSACTION must be at least 1, got %d", c.Booking.MaxTicketsPerTransaction))

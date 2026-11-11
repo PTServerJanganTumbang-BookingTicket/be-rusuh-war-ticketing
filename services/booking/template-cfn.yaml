@@ -139,6 +139,8 @@ Resources:
           # Same secret user-service signs access tokens with and queue verifies with; grantauth checks account grants.
           NIK_VERIFY_FUNCTION_NAME: !Sub rusuh-${Environment}-nik-verify
           NIK_VERIFY_TIMEOUT_MS: "3000"
+          # A NIK lock whose booking never completes blocks that NIK for at most the sale window (same value as queue).
+          SALE_WINDOW_SECONDS: "21600"
           JWT_SECRET: !Sub '{{resolve:secretsmanager:rusuh-${Environment}/jwt-signing:SecretString}}'
           ETICKET_SIGNING_KEY: !Sub '{{resolve:secretsmanager:${ETicketSigningKeySecretArn}:SecretString}}'
 

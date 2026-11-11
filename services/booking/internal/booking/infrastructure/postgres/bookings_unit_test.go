@@ -29,10 +29,26 @@ type call struct {
 }
 
 type fakeDB struct {
-	rows    []pgx.Row // consumed in order by QueryRow
-	batch   pgx.BatchResults
-	calls   []call
-	batched []*pgx.QueuedQuery
+	rows     []pgx.Row // consumed in order by QueryRow
+	batch    pgx.BatchResults
+	calls    []call
+	batched  []*pgx.QueuedQuery
+	tx       *fakeTx  // handed out by Begin
+	beginErr error    // Begin fails
+	query    pgx.Rows // answers Query
+	queryErr error
+}
+
+func (f *fakeDB) Begin(context.Context) (pgx.Tx, error) {
+	if f.beginErr != nil {
+		return nil, f.beginErr
+	}
+	return f.tx, nil
+}
+
+func (f *fakeDB) Query(_ context.Context, sql string, args ...any) (pgx.Rows, error) {
+	f.calls = append(f.calls, call{sql, args})
+	return f.query, f.queryErr
 }
 
 func (f *fakeDB) QueryRow(_ context.Context, sql string, args ...any) pgx.Row {
