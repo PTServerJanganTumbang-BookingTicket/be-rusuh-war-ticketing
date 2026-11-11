@@ -1,0 +1,196 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Redis debug Lambda — run arbitrary Redis commands from AWS CLI.
+  For development/debugging only. Delete this stack when done.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues: [dev, prod]
+
+  VpcSubnetIds:
+    Type: AWS::SSM::Parameter::Value<List<AWS::EC2::Subnet::Id>>
+    Default: /rusuh/prod/vpc/private-subnet-ids
+
+  VpcSecurityGroupIds:
+    Type: AWS::SSM::Parameter::Value<List<AWS::EC2::SecurityGroup::Id>>
+    Default: /rusuh/prod/vpc/lambda-security-group-ids
+
+  RedisAddr:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/redis/addr
+
+Resources:
+  RedisDebugRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub rusuh-${Environment}-redis-debug-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: CloudWatchLogs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/rusuh-${Environment}-redis-debug:*
+
+  RedisDebugLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/rusuh-${Environment}-redis-debug
+      RetentionInDays: 7
+
+  RedisDebugFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub rusuh-${Environment}-redis-debug
+      Description: "DEBUG ONLY — run Redis commands. Delete this stack when done."
+      Runtime: python3.12
+      Architectures: [arm64]
+      Handler: index.lambda_handler
+      Role: !GetAtt RedisDebugRole.Arn
+      Timeout: 30
+      MemorySize: 128
+      VpcConfig:
+        SubnetIds: !Ref VpcSubnetIds
+        SecurityGroupIds: !Ref VpcSecurityGroupIds
+      Environment:
+        Variables:
+          REDIS_ADDR: !Ref RedisAddr
+      Code:
+        ZipFile: |
+          import os
+          import socket
+
+          REDIS_ADDR = os.environ.get("REDIS_ADDR", "")
+
+
+          def read_response(sock):
+              """Read a complete RESP response from socket."""
+              def read_line():
+                  buf = b""
+                  while not buf.endswith(b"\r\n"):
+                      buf += sock.recv(1)
+                  return buf[:-2].decode()
+
+              def read_bytes(n):
+                  buf = b""
+                  while len(buf) < n + 2:  # +2 for \r\n
+                      buf += sock.recv(n + 2 - len(buf))
+                  return buf[:-2].decode()
+
+              def parse():
+                  line = read_line()
+                  if not line:
+                      return None
+                  prefix, content = line[0], line[1:]
+                  if prefix == '+':
+                      return content
+                  elif prefix == '-':
+                      return f"ERROR: {content}"
+                  elif prefix == ':':
+                      return int(content)
+                  elif prefix == '$':
+                      n = int(content)
+                      if n == -1:
+                          return None
+                      return read_bytes(n)
+                  elif prefix == '*':
+                      count = int(content)
+                      if count == -1:
+                          return None
+                      return [parse() for _ in range(count)]
+                  return content
+
+              return parse()
+
+
+          def send_command(sock, cmd):
+              """Send a Redis RESP command and return parsed response."""
+              parts = cmd.split()
+              req = f"*{len(parts)}\r\n"
+              for p in parts:
+                  req += f"${len(p)}\r\n{p}\r\n"
+              sock.send(req.encode())
+              return read_response(sock)
+
+
+          def lambda_handler(event, context):
+              """
+              Run Redis commands.
+
+              Event formats:
+                {"cmd": "PING"}
+                {"cmd": "KEYS *"}
+                {"cmd": "SET key value"}
+                {"cmd": "GET key"}
+                {"cmd": "SETEX key 3600 value"}
+                {"cmd": "DEL key"}
+                {"cmd": "DBSIZE"}
+                {"cmd": "INFO keyspace"}
+                {"cmd": "HSET hash field value"}
+                {"cmd": "HGETALL hash"}
+                {"cmd": "HGETALL queue:{evt_jkt_istora_nightfall}"}
+                {"cmds": ["SET k1 v1", "SET k2 v2", "DBSIZE"]}
+              """
+              if not REDIS_ADDR:
+                  return {"error": "REDIS_ADDR not set"}
+
+              host, port = REDIS_ADDR.rsplit(":", 1)
+
+              commands = event.get("cmds", None)
+              if commands is None:
+                  commands = [event.get("cmd", "PING")]
+              if isinstance(commands, str):
+                  commands = [commands]
+
+              sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+              sock.settimeout(10)
+
+              try:
+                  sock.connect((host, int(port)))
+                  results = []
+                  for cmd in commands:
+                      response = send_command(sock, cmd)
+                      results.append({"cmd": cmd, "result": response})
+              finally:
+                  sock.close()
+
+              if len(results) == 1:
+                  return {"cmd": results[0]["cmd"], "result": results[0]["result"]}
+              return {"results": results}
+
+Outputs:
+  FunctionName:
+    Value: !Ref RedisDebugFunction
+    Description: Invoke with — aws lambda invoke --function-name rusuh-prod-redis-debug --payload '{"cmd":"PING"}' out.json
+
+  UsageExamples:
+    Value: !Sub |
+      # PING
+      aws lambda invoke --function-name rusuh-${Environment}-redis-debug --region ${AWS::Region} --cli-binary-format raw-in-base64-out --payload '{"cmd":"PING"}' /dev/stdout
+
+      # List all keys
+      aws lambda invoke --function-name rusuh-${Environment}-redis-debug --region ${AWS::Region} --cli-binary-format raw-in-base64-out --payload '{"cmd":"KEYS *"}' /dev/stdout
+
+      # Set a key
+      aws lambda invoke --function-name rusuh-${Environment}-redis-debug --region ${AWS::Region} --cli-binary-format raw-in-base64-out --payload '{"cmd":"SET mykey myvalue"}' /dev/stdout
+
+      # Multiple commands
+      aws lambda invoke --function-name rusuh-${Environment}-redis-debug --region ${AWS::Region} --cli-binary-format raw-in-base64-out --payload '{"cmds":["DBSIZE","INFO keyspace"]}' /dev/stdout
+
+      # Delete this stack when done
+      aws cloudformation delete-stack --stack-name rusuh-${Environment}-redis-debug --region ${AWS::Region}
