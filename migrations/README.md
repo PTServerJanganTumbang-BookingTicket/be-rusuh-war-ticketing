@@ -34,7 +34,7 @@ exist`.
 | `0010_drop_terms_and_holder_email` | drops the terms columns and `booking_items.holder_email` | `0009` |
 | `0011_event_catalog` | `events` gains `category`, `description`, `location_city`, `sale_starts_at`, `updated_at` and the listing index (`services/events`) | `0002` |
 | `0012_held_deadline_index` | partial index `bookings (payment_expires_at) WHERE status = 'HELD'` for the HELD → EXPIRED sweep (`services/admission-ctl`) | `0004` |
-| `0013_payment_events` | `payment_events` (`gateway_event_id` unique), payment-deadline index for the HELD / AWAITING_PAYMENT sweep | `0010` |
+| `0013_payment_events` | `payment_events` (`gateway_event_id` unique). The payment-deadline sweep uses `0012`'s index; see that file for why this one adds none | `0010` |
 | `0014_drop_consent_policy_version` | drops `consent_records.policy_version`, which was `NOT NULL` and no longer written — until this runs, every registration fails the constraint | `0001` |
 | `0015_bookings_paid_at` | adds `bookings.paid_at`, the gateway settlement time §5.4 reports. Until this runs, `paid_at` is substituted with the payment deadline | `0004` |
 | `0016_payment_method_switches` | append-only operator kill switch for a payment method or one bank under it. Subtracts from the code catalogue, never defines it | — |

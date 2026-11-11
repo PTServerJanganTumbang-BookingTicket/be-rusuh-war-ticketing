@@ -429,9 +429,9 @@ Integration (real Postgres + Redis cluster):
 - [x] B4f: migration `0012` with the HELD → EXPIRED sweep: partial index `bookings (payment_expires_at) WHERE status = 'HELD'`
 - [x] B4e: tests and the use case `CreateBooking` (`application/usecase/create_booking.go`), the handler, the Redis hold and queue adapters, the Postgres `Orders` (`infrastructure/postgres/orders.go`), and mounting `POST /bookings`
 - [x] B4f: HELD sweep in admission-ctl (`ExpireHeldDue` in `infrastructure/postgres/held.go`, `Holds.Release` in `infrastructure/redis/holds.go`, `Tick.WithHeldSweep`)
-- note: payment-api's `payment_events` migration adds the same index widened to
-      `status IN ('HELD','AWAITING_PAYMENT')` (ADR-006 §8.12(c)). A `status = 'HELD'`
-      query uses either, so the two overlap — see `migrations/README.md`.
+- note: `0012` is the only deadline index on `bookings`. payment-api originally
+      added a wider one covering `AWAITING_PAYMENT`; it was dropped because no query
+      reads that half — Midtrans ends those bookings via the `expire` notification.
 - [ ] `make verify`; fresh-subagent review (Lua + admission-ctl), `/code-review` (booking)
 - [x] 07-payment: the ticket issuer fills `tickets.holder_email` (kept, migration `0002`) and the email payload with
       the booking's `contact_email`

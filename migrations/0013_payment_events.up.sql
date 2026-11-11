@@ -43,25 +43,27 @@ CREATE INDEX IF NOT EXISTS payment_events_booking_idx
 COMMENT ON COLUMN payment_events.gateway_event_id IS
     'order_id:transaction_status:status_code. UNIQUE; the webhook''s idempotency key (api-contracts 5.5).';
 
--- The payment-deadline sweep (ADR-006 §8.12(c)).
+-- The payment-deadline sweep (ADR-006 §8.12(c)) is served by
+-- bookings_held_deadline_idx from 0012, not by an index here.
 --
 -- §8.12(c) deleted `expiries:{ev}`, the Redis ZSET that used to hold these
 -- deadlines: it was a second copy of a timestamp Aurora already had, with a
 -- crash window between the UPDATE and the ZADD and a "deadline moved, score
--- stale" case of its own. The sweep now reads Aurora directly, the way the
--- admission COUNT already did, and this index is what keeps that read cheap:
--- finished bookings are the vast majority of the table and the sweep never
--- asks about them.
+-- stale" case of its own. The sweep reads Aurora directly instead, and 0012
+-- is the index that keeps that read cheap.
 --
--- 0007 and 0009 added the same shape for the GRANTED and SELECTING deadlines
--- on booking_expires_at. This is the third and last one: the PAYMENT deadline,
--- which lives in a different column.
+-- This migration originally created a wider version of that index, covering
+-- `status IN ('HELD', 'AWAITING_PAYMENT')`. It was dropped because nothing
+-- reads the second half: admission-ctl's sweep is `status = 'HELD'` alone
+-- (`held.go`), and an AWAITING_PAYMENT booking is ended by MIDTRANS, which
+-- stops accepting payment at the custom_expiry deadline and sends an `expire`
+-- notification that the webhook turns into EXPIRED. No local query ever asks
+-- for due AWAITING_PAYMENT rows, so a wider index would have been maintained
+-- on every write to the hottest table in the sale and read by no one.
 --
--- Both statuses that carry a live payment deadline are covered. A sweep
--- querying `status = 'HELD'` alone still uses it, because that predicate
--- implies this one.
-CREATE INDEX IF NOT EXISTS bookings_payment_deadline_idx
-    ON bookings (payment_expires_at)
-    WHERE status IN ('HELD', 'AWAITING_PAYMENT');
+-- If a backstop for lost expire notifications is ever added — an
+-- AWAITING_PAYMENT booking whose deadline passed long ago and which Midtrans
+-- never told us about — it is that query which needs the wider index, and it
+-- should be added with the sweep that reads it.
 
 COMMIT;

@@ -177,7 +177,7 @@ migrations. Only one table is this service's own:
 | `booking_items` | `0006`–`0010` | One row per NIK (BR-02). The authority on price, and what tickets are issued from |
 | `nik_claims` | `0006`–`0010` | Released on expiry, or BR-02 would block the customer from ever buying again |
 | `tickets.booking_item_id` + partial unique index | `0006`–`0010` | The double-QR guard: an index on `booking_id` alone would not collide across two attempts for one booking |
-| Partial index on `bookings (payment_expires_at)` | `0013_payment_events` | ADR-006 §8.12(c) moved the deadline sweep off `expiries:{ev}` and onto this index, so nothing in Redis has to be kept in step with a booking's deadline. `0007` and `0009` did the same for the `GRANTED` and `SELECTING` deadlines |
+| Partial index on `bookings (payment_expires_at)` | `0012_held_deadline_index` (admission-ctl) | ADR-006 §8.12(c) moved the deadline sweep off `expiries:{ev}` and onto this index, so nothing in Redis has to be kept in step with a booking's deadline. It covers `status = 'HELD'` only: an `AWAITING_PAYMENT` booking is ended by Midtrans's `expire` notification, not by a local sweep, so no query reads a wider one. `0007` and `0009` did the same for the `GRANTED` and `SELECTING` deadlines |
 
 `booking_items` deliberately carries **no** per-seat email: migration `0010`
 dropped `holder_email`, and §8.15 sends every e-ticket of a booking to
