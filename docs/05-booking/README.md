@@ -9,6 +9,7 @@ files plan how it is built.
 | 01 | `GET /events/{event_id}/tickets` — ticket selection page | [01-get-ticket-selection-page.md](01-get-ticket-selection-page.md) | built |
 | 02 | `POST /bookings` — create booking | [02-create-booking.md](02-create-booking.md) | plan approved (B4) |
 | 03 | `GET /bookings/{booking_id}` — booking detail | [03-get-booking-detail.md](03-get-booking-detail.md) | built |
+| 00 | `Authorization: Bearer` for account grants, on every grant endpoint (`pkg/grantauth`) | [00-grant-authorization.md](00-grant-authorization.md) | built (B4a) |
 
 `POST /nik/validate` belongs to the NIK folder (`06-nik/`, `services/nik-verify`).
 
@@ -67,14 +68,14 @@ keep its admission place for ever, so that sweep ships with the ticket page.
 
 | Piece | Where |
 |---|---|
-| Grant check | `pkg/grantauth` (`Middleware`, `FromContext`, `DeviceHash` shared with queue's join): grant and device only; the `Authorization` check for account grants is still to build (§5) |
+| Grant check | `pkg/grantauth` (`Middleware`, `FromContext`, `DeviceHash` and `BearerToken` shared with queue's join): the grant, the device of a guest, and the access token of an account grant |
 | Status model | `pkg/bookingstate` (nine statuses, which are final, the four API statuses) |
 | E-ticket link token | `pkg/eticket` (`Signer`: `Mint`, `Verify`; `ExpiresAt`) |
 | Metrics writer | `pkg/emf` (CloudWatch EMF lines; queue uses it too) |
-| Ticket page | `GET /events/{event_id}/tickets` |
+| Ticket page | `GET /events/{event_id}/tickets`, with `account {email, nik_masked}` for an account grant |
 | Booking detail | `GET /bookings/{booking_id}` |
 | SELECTING → EXPIRED sweep | admission-ctl, right after the GRANTED → LAPSED sweep |
-| Service wiring | real Aurora writer + Redis, config (`DATABASE_URL`, `REDIS_ADDR`, `DEVICE_PEPPER`, `ETICKET_SIGNING_KEY`, `MAX_TICKETS_PER_TRANSACTION`), SAM template with VPC and secrets |
+| Service wiring | real Aurora writer + Redis, config (`DATABASE_URL`, `REDIS_ADDR`, `DEVICE_PEPPER`, `JWT_SECRET`, `ETICKET_SIGNING_KEY`, `MAX_TICKETS_PER_TRANSACTION`), SAM template with VPC and secrets |
 
 `POST /bookings` answers 404 until it is built.
 
@@ -90,11 +91,16 @@ keep its admission place for ever, so that sweep ships with the ticket page.
 
 | Step | Scope |
 |---|---|
-| **B4** | `POST /bookings` (NIK check, hold, release), the HELD → EXPIRED sweep, the ticket page's `account {email, nik_masked}` field. Plan: [02-create-booking.md](02-create-booking.md) |
-| **B5** | Stock reconciliation: repairs stock and NIK keys left held after a crash |
-| **Authorization check** | `pkg/grantauth` verifies the access token of an account grant (rule 2.4); booking and payment get `JWT_SECRET` in their config, as queue has; the built ticket page and booking detail routes pick it up through the middleware, with a test for each 401 |
+| ~~B4a~~ | built: `Authorization: Bearer` check for account grants in `pkg/grantauth`; `JWT_SECRET` in booking. [00-grant-authorization.md](00-grant-authorization.md) |
+| ~~B4b~~ | built: ticket page `account {email, nik_masked}`. [01 §3.3](01-get-ticket-selection-page.md) |
+| **B4c** | Building blocks for `POST /bookings`: shared NIK `Normalize` / `IsValidFormat` in `pkg`, the `nik:used` key, `hold_booking.lua` + `release_hold.lua`. Plan: [02 §4, §8](02-create-booking.md) |
+| **B4d** | nik-verify's internal `{op: validate}` Lambda event (needs nik-verify's owner), booking's `NIKVerifier` port, Lambda-invoke adapter, fake, IAM statement. Plan: [02 §3.1 step 4, §4](02-create-booking.md) |
+| **B4e** | `POST /bookings`: use case, handler, route. Needs B4a, B4c, B4d. Plan: [02](02-create-booking.md) |
+| **B4f** | HELD → EXPIRED sweep in admission-ctl, with migration `0012` (partial index). Can run next to B4e. Plan: [02 §3.4](02-create-booking.md) |
+| **B5** | Stock reconciliation: repairs stock and NIK keys left held after a crash. Before the load test |
 | 07-payment | The webhook that sets `CONFIRMED`; the ticket issuer, which writes `tickets.holder_email` = the booking's `contact_email`; keep `grant:{token}` after `CONFIRMED` |
 | user-service | `GET /tickets/{ticket_id}/eticket?t=…` checks the link with `eticket.Verify` |
 | Shared secret | `ETICKET_SIGNING_KEY` must be the same in booking, notification and user-service |
+| nik-verify | An internal `{op: validate}` Lambda event that returns `nik_hmac` (booking invokes it directly, 02 §3.1 step 4). Separately, its public `POST /nik/validate` does not yet match contract §4.2: no grant guard, no per-customer 429, no `already_used`, `nik_masked`/`status` where the contract says `nik`/`reason`, and it returns `nik_hmac` |
 
-Each step follows `docs/DEVELOPMENT-FLOW.md`: plan approved, tests first, code, `make verify`, review.
+Each step: plan approved, tests and code together, `make verify`, review, then commit after approval.
