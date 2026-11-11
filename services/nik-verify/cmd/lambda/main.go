@@ -6,7 +6,6 @@ import (
 	"os"
 
 	"github.com/aws/aws-lambda-go/lambda"
-	"github.com/awslabs/aws-lambda-go-api-proxy/httpadapter"
 
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/dotenv"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/nik-verify/internal/config"
@@ -31,5 +30,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	lambda.Start(httpadapter.NewV2(server.Handler).ProxyWithContext)
+	// Two kinds of event: API Gateway requests (the public routes) and the internal {"op":"validate"} invocation booking
+	// makes directly. The handler tells them apart before the HTTP adapter sees the payload.
+	lambda.StartHandlerFunc(server.Events().Invoke)
 }
