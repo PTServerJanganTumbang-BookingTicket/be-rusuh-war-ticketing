@@ -40,6 +40,15 @@ type ChargeResult struct {
 	// Raw is the response body, stored in payment_events.raw so that a replay
 	// of §5.2 can return identical instructions without calling the gateway.
 	Raw []byte
+	// GatewayExpiry is the charge response's expiry_time: when MIDTRANS will
+	// stop accepting payment. nil when the response omitted it.
+	//
+	// It is the only evidence that custom_expiry was honoured. Without it a
+	// clamped or ignored custom_expiry is invisible: the charge still answers
+	// 201, we still promise the customer a 10-minute window, and the virtual
+	// account quietly stays payable for Midtrans's 24-hour default - long
+	// after the sweep released the seats and sold them to someone else.
+	GatewayExpiry *time.Time
 }
 
 // Declined reports a synchronously refused charge.

@@ -120,6 +120,84 @@ func TestCharge_AlwaysSendsCustomExpiry(t *testing.T) {
 	assert.Equal(t, "minute", exp["unit"])
 }
 
+// expiry_time is the only evidence custom_expiry was honoured at all. Parsed in
+// WIB, like every other Midtrans timestamp: read as UTC it would land seven
+// hours out and every charge would look like a mismatch.
+func TestCharge_ParsesGatewayExpiryInWIB(t *testing.T) {
+	// 17:25 WIB = 10:25 UTC, which is held_at (10:15 UTC) + the 10 minutes
+	// requested. This is the matching case.
+	const resp = `{
+  "status_code": "201",
+  "order_id": "RB-00912:1",
+  "gross_amount": "3000000.00",
+  "payment_type": "bank_transfer",
+  "transaction_status": "pending",
+  "va_numbers": [{"bank": "bca", "va_number": "8801234567890"}],
+  "expiry_time": "2026-03-01 17:25:00"
+}`
+	c, _ := newStub(t, 201, resp)
+
+	out, err := c.Charge(context.Background(), vaRequest())
+	require.NoError(t, err)
+	require.NotNil(t, out.GatewayExpiry, "expiry_time must be parsed, not discarded")
+	assert.True(t, out.GatewayExpiry.Equal(time.Date(2026, 3, 1, 10, 25, 0, 0, time.UTC)),
+		"expected 10:25 UTC (17:25 WIB), got %s", out.GatewayExpiry)
+}
+
+// Midtrans clamping or ignoring custom_expiry is the failure this exists to
+// surface: the charge answers 201, we promise ten minutes, and the VA stays
+// payable for the 24-hour default long after the sweep resold the seats. The
+// charge must still SUCCEED - the instrument exists and the customer can pay
+// it, so refusing here would discard a live payment over a reporting gap.
+func TestCharge_GatewayExpiryMismatch_IsReportedNotFatal(t *testing.T) {
+	// 24 hours out: custom_expiry ignored entirely.
+	const resp = `{
+  "status_code": "201",
+  "order_id": "RB-00912:1",
+  "gross_amount": "3000000.00",
+  "payment_type": "bank_transfer",
+  "transaction_status": "pending",
+  "va_numbers": [{"bank": "bca", "va_number": "8801234567890"}],
+  "expiry_time": "2026-03-02 17:15:00"
+}`
+	c, _ := newStub(t, 201, resp)
+
+	out, err := c.Charge(context.Background(), vaRequest())
+	require.NoError(t, err, "a deadline discrepancy must not fail the charge")
+	assert.Equal(t, "8801234567890", out.Instructions["va_number"])
+	require.NotNil(t, out.GatewayExpiry)
+	assert.True(t, out.GatewayExpiry.After(heldAt().Add(time.Hour)),
+		"the mismatching value must still be reported for the operator")
+}
+
+// A response without expiry_time is not an error: several of Midtrans's own
+// documented samples omit it.
+func TestCharge_NoExpiryTime_IsNotAnError(t *testing.T) {
+	c, _ := newStub(t, 201, vaResponse)
+
+	out, err := c.Charge(context.Background(), vaRequest())
+	require.NoError(t, err)
+	assert.Nil(t, out.GatewayExpiry)
+}
+
+// An unparseable value is logged and dropped rather than failing the charge,
+// for the same reason as a mismatch.
+func TestCharge_UnparseableExpiryTime_IsNotAnError(t *testing.T) {
+	const resp = `{
+  "status_code": "201",
+  "order_id": "RB-00912:1",
+  "gross_amount": "3000000.00",
+  "payment_type": "bank_transfer",
+  "transaction_status": "pending",
+  "expiry_time": "not-a-timestamp"
+}`
+	c, _ := newStub(t, 201, resp)
+
+	out, err := c.Charge(context.Background(), vaRequest())
+	require.NoError(t, err)
+	assert.Nil(t, out.GatewayExpiry)
+}
+
 // order_time is held_at in WIB, not the request time and not UTC. The zone is
 // fixed in code rather than loaded from tzdata, because a Lambda image without
 // zoneinfo would fall back to UTC and shift every deadline by seven hours.

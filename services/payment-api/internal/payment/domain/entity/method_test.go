@@ -15,9 +15,11 @@ func TestCatalogue_OnlyTwoMethodsInOrder(t *testing.T) {
 	assert.Equal(t, MethodGoPay, cat[1].ID)
 }
 
-// Card and over-the-counter are absent because neither honours custom_expiry,
-// so the gateway's deadline could outlive the 10-minute window and a virtual
-// account would stay payable after the seats were resold.
+// Card is absent because Midtrans applies custom_expiry to every method EXCEPT
+// credit card, so BR-05 would have no gateway-side enforcement at all.
+// Over-the-counter is absent for an unrelated reason: the gateway would honour
+// the window fine, but nobody walks to a shop and pays inside ten minutes, and
+// Indomaret is one of the three reversal-prone methods besides.
 func TestCatalogue_NoCardOrOverTheCounter(t *testing.T) {
 	for _, m := range Catalogue("i", true) {
 		assert.NotContains(t, []string{"credit_card", "cstore", "echannel"}, m.ID)

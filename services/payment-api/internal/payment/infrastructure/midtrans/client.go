@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -25,6 +26,12 @@ import (
 // Lambda image without zoneinfo would silently fall back to UTC and shift
 // every custom_expiry by seven hours.
 var wib = time.FixedZone("WIB", 7*60*60)
+
+// midtransTimeLayout is how Midtrans writes every timestamp it sends:
+// no zone marker, WIB implied. Declared here rather than imported from
+// domain/dto, which owns the same layout for notifications, so this adapter
+// stays independent of the domain packages.
+const midtransTimeLayout = "2006-01-02 15:04:05"
 
 // Client talks to Midtrans Core API.
 type Client struct {
@@ -96,7 +103,20 @@ type chargeResponse struct {
 		Name string `json:"name"`
 		URL  string `json:"url"`
 	} `json:"actions"`
+	// ExpiryTime is when Midtrans will stop accepting payment. Same shape as
+	// transaction_time - "2006-01-02 15:04:05" in WIB with no zone marker -
+	// so it must be parsed in wib, not UTC.
+	ExpiryTime string `json:"expiry_time"`
 }
+
+// gatewayExpiryTolerance is how far Midtrans's expiry_time may sit from the
+// window we asked for before it is worth a log line.
+//
+// Not zero: expiry_duration is expressed in whole MINUTES, so a deadline that
+// is not on a minute boundary is rounded by design, and Midtrans may round the
+// stored value on its own. A minute of slack keeps the warning for the case it
+// exists to catch - custom_expiry clamped to hours, or ignored entirely.
+const gatewayExpiryTolerance = time.Minute
 
 // Charge creates the payment instrument.
 func (c *Client) Charge(ctx context.Context, req portout.ChargeRequest) (portout.ChargeResult, error) {
@@ -138,6 +158,30 @@ func (c *Client) Charge(ctx context.Context, req portout.ChargeRequest) (portout
 		out.Instructions["bank"] = res.VANumbers[0].Bank
 		out.Instructions["va_number"] = res.VANumbers[0].VANumber
 	}
+	// expiry_time is the one check available on the single gateway-side
+	// guarantee BR-05 leans on. A mismatch is logged rather than failing the
+	// charge: the instrument exists and the customer can pay it, so refusing
+	// here would throw away a live payment over a reporting discrepancy.
+	if res.ExpiryTime != "" {
+		if got, perr := time.ParseInLocation(midtransTimeLayout, res.ExpiryTime, wib); perr == nil {
+			out.GatewayExpiry = &got
+			want := req.HeldAt.Add(time.Duration(req.ExpiryMinutes) * time.Minute)
+			if drift := got.Sub(want); drift > gatewayExpiryTolerance || drift < -gatewayExpiryTolerance {
+				slog.Warn("midtrans expiry_time does not match the window we requested",
+					slog.String("order_id", req.OrderID),
+					slog.String("payment_type", req.PaymentType),
+					slog.Time("requested", want),
+					slog.Time("gateway", got),
+					slog.Duration("drift", drift))
+			}
+		} else {
+			slog.Warn("midtrans expiry_time is unparseable",
+				slog.String("order_id", req.OrderID),
+				slog.String("expiry_time", res.ExpiryTime),
+				slog.Any("err", perr))
+		}
+	}
+
 	for _, a := range res.Actions {
 		switch a.Name {
 		case "generate-qr-code":

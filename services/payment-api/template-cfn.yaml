@@ -94,6 +94,11 @@ Parameters:
     Default: 600
     MinValue: 60
     MaxValue: 3600
+    # Must be a whole number of minutes. custom_expiry.expiry_duration is sent
+    # in minutes, so a value like 450 would close Midtrans's window at 7:00
+    # against the 7:30 we promise the customer. CloudFormation cannot express
+    # "multiple of 60", so the service refuses to start instead - which turns a
+    # silently short window into a failed deploy.
     Description: >
       The payment window (BR-05). Also sent to Midtrans as custom_expiry, so
       the gateway's deadline and ours end on the same second - without that a

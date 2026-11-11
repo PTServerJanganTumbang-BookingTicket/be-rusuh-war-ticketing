@@ -143,6 +143,39 @@ func TestLoad_RetryFloorMustBeBelowTheWindow(t *testing.T) {
 	}
 }
 
+// custom_expiry.expiry_duration is expressed in whole minutes, so a window
+// that is not a whole number of minutes cannot be sent to the gateway: it
+// truncates, and Midtrans then stops accepting payment BEFORE the deadline the
+// customer can still see counting down. Refused at boot rather than rounded,
+// because both roundings are wrong.
+func TestLoad_PaymentTTLMustBeWholeMinutes(t *testing.T) {
+	for _, secs := range []string{"450", "90", "61", "599"} {
+		t.Run(secs, func(t *testing.T) {
+			setRequired(t)
+			t.Setenv("PAYMENT_TTL_SECONDS", secs)
+
+			_, err := Load()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "whole number of minutes")
+		})
+	}
+}
+
+func TestLoad_WholeMinuteTTLsAreAccepted(t *testing.T) {
+	for _, secs := range []string{"60", "600", "900", "3600"} {
+		t.Run(secs, func(t *testing.T) {
+			setRequired(t)
+			t.Setenv("PAYMENT_TTL_SECONDS", secs)
+			// 60s would otherwise trip the retry floor, which defaults to 60s
+			// and must stay strictly below the window.
+			t.Setenv("MIN_RETRY_REMAINING_SECONDS", "30")
+
+			_, err := Load()
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestLoad_PaymentTTLMustBePositive(t *testing.T) {
 	setRequired(t)
 	t.Setenv("PAYMENT_TTL_SECONDS", "0")

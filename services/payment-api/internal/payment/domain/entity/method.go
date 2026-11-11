@@ -41,12 +41,22 @@ type Method struct {
 
 // Catalogue is the POC's two methods, in display order.
 //
-// Credit card and Over the Counter are excluded for the same reason, and it is
-// not scope-trimming: neither can honour the 10-minute payment TTL at the
-// gateway. custom_expiry does not apply to cards (Midtrans states this
-// explicitly), and OTC requires the customer to reach a physical store. Both
-// methods below accept custom_expiry, so Midtrans's window and ours end on the
-// same second for every live method (api-contracts §5.1).
+// Credit card and Over the Counter are both excluded, but for DIFFERENT
+// reasons, and neither is scope-trimming.
+//
+// Cards cannot honour the 10-minute payment TTL at the gateway at all:
+// Midtrans applies custom_expiry to every payment method EXCEPT credit card,
+// so BR-05 would have no gateway-side enforcement and a card authorisation
+// would outlive the seats.
+//
+// Over the counter is a product limitation, not a gateway one. Midtrans would
+// enforce a 10-minute custom_expiry on an Indomaret or Alfamart transaction
+// perfectly well; a customer cannot walk to a shop and pay inside it. OTC is
+// also independently disqualified as one of the three reversal-prone methods
+// named above.
+//
+// Both methods below accept custom_expiry, so Midtrans's window and ours end
+// together for every live method (api-contracts §5.1).
 //
 // enabled is false while the payment-gateway breaker is open, so the UI greys
 // the choice out instead of letting the customer discover it at charge time.

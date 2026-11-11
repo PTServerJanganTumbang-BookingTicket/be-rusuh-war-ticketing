@@ -91,6 +91,25 @@ func (c Config) validate() error {
 	if c.Payment.MaxAttempts < 1 {
 		return fmt.Errorf("MAX_PAYMENT_ATTEMPTS must be at least 1")
 	}
+	// custom_expiry.expiry_duration is sent in whole MINUTES, so a window that
+	// is not a whole number of minutes cannot be expressed to the gateway:
+	// int(TTL / time.Minute) truncates, and Midtrans would then stop accepting
+	// payment BEFORE the deadline we promised the customer. 450s becomes 7
+	// minutes against a 7m30s promise, and the customer's payment is refused
+	// in the last thirty seconds of a window they can still see counting down.
+	//
+	// Refused here rather than rounded, because either rounding is wrong: up
+	// leaves the seats resold while the VA is still payable, down breaks the
+	// promise. The unit could in principle be "second" - Midtrans documents
+	// hour/day/month for QRIS expiry and this project has not verified that
+	// "second" is accepted for custom_expiry, and an unaccepted unit means
+	// custom_expiry is silently dropped and the VA reverts to a 24-HOUR
+	// default. Not worth guessing at for a constraint a whole-minute window
+	// satisfies anyway.
+	if c.Payment.TTL%time.Minute != 0 {
+		return fmt.Errorf("PAYMENT_TTL_SECONDS (%s) must be a whole number of minutes: custom_expiry.expiry_duration is expressed in minutes, so anything else would close the gateway's window before ours",
+			c.Payment.TTL)
+	}
 	if c.Payment.MinRetryRemaining >= c.Payment.TTL {
 		// A floor at or above the whole window refuses every switch, which
 		// looks like a broken endpoint rather than a policy.
