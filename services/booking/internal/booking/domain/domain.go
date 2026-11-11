@@ -2,6 +2,7 @@
 package domain
 
 import (
+	"errors"
 	"time"
 
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/bookingstate"
@@ -25,6 +26,22 @@ const (
 	// MetricPaymentDeadlineMissing counts a pending-payment booking without payment_expires_at (a data bug).
 	MetricPaymentDeadlineMissing = "PaymentDeadlineMissing"
 )
+
+// ErrNIKUnavailable means the NIK check could not be completed: the invocation failed or timed out, nik-verify or
+// Dukcapil could not answer, or the answer was unusable. POST /bookings answers 503 DUKCAPIL_UNAVAILABLE: no hold
+// without proof (fail closed). It is not "the NIK is invalid".
+var ErrNIKUnavailable = errors.New("booking: NIK check unavailable")
+
+// NIKCheck is nik-verify's answer for one typed NIK. NIKHmac and NIKMasked are what booking stores
+// (booking_items.nik_masked, nik_claims.nik_hmac); the full NIK is never kept. Valid false is an answer: Status says
+// why (NOT_FOUND, INACTIVE).
+type NIKCheck struct {
+	NIKHmac   string
+	NIKMasked string
+	Valid     bool
+	Status    string
+	Source    string // registered | saved | verified
+}
 
 // Booking is the part of a bookings row the ticket page needs.
 type Booking struct {

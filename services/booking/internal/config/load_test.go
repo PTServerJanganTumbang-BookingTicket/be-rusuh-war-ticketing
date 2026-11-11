@@ -3,6 +3,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoad_defaults(t *testing.T) {
@@ -39,6 +40,7 @@ func TestLoad_envOverrides(t *testing.T) {
 	t.Setenv("DEVICE_PEPPER", "pepper")
 	t.Setenv("ETICKET_SIGNING_KEY", "key")
 	t.Setenv("JWT_SECRET", "jwt")
+	t.Setenv("NIK_VERIFY_FUNCTION_NAME", "rusuh-prod-nik-verify")
 	t.Setenv("LOG_LEVEL", "debug")
 	t.Setenv("LOG_FORMAT", "text")
 
@@ -96,7 +98,7 @@ func TestLoad_portZeroOutOfRange(t *testing.T) {
 func clearB1(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{"APP_ENV", "APP_PORT", "DATABASE_MAX_CONNS", "REDIS_ADDR", "REDIS_PASSWORD",
-		"REDIS_CLUSTER", "DEVICE_PEPPER", "MAX_TICKETS_PER_TRANSACTION", "AWS_LAMBDA_FUNCTION_NAME", "ETICKET_SIGNING_KEY", "JWT_SECRET"} {
+		"REDIS_CLUSTER", "DEVICE_PEPPER", "MAX_TICKETS_PER_TRANSACTION", "AWS_LAMBDA_FUNCTION_NAME", "ETICKET_SIGNING_KEY", "JWT_SECRET", "NIK_VERIFY_FUNCTION_NAME", "NIK_VERIFY_TIMEOUT_MS"} {
 		t.Setenv(k, "")
 	}
 	t.Setenv("DATABASE_URL", "postgres://local")
@@ -208,5 +210,38 @@ func TestLocallyTheJWTSecretDefaultsToUserServicesDevSecret(t *testing.T) {
 	// services/user/example.env: a token from the local login must verify on the local booking.
 	if cfg.Grant.JWTSecret != "local-dev-jwt-secret-not-for-any-deployed-environment" {
 		t.Fatalf("local secret = %q", cfg.Grant.JWTSecret)
+	}
+}
+
+func TestTheNIKVerifyFunctionAndItsDeadlineAreRead(t *testing.T) {
+	clearB1(t)
+	cfg, err := Load()
+	if err != nil || cfg.NIKVerify.FunctionName != "" || cfg.NIKVerify.Timeout != 3*time.Second {
+		t.Fatalf("local defaults = %+v (%v), want no function and a 3 s deadline", cfg.NIKVerify, err)
+	}
+	t.Setenv("NIK_VERIFY_FUNCTION_NAME", "rusuh-prod-nik-verify")
+	t.Setenv("NIK_VERIFY_TIMEOUT_MS", "1500")
+	cfg, err = Load()
+	if err != nil || cfg.NIKVerify.FunctionName != "rusuh-prod-nik-verify" || cfg.NIKVerify.Timeout != 1500*time.Millisecond {
+		t.Fatalf("config = %+v (%v)", cfg.NIKVerify, err)
+	}
+}
+
+func TestTheNIKVerifyFunctionIsRequiredOutsideLocal(t *testing.T) {
+	clearB1(t)
+	t.Setenv("APP_ENV", "preprod")
+	t.Setenv("DEVICE_PEPPER", "p")
+	t.Setenv("ETICKET_SIGNING_KEY", "k")
+	t.Setenv("JWT_SECRET", "j")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "NIK_VERIFY_FUNCTION_NAME") {
+		t.Fatalf("err = %v, want NIK_VERIFY_FUNCTION_NAME reported outside local (the fake must never run in a deployed environment)", err)
+	}
+}
+
+func TestADeadlineBelowOneMillisecondIsRejected(t *testing.T) {
+	clearB1(t)
+	t.Setenv("NIK_VERIFY_TIMEOUT_MS", "0")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "NIK_VERIFY_TIMEOUT_MS") {
+		t.Fatalf("err = %v, want NIK_VERIFY_TIMEOUT_MS reported", err)
 	}
 }

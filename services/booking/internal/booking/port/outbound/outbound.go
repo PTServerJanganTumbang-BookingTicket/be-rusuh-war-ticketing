@@ -30,6 +30,13 @@ type Stock interface {
 	Levels(ctx context.Context, eventID string, categoryIDs []string) (levels map[string]int64, missing []string, err error)
 }
 
+// NIKVerifier checks one typed NIK with nik-verify, which alone holds NIK_PEPPER (ADR-005 §8).
+type NIKVerifier interface {
+	// Validate returns nik-verify's answer for the NIK as typed (nik-verify normalises it again). A NIK that is not
+	// valid is an answer (Valid false). Every failure to get an answer is domain.ErrNIKUnavailable.
+	Validate(ctx context.Context, nik string) (domain.NIKCheck, error)
+}
+
 // Metrics counts events by name.
 type Metrics interface {
 	Incr(name string)

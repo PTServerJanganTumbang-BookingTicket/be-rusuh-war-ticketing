@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/envutil"
 )
@@ -32,6 +33,10 @@ func Load() (Config, error) {
 		Grant: Grant{
 			DevicePepper: []byte(os.Getenv("DEVICE_PEPPER")),
 			JWTSecret:    jwtSecret(envutil.Env("APP_ENV", "local")),
+		},
+		NIKVerify: NIKVerify{
+			FunctionName: os.Getenv("NIK_VERIFY_FUNCTION_NAME"),
+			Timeout:      time.Duration(envutil.EnvInt("NIK_VERIFY_TIMEOUT_MS", 3000)) * time.Millisecond,
 		},
 		Booking: Booking{
 			MaxTicketsPerTransaction: envutil.EnvInt("MAX_TICKETS_PER_TRANSACTION", 3),
@@ -80,6 +85,12 @@ func (c Config) validate() error {
 	}
 	if c.App.Env != "local" && len(c.Booking.ETicketSigningKey) == 0 {
 		errs = append(errs, errors.New("ETICKET_SIGNING_KEY is required outside local: e-ticket links must verify in user-service"))
+	}
+	if c.App.Env != "local" && c.NIKVerify.FunctionName == "" {
+		errs = append(errs, errors.New("NIK_VERIFY_FUNCTION_NAME is required outside local: the local fake must never check a NIK in a deployed environment"))
+	}
+	if c.NIKVerify.Timeout < time.Millisecond {
+		errs = append(errs, fmt.Errorf("NIK_VERIFY_TIMEOUT_MS must be at least 1, got %d", c.NIKVerify.Timeout.Milliseconds()))
 	}
 	if c.DB.MaxConns < 1 {
 		errs = append(errs, fmt.Errorf("DATABASE_MAX_CONNS must be at least 1, got %d", c.DB.MaxConns))
