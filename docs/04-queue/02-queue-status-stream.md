@@ -160,4 +160,4 @@ Specs: `services/sse-server/features/stream_{connect,updates,reliability}.featur
 - [x] Redis subscriber (classic pub/sub behind `stream.Source`) + non-blocking fan-out
 - [x] stale detector + `CtlHeartbeatAge`
 - [x] SIGTERM drain (`Drain`, hard close at 20 s)
-- [ ] Dockerfile + ECS task def + ALB target group (health `/health`, slow start 30 s)
+- [x] Dockerfile + ECS task def + ALB target group (health `/health`, slow start 30 s): `infra/ecs`, `DEPLOY.md` (not deployed yet)

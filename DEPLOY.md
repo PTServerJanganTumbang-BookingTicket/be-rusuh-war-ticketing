@@ -57,9 +57,9 @@ and rotating a secret takes effect on the next deploy (`DeployRevision` forces o
 not a cluster-mode replication group, and the cluster client both services use cannot talk to it. Switch the variable to
 `"true"` in `services/queue/template-cfn.yaml` and `services/booking/template-cfn.yaml` together with a cluster-mode Redis.
 
-**What is not deployed here.** The SSE stream server and the admission controller run on ECS and are not in this pipeline,
-and `GET /events/{id}/queue/stream` and `/queue/serving` are not behind the unified gateway. Until the admission
-controller runs, nobody is let in from the queue, so the join and ticket page can be deployed but a real sale cannot run.
+**ECS: the admission controller and the SSE stream server** run from their own `deploy-ecs` job, not the Lambda waves: see
+[ECS: admission-ctl and sse-server](#ecs-admission-ctl-and-sse-server). The stream is **not** behind the unified gateway
+(clients use the `StreamUrl` output of the ECS stack), and `/queue/serving` is not behind it yet.
 
 **CORS and the queue cookie.** The unified gateway allows the new headers (`X-Grant-Token`, `X-Device-Id`, `X-Queue-Token`)
 but still has `AllowOrigins: *` and `AllowCredentials: false`. A browser only sends and accepts the `queue_token` cookie
@@ -913,19 +913,76 @@ automatically. `.down.sql` files exist for reference. Roll the code back
 first, then decide about the schema: dropping a column that the deployed code
 still writes to turns a bad release into an outage.
 
-## What is not deployed here
+## ECS: admission-ctl and sse-server
 
-ADR-005 needs two more services that SAM cannot host, and neither exists in
-this repository yet:
+Two services cannot be Lambdas, so they run on ECS Fargate (ADR-005 §3), from the `deploy-ecs` job:
 
 | Service | Why not Lambda |
 |---|---|
 | `sse-server` | holds connections for 30–60 min; API Gateway caps at 29 s and Lambda at 15 min |
 | `admission-ctl` | 500 ms control loop; EventBridge will not schedule below 1 minute |
 
-Both are ECS Fargate in ADR-005 §3, and `docs/04-queue/` marks them
-`Status: planning`. They need an ALB and an ECS service — a separate stack,
-not this pipeline.
+This is the POC cut: the least that lets a real sale run. Left out: CloudFront, `payment-api`, `metrics-scraper`, `sale-ops`,
+Redis cluster mode and replicas, autoscaling, WAF, a standby controller.
+
+```mermaid
+flowchart LR
+    C[Client] -->|REST| GW[API Gateway: the Lambdas]
+    C -->|SSE| ALB[ALB, public subnets]
+    ALB --> SSE["sse-server, Fargate x1"]
+    CTL["admission-ctl, Fargate x1"] --> DB[(Aurora)]
+    CTL --> R[(Redis, single node)]
+    SSE --> R
+    GW --> R
+    GW --> DB
+```
+
+| | `admission-ctl` | `sse-server` |
+|---|---|---|
+| Tasks | exactly 1: deployment min 0 % / max 100 %, so two never run at once | 1 |
+| Size (starting values, not load-tested) | 0.25 vCPU / 0.5 GB; raise if `TickOverrun` appears | 0.5 vCPU / 1 GB |
+| Port, health | none (a worker); ECS restarts a crash | 8085, `GET /health` |
+| Config | `DATABASE_URL` (the same secret the Lambdas use, as a dynamic reference), `REDIS_ADDR`, `REDIS_CLUSTER=false`, `MAX_CONCURRENT_SLOTS` | `REDIS_ADDR`, `REDIS_CLUSTER=false`, `APP_PORT` |
+| Network | private subnets, the existing Lambda security group (Redis and the database already accept it) | same, plus an inbound rule from the ALB on 8085 |
+| Image | `services/<name>/Dockerfile`, built from the repo root, distroless static base, non-root, tag = git SHA | same |
+
+Shared: one cluster `rusuh-<env>`, two ECR repositories (last 10 images kept), 14-day log groups, one task execution role.
+The tasks have no task role: neither service calls an AWS API (metrics leave as CloudWatch EMF log lines).
+Each stack deployment uses the ECS circuit breaker with rollback.
+
+**Load balancer (sse-server only).** Internet-facing ALB in the two public subnets, HTTP on port 80 to an `ip` target group
+(port 8085, health check `/health`, slow start 30 s, deregistration delay 60 s), idle timeout 3600 s. The ALB security group
+accepts port 80 from the internet; the tasks' group accepts 8085 from the ALB group only. Open streams are cut on a redeploy;
+clients reconnect and the first frame gives them their place back. Accepted gaps: no WAF, no access logs, one task.
+
+**Pipeline.** Quality gate, then `deploy-ecs` (needs the foundation, not the Lambda preflight; nothing waits for it):
+it checks `/rusuh/prod/vpc/public-subnet-ids` exists, deploys `infra/ecs/ecr.yaml` (stack `rusuh-prod-ecr`), builds and pushes
+both images, deploys `infra/ecs/template-cfn.yaml` (stack `rusuh-prod-ecs`, `ImageTag` = git SHA), then calls the ALB
+`/health` until it answers 200. CloudFormation waits for both services to settle, so a bad image fails the step. A change to
+`services/admission-ctl/**`, `services/sse-server/**`, `infra/ecs/**` or `pkg/**` rebuilds both images; `force_deploy` accepts
+`ecs`.
+
+**Before the first run**
+1. An administrator re-applies `infra/bootstrap/github-oidc-role.yaml`. The deploy role needs ECS, ECR and load balancer
+   permissions and PassRole to `ecs-tasks.amazonaws.com`; CI cannot change its own role.
+2. The foundation is redeployed so it publishes `/rusuh/prod/vpc/public-subnet-ids` (a push that touches `infra/foundation/**`
+   does it).
+3. Apply migrations 0001 to 0011 (the pipeline does not).
+
+**Still open**
+- **HTTPS and domain for the stream.** The first deploy serves HTTP on the ALB's own address: enough for `curl` and a mobile
+  client (header token). A browser on an https page cannot open an http stream, and the `queue_token` cookie set by the API
+  only reaches the stream host if both share a parent domain (`COOKIE_DOMAIN`). For the web, add an ACM certificate, an HTTPS
+  listener and DNS (the plans name `events.my-rusuh.my.id`).
+- **Opening a sale.** There is no `sale-ops`, so nothing moves `queue:{ev}.state` from `SCHEDULED` to `OPEN`; set it by hand
+  (or a debug seed action) until it exists.
+- **Load.** One sse-server task holds a few thousand connections at most (not measured). The 300,000-connection target needs the
+  HLD sizing and a load test.
+
+**Cost.** On top of the foundation: the ALB (about $16 a month in the HLD) plus two small Fargate tasks (my estimate from public
+rates is about $30 a month for both; check the pricing calculator). `admission-ctl` reads Aurora every 500 ms for every event
+that is not `CLOSED`, so while one exists the database never idles and the foundation's auto-pause saves nothing. Close or
+delete demo events afterwards.
 
 ### booking does not persist anything yet
 
