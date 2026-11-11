@@ -4,7 +4,7 @@
 |---|---|
 | **What** | Sample events in Jakarta for local and dev: Postgres catalog + Redis sale state + stock, with real, free-licence photos |
 | **Not an endpoint** | Feeds `GET /events`, `GET /events/{id}`, `GET /events/{id}/tickets`, join and the stream, so the home page, the queue and booking can be tried end to end |
-| **Status** | approved 2026-11-11, built in `pkg/seed` (library) + `pkg/seed/cmd/seed` (command); `make seed`, `make seed-reset` |
+| **Status** | approved 2026-11-11, built in `pkg/seed` (Postgres library) + `infra/redis-debug` (Redis seeding via Lambda) |
 
 ## 1. In simple terms
 
@@ -12,8 +12,10 @@ Today the database is empty, so the home page has nothing to show and the queue 
 This seed puts five events in the catalog, each in a **different sale state**, so every card and every error path
 can be seen without hand-typing Redis commands.
 
-Example: after `make seed`, the home page lists "Nightfall Live di Istora" (button on), "Garuda Stadium Fest" (not open
+Example: after seeding, the home page lists "Nightfall Live di Istora" (button on), "Garuda Stadium Fest" (not open
 yet), "Malam Wayang Kontemporer" (every seat held), "Ancol Sunset Sessions" (button on) and an expo that already closed.
+
+**Note:** Postgres and Redis seeding are split because Redis (ElastiCache) is not accessible from outside the VPC.
 
 ## 2. Decisions already made (Erma)
 
@@ -28,14 +30,26 @@ yet), "Malam Wayang Kontemporer" (every seat held), "Ancol Sunset Sessions" (but
 ```mermaid
 flowchart LR
     D["pkg/seed data.go<br/>(5 events, categories, credits)"] --> PGF["seed.Postgres<br/>(upsert in one transaction)"]
-    D --> RF["seed.Redis<br/>(HSETNX / SETNX)"]
+    D2["seed-redis.sh<br/>(mirrors data.go)"] --> RF["redis-debug Lambda<br/>(HSETNX / SETNX)"]
     PGF --> PG[(Postgres<br/>events, ticket_categories)]
     RF --> R[("Redis<br/>queue:{ev}, stock:{ev}:cat")]
-    MK["make seed"] --> D
+    SL["infra/seed<br/>./seed-postgres.sh"] --> PGF
+    RD["infra/seed<br/>./seed-redis.sh"] --> RF
     PG --> L["GET /events, /events/{id}"]
     R --> L
     R --> Q["join, stream, ticket page"]
 ```
+
+### Architecture
+
+Both Lambdas are deployed together in `infra/seed`:
+
+| Script | Seeds | Lambda |
+|---|---|---|
+| `./seed-postgres.sh` | Postgres (events, ticket_categories) | `rusuh-{env}-seed` |
+| `./seed-redis.sh` | Redis (queue state, stock) | `rusuh-{env}-redis-debug` |
+
+Both run inside the VPC via Lambda, so they can reach Aurora and ElastiCache.
 
 ### 3.1 Events
 
@@ -145,10 +159,63 @@ Category ids are `cat_<event>_<tier>` because `ticket_categories.id` is the prim
 
 ## 7. How to run
 
+### AWS Environment (prod/dev)
+
+```bash
+cd infra/seed
+
+# 1. Deploy the seed stack (both Lambdas)
+./deploy.sh
+
+# 2. Seed Postgres
+./seed-postgres.sh
+
+# 3. Seed Redis
+./seed-redis.sh
+./seed-redis.sh --reset  # optional: clear keys first
+
+# 4. Verify
+./redis.sh DBSIZE        # should show 17 keys
+./redis.sh KEYS '*'      # list all keys
+./redis.sh HGETALL 'queue:{evt_jkt_istora_nightfall}'
+
+# 5. Cleanup when done
+./destroy.sh
+```
+
+### Local Development
+
+For local development with Docker:
+
 ```bash
 cp -n .env.example .env     # set POSTGRES_PASSWORD
-make deps-up
-# apply migrations/*.up.sql first (see services/admission-ctl/README.md), then:
-make seed
-make seed-reset             # optional: wipe the sample events' Redis state and seed again
+make deps-up                # start Postgres + Redis in Docker
+
+# Apply migrations first (see migrations/README.md)
+
+# Seed Postgres (local)
+DATABASE_URL="postgres://..." go run ./pkg/seed/cmd/seed
+
+# Seed Redis manually
+docker exec -it redis redis-cli
+> HSET queue:{evt_jkt_istora_nightfall} state OPEN issued 0 now_serving 0 name "Nightfall Live"
+> SET stock:{evt_jkt_istora_nightfall}:cat_istora_vip 300
+```
+
+### Useful Commands
+
+```bash
+cd infra/seed
+
+# Check event states
+./redis.sh HGET 'queue:{evt_jkt_istora_nightfall}' state  # OPEN
+./redis.sh HGET 'queue:{evt_jkt_gbk_garuda_fest}' state   # SCHEDULED
+./redis.sh HGET 'queue:{evt_jkt_tim_wayang}' state        # FULL_BOOKED
+
+# Change an event's state
+./redis.sh HSET 'queue:{evt_jkt_gbk_garuda_fest}' state OPEN
+
+# Check/update stock
+./redis.sh GET 'stock:{evt_jkt_istora_nightfall}:cat_istora_vip'  # 300
+./redis.sh SET 'stock:{evt_jkt_istora_nightfall}:cat_istora_vip' 100
 ```

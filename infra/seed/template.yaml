@@ -1,13 +1,22 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  Redis debug Lambda — run arbitrary Redis commands from AWS CLI.
-  For development/debugging only. Delete this stack when done.
+  Seed stack — Postgres seed Lambda + Redis debug Lambda.
+  Seeds Aurora with sample events and provides Redis CLI access from inside the VPC.
+  For development/setup only. Delete this stack after use.
 
 Parameters:
   Environment:
     Type: String
     Default: prod
     AllowedValues: [dev, prod]
+
+  LambdaS3Bucket:
+    Type: String
+    Description: S3 bucket containing the seed Lambda zip
+
+  LambdaS3Key:
+    Type: String
+    Description: S3 key of the seed Lambda zip (bootstrap.zip)
 
   VpcSubnetIds:
     Type: AWS::SSM::Parameter::Value<List<AWS::EC2::Subnet::Id>>
@@ -17,11 +26,76 @@ Parameters:
     Type: AWS::SSM::Parameter::Value<List<AWS::EC2::SecurityGroup::Id>>
     Default: /rusuh/prod/vpc/lambda-security-group-ids
 
+  DatabaseSecretArn:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /rusuh/prod/db/secret-arn
+
   RedisAddr:
     Type: AWS::SSM::Parameter::Value<String>
     Default: /rusuh/prod/redis/addr
 
 Resources:
+  # ═══════════════════════════════════════════════════════════════════════════
+  #  POSTGRES SEED LAMBDA
+  # ═══════════════════════════════════════════════════════════════════════════
+  SeedRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub rusuh-${Environment}-seed-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: SecretsAndLogs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref DatabaseSecretArn
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/rusuh-${Environment}-seed:*
+
+  SeedLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/rusuh-${Environment}-seed
+      RetentionInDays: 7
+
+  SeedFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub rusuh-${Environment}-seed
+      Description: "Seeds Aurora with sample events (Postgres only)."
+      Runtime: provided.al2023
+      Architectures: [arm64]
+      Handler: bootstrap
+      Role: !GetAtt SeedRole.Arn
+      Timeout: 120
+      MemorySize: 256
+      VpcConfig:
+        SubnetIds: !Ref VpcSubnetIds
+        SecurityGroupIds: !Ref VpcSecurityGroupIds
+      Code:
+        S3Bucket: !Ref LambdaS3Bucket
+        S3Key: !Ref LambdaS3Key
+      Environment:
+        Variables:
+          DATABASE_URL: !Sub '{{resolve:secretsmanager:rusuh-${Environment}/database-url:SecretString:url}}'
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  #  REDIS DEBUG LAMBDA
+  # ═══════════════════════════════════════════════════════════════════════════
   RedisDebugRole:
     Type: AWS::IAM::Role
     Properties:
@@ -57,7 +131,7 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: !Sub rusuh-${Environment}-redis-debug
-      Description: "DEBUG ONLY — run Redis commands. Delete this stack when done."
+      Description: "Run Redis commands from inside the VPC."
       Runtime: python3.12
       Architectures: [arm64]
       Handler: index.lambda_handler
@@ -135,15 +209,6 @@ Resources:
               Event formats:
                 {"cmd": "PING"}
                 {"cmd": "KEYS *"}
-                {"cmd": "SET key value"}
-                {"cmd": "GET key"}
-                {"cmd": "SETEX key 3600 value"}
-                {"cmd": "DEL key"}
-                {"cmd": "DBSIZE"}
-                {"cmd": "INFO keyspace"}
-                {"cmd": "HSET hash field value"}
-                {"cmd": "HGETALL hash"}
-                {"cmd": "HGETALL queue:{evt_jkt_istora_nightfall}"}
                 {"cmds": ["SET k1 v1", "SET k2 v2", "DBSIZE"]}
               """
               if not REDIS_ADDR:
@@ -174,23 +239,27 @@ Resources:
               return {"results": results}
 
 Outputs:
-  FunctionName:
+  SeedFunctionName:
+    Value: !Ref SeedFunction
+    Description: Postgres seed Lambda
+
+  RedisDebugFunctionName:
     Value: !Ref RedisDebugFunction
-    Description: Invoke with — aws lambda invoke --function-name rusuh-prod-redis-debug --payload '{"cmd":"PING"}' out.json
+    Description: Redis debug Lambda
 
-  UsageExamples:
+  Usage:
     Value: !Sub |
-      # PING
-      aws lambda invoke --function-name rusuh-${Environment}-redis-debug --region ${AWS::Region} --cli-binary-format raw-in-base64-out --payload '{"cmd":"PING"}' /dev/stdout
+      # Seed Postgres
+      ./seed-postgres.sh
 
-      # List all keys
-      aws lambda invoke --function-name rusuh-${Environment}-redis-debug --region ${AWS::Region} --cli-binary-format raw-in-base64-out --payload '{"cmd":"KEYS *"}' /dev/stdout
+      # Seed Redis
+      ./seed-redis.sh
+      ./seed-redis.sh --reset   # clear keys first
 
-      # Set a key
-      aws lambda invoke --function-name rusuh-${Environment}-redis-debug --region ${AWS::Region} --cli-binary-format raw-in-base64-out --payload '{"cmd":"SET mykey myvalue"}' /dev/stdout
+      # Redis CLI
+      ./redis.sh PING
+      ./redis.sh KEYS '*'
+      ./redis.sh HGETALL 'queue:{evt_jkt_istora_nightfall}'
 
-      # Multiple commands
-      aws lambda invoke --function-name rusuh-${Environment}-redis-debug --region ${AWS::Region} --cli-binary-format raw-in-base64-out --payload '{"cmds":["DBSIZE","INFO keyspace"]}' /dev/stdout
-
-      # Delete this stack when done
-      aws cloudformation delete-stack --stack-name rusuh-${Environment}-redis-debug --region ${AWS::Region}
+      # Delete when done
+      ./destroy.sh

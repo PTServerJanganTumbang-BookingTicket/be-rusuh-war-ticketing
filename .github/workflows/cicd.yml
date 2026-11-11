@@ -1080,10 +1080,6 @@ jobs:
             --parameter-overrides "Environment=${ENV}" \
             --tags Project=rusuh ManagedBy=github-actions
 
-          echo "Unified API URL:"
-          aws cloudformation describe-stacks --stack-name "rusuh-${ENV}-api" \
-            --query 'Stacks[0].Outputs[?OutputKey==`ApiUrl`].OutputValue' --output text
-
   # ══════════════════════════════════════════════════════════════════════════
   #  ECS - admission-ctl and sse-server (DEPLOY.md, ECS section)
   #  Not behind the API gateway and not part of the Lambda waves: it needs the foundation (and its public-subnet
