@@ -26,7 +26,7 @@ REDIS_ADDR   ?= 127.0.0.1:$(REDIS_PORT)
 DATABASE_URL ?= postgres://rusuh:$(POSTGRES_PASSWORD)@127.0.0.1:$(POSTGRES_PORT)/rusuh?sslmode=disable
 
 .PHONY: build test tidy isolation-check lint booking-run booking-build-lambda test-module \
-        fmt-check vet spec step test-short verify-fast verify deps-up deps-down check-pg-password coverage
+        fmt-check vet spec step test-short verify-fast verify deps-up deps-down check-pg-password seed seed-reset coverage
 
 # Workspace-wide build/test. The repo root is NOT a module (it only holds
 # go.work), so `go build ./...` must run per-module; go.work still resolves
@@ -116,6 +116,15 @@ deps-up: check-pg-password
 
 check-pg-password:
 	@test -n "$(POSTGRES_PASSWORD)" || { echo "POSTGRES_PASSWORD is not set: cp .env.example .env and fill it in"; exit 1; }
+
+# Sample Jakarta events (docs/seed-data.md): Postgres catalog + Redis sale state. Local stack only; needs the
+# migrations applied and `make deps-up`. seed-reset first deletes the sample events' Redis keys (tickets issued for
+# them are lost), to re-run with a changed state.
+seed: check-pg-password
+	@cd pkg && DATABASE_URL="$(DATABASE_URL)" REDIS_ADDR="$(REDIS_ADDR)" go run ./seed/cmd/seed
+
+seed-reset: check-pg-password
+	@cd pkg && DATABASE_URL="$(DATABASE_URL)" REDIS_ADDR="$(REDIS_ADDR)" go run ./seed/cmd/seed -reset
 
 deps-down:
 	docker compose down -v

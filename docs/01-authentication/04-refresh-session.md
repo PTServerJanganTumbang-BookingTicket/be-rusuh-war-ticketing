@@ -51,7 +51,7 @@ sequenceDiagram
 
     alt ErrRefreshTokenReplayed
         H->>H: log metric RefreshTokenReplayed
-        H-->>C: 401 TOKEN_INVALID "session ended; please sign in again"
+        H-->>C: 401 TOKEN_INVALID "session ended, please sign in again"
     else not found / expired
         H->>H: clear access_token cookie
         H-->>C: 401 TOKEN_EXPIRED
