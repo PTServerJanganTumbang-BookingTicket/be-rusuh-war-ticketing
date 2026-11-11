@@ -49,6 +49,9 @@ flowchart LR
 | `rl:join:<ip>` | `JoinRateLimit` | hash `{tokens, ts}` (token bucket, `pkg/ratelimit`) | refill time (300 s) | join | — | 20 joins / 5 min per IP. IP from API Gateway, never `X-Forwarded-For` | built |
 | `rl:joinacct:<account_id>` | `JoinAcctLimit` | hash `{tokens, ts}` | refill time (60 s) | join | — | 3 joins / min per account | built |
 | `rl:sse:<ip>` | `SSERateLimit` | token bucket | — | stream | — | Stream connect limit (5 / s) | built |
+| `paymenthandoff:<code>` | `PaymentHandoff` | string → `grant_token` | 60 s | payment-api `POST /payments/{booking_id}/handoff` (`SET NX EX`) | payment-api `POST /payments/handoff/exchange` (`GET` + `DEL` in one `MULTI`) | One-time code the mobile app trades for a payment session in the WebView (ADR-007). `hc_` + 256 random bits | built |
+| `paymentsession:<session>` | `PaymentSession` | string → `grant_token` | the grant's remaining TTL (`PTTL grant:<token>`) | payment-api exchange (`SET PX NX`) | `pkg/grantauth.MiddlewareWithSession` | `X-Payment-Session` of the WebView payment page; dies with its grant, which is re-read on every request. `ps_` + 256 random bits | built |
+| `rl:handoff:<grant_token>` | `HandoffRateLimit` | token bucket (`pkg/ratelimit`) | refill time (60 s) | payment-api handoff | — | 10 handoff codes / min per grant; fails open | built |
 
 ### Fields of `queue:{ev}`
 

@@ -373,6 +373,26 @@ Resources:
       RouteKey: GET /payments/{booking_id}/status
       Target: !Sub integrations/${PaymentApiLambdaIntegration}
 
+  # ── WebView payment handoff (ADR-007) ──────────────────────────────────────
+  # The first is grant-guarded in the service; the exchange has no guard: the
+  # one-time code in its body is the credential. Neither overlaps another
+  # route: the third segment is a literal on both and differs from the rest.
+  RouteCreateHandoff:
+    Type: AWS::ApiGatewayV2::Route
+    Condition: CreateDirectApi
+    Properties:
+      ApiId: !Ref PaymentApiApi
+      RouteKey: POST /payments/{booking_id}/handoff
+      Target: !Sub integrations/${PaymentApiLambdaIntegration}
+
+  RouteExchangeHandoff:
+    Type: AWS::ApiGatewayV2::Route
+    Condition: CreateDirectApi
+    Properties:
+      ApiId: !Ref PaymentApiApi
+      RouteKey: POST /payments/handoff/exchange
+      Target: !Sub integrations/${PaymentApiLambdaIntegration}
+
   # ── Unguarded, called by Midtrans ─────────────────────────────────────────
   #
   # This route overlaps RouteInitiatePayment: POST /payments/webhook also

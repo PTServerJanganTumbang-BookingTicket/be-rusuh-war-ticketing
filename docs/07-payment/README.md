@@ -19,6 +19,40 @@ FR-28a · BR-02, BR-05, BR-07 · NFR-02, NFR-07.
 | 04 | [04-get-payment-status.md](04-get-payment-status.md) | `GET /payments/{booking_id}/status` |
 | 05 | [05-payment-webhook.md](05-payment-webhook.md) | `POST /payments/webhook` |
 | 06 | [06-grant-guard.md](06-grant-guard.md) | — internal component (`pkg/grantauth`) |
+| 07 | [07-create-payment-handoff.md](07-create-payment-handoff.md) | `POST /payments/{booking_id}/handoff` |
+| 08 | [08-exchange-payment-handoff.md](08-exchange-payment-handoff.md) | `POST /payments/handoff/exchange` |
+
+07 and 08 come after the guard because they were added later (ADR-007); renumbering 05–06 would break links.
+
+## WebView payment handoff (ADR-007)
+
+The mobile app opens the web payment page (`https://rush-my-ticket.my.id/pay/{booking_id}`) in a WebView without giving
+it any of its own credentials:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant App as Mobile app
+    participant API as payment-api
+    participant WV as WebView page
+
+    App->>API: 07 POST /payments/{id}/handoff (grant guard)
+    API-->>App: handoff_code (60 s, single use)
+    App->>WV: open /pay/{id}#code=…
+    WV->>API: 08 POST /payments/handoff/exchange
+    API-->>WV: payment_session (lives as long as the grant)
+    WV->>API: §4.4, §5.1–§5.4 with X-Payment-Session (06 §12)
+```
+
+| Piece | Where | Plan |
+|---|---|---|
+| Handoff code | `paymenthandoff:<code>` → grant token, 60 s | [07](07-create-payment-handoff.md) |
+| Payment session | `paymentsession:<session>` → grant token, TTL = grant's | [08](08-exchange-payment-handoff.md) |
+| Guard on the session | `pkg/grantauth.MiddlewareWithSession` | [06 §12](06-grant-guard.md#12-payment-session-adr-007) |
+
+Built in this order: **H1** `pkg/rediskeys` + `pkg/grantauth` (06 §12) → **H2** 07 →
+**H3** 08 → **H4** wiring in payment-api and booking (guards, routes) → **H5** templates + gateway CORS.
+Nothing changes in Aurora: no migration.
 
 ## 1. Component overview
 

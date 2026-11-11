@@ -10,7 +10,7 @@ Description: >
     /events, /events/{event_id} → events service
     /events/{event_id}/tickets → booking service
     /events/{event_id}/queue/* → queue service (join, me)
-    /payments/*  → payment service (methods, initiate, retry, status, webhook)
+    /payments/*  → payment service (methods, initiate, retry, status, handoff, exchange, webhook)
     /nik/*       → nik-verify service
     /auth/*      → user service
     /accounts/*  → user service
@@ -52,6 +52,7 @@ Resources:
           - X-Grant-Token
           - X-Device-Id
           - X-Queue-Token
+          - X-Payment-Session
         AllowCredentials: false
         MaxAge: 86400
 
@@ -361,6 +362,23 @@ Resources:
     Properties:
       ApiId: !Ref UnifiedApi
       RouteKey: GET /payments/{booking_id}/status
+      Target: !Sub integrations/${PaymentApiIntegration}
+
+  # WebView payment handoff (ADR-007). The app mints a one-time code behind the
+  # grant guard; the WebView page trades it for X-Payment-Session with no
+  # guard, the code in the body being the credential.
+  RoutePaymentCreateHandoff:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UnifiedApi
+      RouteKey: POST /payments/{booking_id}/handoff
+      Target: !Sub integrations/${PaymentApiIntegration}
+
+  RoutePaymentExchangeHandoff:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UnifiedApi
+      RouteKey: POST /payments/handoff/exchange
       Target: !Sub integrations/${PaymentApiIntegration}
 
   # Called by Midtrans, not by the frontend, and deliberately unauthenticated:

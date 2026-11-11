@@ -257,6 +257,17 @@ Resources:
           Properties:
             Path: /payments/{booking_id}/status
             Method: GET
+        # ── WebView payment handoff (ADR-007) ─────────────────────────────
+        CreateHandoff:
+          Type: HttpApi
+          Properties:
+            Path: /payments/{booking_id}/handoff
+            Method: POST
+        ExchangeHandoff:
+          Type: HttpApi
+          Properties:
+            Path: /payments/handoff/exchange
+            Method: POST
         # ── Unguarded, called by Midtrans ─────────────────────────────────
         #
         # This route overlaps InitiatePayment: POST /payments/webhook also

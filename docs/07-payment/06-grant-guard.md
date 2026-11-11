@@ -279,3 +279,77 @@ service — so there is no per-service store to test.
 - [x] adopted in `services/booking` for §4
 - [ ] decide how `DEVICE_PEPPER` and `JWT_SECRET` consistency between services
       is enforced (§6)
+
+## 12. Payment session (ADR-007)
+
+The web payment page in the app's WebView holds no grant. It holds a **payment session** from
+[08-exchange-payment-handoff.md](08-exchange-payment-handoff.md) and sends it as `X-Payment-Session` (api-contracts §5,
+v2.25). The guard turns the session back into the grant it stands for, so handlers and repositories do not change:
+they still get a `Grant` from the context and still bind `WHERE id = $1 AND grant_token = $2`.
+
+### Two middlewares
+
+| Constructor | Mounted on | `X-Payment-Session` |
+|---|---|---|
+| `Middleware` (existing) | `POST /bookings`, `GET /events/{event_id}/tickets`, `POST /payments/{booking_id}/handoff` | **Refused**: `400 VALIDATION_ERROR` before anything is read |
+| `MiddlewareWithSession` (new) | `GET /bookings/{booking_id}`, `GET /payments/{booking_id}/methods`, `POST /payments/{booking_id}`, `POST /payments/{booking_id}/retry`, `GET /payments/{booking_id}/status` | Accepted **instead of** the grant headers |
+
+The route decides, not the token (contract §9 "Satu slot, satu kredensial"): a session can never reach the routes that
+create a booking or mint a new code.
+
+### Flow of `MiddlewareWithSession`
+
+```mermaid
+flowchart TD
+    A[request] --> B{X-Payment-Session?}
+    B -- no --> G[existing grant path:<br/>X-Grant-Token, device, Bearer]
+    B -- yes --> C{X-Grant-Token too?}
+    C -- yes --> E400[400 VALIDATION_ERROR]
+    C -- no --> D[GET paymentsession:session]
+    D -- nil --> E401[401 PAYMENT_SESSION_INVALID]
+    D -- grant_token --> F[HGETALL grant:grant_token]
+    F -- empty / malformed --> E401
+    F -- ok --> OK[Grant in context<br/>device and Bearer NOT checked]
+    D -- Redis error --> E503[503 INTERNAL_ERROR]
+    F -- Redis error --> E503
+```
+
+Rules:
+
+1. **Device and Bearer are not checked on the session path.** They were checked once, when the app asked for the code
+   (07). `X-Device-Id` and `Authorization` sent alongside a session are ignored, not refused.
+2. **The grant is read on every request.** A deleted grant (EXPIRED, cancelled) kills the session at once; a grant that
+   is still alive after PAID (the webhook does not delete it) keeps `/status` answering `PAID` (ADR-007 rule 3).
+3. **Unknown session and dead grant are one answer**, `401 PAYMENT_SESSION_INVALID`. The page cannot act differently on
+   them: either way it hands over to the app (`HANDOFF_EXPIRED`), and the app's call to 07 tells the two apart.
+4. **No path check.** A session for booking A on `/payments/B/...` gets A's grant, and the repository's
+   `WHERE id = B AND grant_token = <A's>` finds nothing: `404 NOT_FOUND`, as the contract says. Same as a grant today.
+5. `Grant.ViaSession = true` is set on the context value, for logs and metrics only. No handler branches on it.
+6. **Accepted:** logging out, or the access token expiring, does not end a session already handed to the WebView. The
+   account was checked once, when the app asked for the code; the session then lives until its grant ends (at most
+   `GRANT_TOKEN_TTL_SECONDS` from `granted_at`) and reaches one booking only.
+
+Contract §5 lists "`X-Grant-Token` (+ `X-Device-Id` / `Authorization`)" as the credential a session may not be sent
+with. Only `X-Grant-Token` triggers the 400: a WebView may inherit default headers, and neither `X-Device-Id` nor
+`Authorization` can grant anything on its own (contract wording fix pending in `documentations`).
+
+### Tests
+
+- [x] unit: session → grant in context, handler reached, `ViaSession` set (guest and account)
+- [x] unit: unknown session, session whose grant was deleted, malformed grant hash → `PAYMENT_SESSION_INVALID`
+- [x] unit: session + `X-Grant-Token` → 400; session + stray `X-Device-Id` / `Authorization` → accepted
+- [x] unit: Redis error on the session path → 503
+- [x] unit: `Middleware` refuses `X-Payment-Session` with 400 and never reads Redis
+- [x] unit: `MiddlewareWithSession` still takes a plain grant, with its device check
+- [x] e2e (`services/payment-api`, Postgres): session for booking A on `/payments/B/status` → 404; `/status` still
+      `PAID` after the webhook's confirm; 401 right after the grant is dropped
+- [x] e2e (`services/booking`): `GET /bookings/{id}` with a session → 200; another booking → 404; route test: only the
+      detail route accepts a session
+
+### Tasks
+
+- [x] `pkg/grantauth`: `HeaderPaymentSession`, `CodePaymentSessionInvalid`, `MiddlewareWithSession`, the refusal in
+      `Middleware`, `Grant.ViaSession`
+- [x] `services/payment-api`: `MiddlewareWithSession` on §5.1–§5.4, `Middleware` on the handoff route
+- [x] `services/booking`: `MiddlewareWithSession` on `GET /bookings/{booking_id}` only
+- [x] `infra/api-gateway/template.yaml`: `X-Payment-Session` in `CorsConfiguration.AllowHeaders`
