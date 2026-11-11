@@ -304,12 +304,6 @@ func withAttempts(n int) func([]any) {
 	return func(v []any) { v[9] = n }
 }
 
-// withPaidAt sets the settlement time migration 0013 added. Only a CONFIRMED
-// booking has one.
-func withPaidAt(t time.Time) func([]any) {
-	return func(v []any) { v[8] = &t }
-}
-
 func withExpiresAt(t time.Time) func([]any) {
 	return func(v []any) { v[6] = &t }
 }

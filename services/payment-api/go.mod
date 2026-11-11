@@ -11,7 +11,6 @@ require (
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/redis/go-redis/v9 v9.7.3
 	github.com/stretchr/testify v1.11.1
-	go.uber.org/mock v0.6.0
 )
 
 require (
@@ -26,6 +25,7 @@ require (
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/joho/godotenv v1.5.1 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
+	github.com/oklog/ulid/v2 v2.1.2 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/yuin/gopher-lua v1.1.1 // indirect
 	golang.org/x/crypto v0.52.0 // indirect
