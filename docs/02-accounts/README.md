@@ -1,14 +1,18 @@
 # 02 — Accounts
 
-Manages a logged-in customer's saved NIK list ("Daftar NIK Teman"). Saved NIKs are
-pre-verified friend NIKs that can be used at checkout without an extra Dukcapil call,
-reducing paid API usage (NFR-12) and removing Dukcapil as a hard gate during the
-booking TTL.
+The logged-in customer's own account: their profile, and their saved NIK list
+("Daftar NIK Teman"). Saved NIKs are pre-verified friend NIKs that can be used
+at checkout without an extra Dukcapil call, reducing paid API usage (NFR-12) and
+removing Dukcapil as a hard gate during the booking TTL.
 
 **Service**: `services/user` (Lambda + API Gateway)
 
-**Sources**: ADR-005 §8 · api-contracts §1.6 · requirements FR-15a, FR-32a..d ·
-BR-12, BR-13 · NFR-11, NFR-12, NFR-14.
+**Sources**: ADR-005 §8 · api-contracts §1.6, §1.8 · requirements FR-15a,
+FR-32a..d · BR-12, BR-13 · NFR-11, NFR-12, NFR-14.
+
+Every endpoint here is guarded by `Authorization: Bearer` and **only** that. A
+grant proves its bearer holds seats and carries no account identity (§9), so it
+cannot answer any question this folder asks.
 
 ## Files
 
@@ -17,14 +21,24 @@ BR-12, BR-13 · NFR-11, NFR-12, NFR-14.
 | 01 | [01-get-saved-niks.md](01-get-saved-niks.md) | `GET /accounts/me/saved-niks` |
 | 02 | [02-add-saved-nik.md](02-add-saved-nik.md) | `POST /accounts/me/saved-niks` |
 | 03 | [03-delete-saved-nik.md](03-delete-saved-nik.md) | `DELETE /accounts/me/saved-niks/{id}` |
+| 04 | [04-get-my-account.md](04-get-my-account.md) | `GET /accounts/me` |
 
-**Subfolder `tickets/`** (Apidog: Accounts › Tickets, previously the top-level *User* folder): `GET /users/me/tickets`, `GET /tickets/{ticket_id}/eticket`. Not started.
+**Subfolder [`tickets/`](tickets/README.md)** (Apidog: Accounts › Tickets,
+previously the top-level *User* folder): `GET /users/me/tickets` and
+`GET /tickets/{ticket_id}/eticket`. Both implemented and documented; the
+e-ticket's `?t=` token path is the one piece of §6.2 still missing, which is
+what a forwarded e-ticket link needs.
 
 ## 1. Design constraints
 
 - **No raw NIK ever stored or returned**: only `nik_hmac` (HMAC-SHA256 keyed by
   nik-verify's pepper) and `nik_masked` (first 4 + last 2 digits). The full 16
   digits are neither persisted nor echoed (FR-32c).
+- **No name, anywhere**: no account or person name is stored, requested or
+  returned by any endpoint in this folder or in `01-authentication/`. Dukcapil
+  validates the NIK alone, and a name is collected at no point in this system
+  (FR-15a). `accounts` has no such column, and the only `name` on any wire in
+  this service is an **event** name on a ticket (§6.1, §6.2).
 - **Verified-before-insert invariant**: `saved_niks.verified_at IS NOT NULL` is
   enforced by a `CHECK` constraint in the DB migration (`0001_user_domain.up.sql`).
   An unverified entry would bypass Dukcapil at checkout, moving the fail-closed

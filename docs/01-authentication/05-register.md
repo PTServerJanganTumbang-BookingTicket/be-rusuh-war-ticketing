@@ -11,7 +11,11 @@
 ## 1. Purpose
 
 Creates a new account tied to a Dukcapil-verified NIK and records the customer's
-consent to third-party NIK processing. After this call the customer receives an
+consent to third-party NIK processing.
+
+**There is no `name` field, and no `consent.policy_version`.** Neither was
+removed from a working endpoint: see §6. The request body is
+`{email, nik, consent: {accepted}}` and nothing else. After this call the customer receives an
 email verification link; they do not receive a session — login is always via magic
 link (`GET /auth/verify`).
 
@@ -85,7 +89,8 @@ sequenceDiagram
 6. Build domain objects:
    - `Account`: `id=USR-{ULID}`, email, `nik_hmac`, `nik_masked`, `nik_verified_at=now()`,
      `dukcapil_ref`.
-   - `ConsentRecord`: `id`, `account_id`, `policy_version`, `consented_at=now()`.
+   - `ConsentRecord`: `id`, `account_id`, `consented_at=now()`. Three fields —
+     see §6 on why `policy_version` is not among them.
    - `MagicToken`: purpose=`VERIFY_EMAIL`, 15-minute TTL.
    - `OutboxEvent`: type=`account.verify`, payload includes plain token.
 7. `RegisterAccount(Registration{...})` — single transaction:
@@ -101,7 +106,7 @@ sequenceDiagram
 | Store | Key / table | Op | Notes |
 |---|---|---|---|
 | Aurora | `accounts` | INSERT | `nik_hmac` is HMAC from nik-verify; raw NIK never stored |
-| Aurora | `consent_records` | INSERT | Append-only (DB trigger); UU PDP NFR-11 |
+| Aurora | `consent_records` | INSERT | `id`, `account_id`, `consented_at`. Append-only (DB trigger); UU PDP NFR-11. Needs migration `0012` |
 | Aurora | `magic_tokens` | INSERT | Purpose = `VERIFY_EMAIL`, TTL 15 min |
 | Aurora | `outbox` | INSERT | `account.verify` event with plain verification token |
 
@@ -133,6 +138,28 @@ sequenceDiagram
   (ADR-005 §8).
 - **`consent_records` is append-only**: a DB trigger prevents UPDATE and DELETE,
   so no repair script can rewrite the evidence.
+- **No `name` in the request.** Dukcapil validates the **NIK alone**, and a name
+  is collected at no point in this system (FR-15a, contract §1.5). Up to
+  contract v2.12.0 the example here still showed `"name": "ALEX"`, left over
+  from before FR-15a was narrowed; the field never had a column to land in.
+- **No `consent.policy_version`, and the server does not substitute one.** The
+  value arrived from the client, and it was written straight into the immutable
+  consent record — which made the client the authority on which policy the
+  customer had just agreed to, for a record whose entire purpose is to be
+  trustworthy evidence under UU PDP No. 27/2022. A field like that is worse than
+  an absent one, because it looks like provenance and is not. What remains
+  answers the question the law actually asks: **who** consented (`account_id`)
+  and **when** (`consented_at`), both from the server. Which policy text that
+  was is answered by a versioned policy document and the timestamp.
+
+  A client that still posts `policy_version` is **accepted**, not rejected: the
+  decoder ignores the extra member, so an unchanged frontend keeps registering.
+
+  **This needs migration `0012_drop_consent_policy_version`.** The column was
+  `TEXT NOT NULL` with no default, and the INSERT stopped supplying it — so
+  against a schema at `0011` or earlier, every registration fails the not-null
+  constraint and the whole transaction rolls back. Nothing is half-written, but
+  nobody can register either.
 
 ## 7. Tests
 
@@ -143,6 +170,10 @@ sequenceDiagram
 - [x] unit: NIK invalid (Valid=false) → 422 NIK_VALIDATION_FAILED
 - [x] unit: duplicate email → 409
 - [x] unit: duplicate NIK → 409 NIK_ALREADY_REGISTERED
+- [x] unit: the consent record carries exactly `id`, `account_id` and a
+      server-set `consented_at`
+- [x] unit: a `policy_version` still posted by an unchanged client is ignored,
+      not rejected, and reaches nothing
 - [x] integration: crash after outbox INSERT and before COMMIT → account absent, outbox absent
 
 ## 8. Tasks
@@ -152,3 +183,5 @@ sequenceDiagram
 - [x] `RegisterAccount` adapter — four-table transaction with index conflict handling
 - [x] `INikVerifier` outbound port + `nik-verify` HTTP client adapter
 - [x] `consent_records` append-only trigger in migration `0001_user_domain.up.sql`
+- [x] migration `0012_drop_consent_policy_version` — drops the `NOT NULL` column
+      the INSERT no longer writes

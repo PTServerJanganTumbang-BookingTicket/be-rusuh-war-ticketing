@@ -453,15 +453,25 @@ func TestRegister_Success(t *testing.T) {
 
 	resp, err := uc.Register(context.Background(), dto.RegisterRequest{
 		Email: "alex@example.com", NIK: testNIK,
-		Consent: &dto.ConsentRequest{Accepted: true, PolicyVersion: "2026-10-01"},
+		Consent: &dto.ConsentRequest{Accepted: true},
 	})
 	require.NoError(t, err)
 	assert.NotEmpty(t, resp.UserID)
 	assert.Equal(t, "hmac-abc", reg.Account.NIKHmac)
 	assert.Equal(t, "3171**********22", reg.Account.NIKMasked, "the mask is stored, because a hash cannot be unmasked")
 	assert.NotNil(t, reg.Account.NIKVerifiedAt)
-	assert.Equal(t, "2026-10-01", reg.Consent.PolicyVersion)
+	// The consent record says WHO agreed and WHEN, and nothing else. It used to
+	// carry the policy version the client posted, which made the client the
+	// authority on what the customer had just agreed to — for a record whose
+	// only purpose is to be trustworthy evidence (UU PDP No. 27/2022).
 	assert.Equal(t, reg.Account.ID, reg.Consent.AccountID)
+	assert.NotEmpty(t, reg.Consent.ID)
+	assert.False(t, reg.Consent.ConsentedAt.IsZero(), "the timestamp is the server's")
+	assert.Equal(t, entity.ConsentRecord{
+		ID:          reg.Consent.ID,
+		AccountID:   reg.Account.ID,
+		ConsentedAt: reg.Consent.ConsentedAt,
+	}, reg.Consent, "three fields, and a fourth would have to be justified")
 
 	// All four writes go to one call, so they commit together: an account with
 	// a verified NIK and no consent record would be a UU PDP violation, and an
@@ -479,9 +489,38 @@ func TestRegister_Success(t *testing.T) {
 	assert.Empty(t, reg.VerifyToken.Token, "the plaintext must never be persisted")
 }
 
+// An unchanged client still posts {"accepted":true,"policy_version":"..."}.
+// The extra member is ignored by the decoder rather than rejected, so removing
+// the field from the contract did not break anyone mid-flight — which is the
+// whole reason it is ignored instead of refused.
+func TestRegister_APolicyVersionStillSentByAnOldClientIsIgnored(t *testing.T) {
+	uc, d := newTestUsecase(t)
+	d.verifier.EXPECT().VerifyNIK(gomock.Any(), testNIK).Return(goodVerification(), nil)
+
+	var reg portout.Registration
+	d.repo.EXPECT().RegisterAccount(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, r portout.Registration) (entity.Account, error) {
+			reg = r
+			return r.Account, nil
+		})
+
+	// Decoded the way the handler decodes it, so the unknown member travels the
+	// same path a real request would.
+	var req dto.RegisterRequest
+	require.NoError(t, json.Unmarshal([]byte(
+		`{"email":"alex@example.com","nik":"`+testNIK+`","consent":{"accepted":true,"policy_version":"2026-10-01"}}`), &req))
+	assert.True(t, req.Consent.Accepted)
+
+	_, err := uc.Register(context.Background(), req)
+	require.NoError(t, err)
+	// And it reaches nothing: the record carries no version, so there is no
+	// field for a stale client value to land in.
+	assert.Equal(t, reg.Account.ID, reg.Consent.AccountID)
+}
+
 func TestRegister_ConsentMissingOrDeclined(t *testing.T) {
 	// No verifier expectation: consent is checked before anything is spent.
-	for _, consent := range []*dto.ConsentRequest{nil, {Accepted: false, PolicyVersion: "2026-10-01"}} {
+	for _, consent := range []*dto.ConsentRequest{nil, {Accepted: false}} {
 		uc, _ := newTestUsecase(t)
 		_, err := uc.Register(context.Background(), dto.RegisterRequest{
 			Email: "alex@example.com", NIK: testNIK, Consent: consent,
@@ -499,7 +538,7 @@ func TestRegister_NikVerifyUnreachable_FailsClosed(t *testing.T) {
 
 	_, err := uc.Register(context.Background(), dto.RegisterRequest{
 		Email: "alex@example.com", NIK: testNIK,
-		Consent: &dto.ConsentRequest{Accepted: true, PolicyVersion: "2026-10-01"},
+		Consent: &dto.ConsentRequest{Accepted: true},
 	})
 	var appErr *apperror.AppError
 	require.ErrorAs(t, err, &appErr)
@@ -514,7 +553,7 @@ func TestRegister_NikRejected(t *testing.T) {
 
 	_, err := uc.Register(context.Background(), dto.RegisterRequest{
 		Email: "alex@example.com", NIK: testNIK,
-		Consent: &dto.ConsentRequest{Accepted: true, PolicyVersion: "2026-10-01"},
+		Consent: &dto.ConsentRequest{Accepted: true},
 	})
 	var appErr *apperror.AppError
 	require.ErrorAs(t, err, &appErr)
@@ -542,7 +581,7 @@ func TestRegister_DuplicateNIKAndEmailSurfaceTheirCodes(t *testing.T) {
 
 			_, err := uc.Register(context.Background(), dto.RegisterRequest{
 				Email: "alex@example.com", NIK: testNIK,
-				Consent: &dto.ConsentRequest{Accepted: true, PolicyVersion: "2026-10-01"},
+				Consent: &dto.ConsentRequest{Accepted: true},
 			})
 			var appErr *apperror.AppError
 			require.ErrorAs(t, err, &appErr)

@@ -22,6 +22,7 @@ type User interface {
 	Register(w http.ResponseWriter, r *http.Request)
 	RefreshSession(w http.ResponseWriter, r *http.Request)
 
+	GetMyAccount(w http.ResponseWriter, r *http.Request)
 	GetSavedNIKs(w http.ResponseWriter, r *http.Request)
 	AddSavedNIK(w http.ResponseWriter, r *http.Request)
 	DeleteSavedNIK(w http.ResponseWriter, r *http.Request)

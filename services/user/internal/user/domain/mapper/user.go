@@ -33,6 +33,27 @@ func ToUserSummary(a entity.Account) dto.UserSummary {
 	}
 }
 
+// ToAccountProfile converts an Account to the profile payload of
+// GET /accounts/me (contract §1.8).
+//
+// Two fields out of an Account that holds eight. Everything else the row knows
+// is either a credential or evidence: NIKHmac is what the gate matches against,
+// DukcapilRef is audit material, and the timestamps answer "may this account
+// purchase" (BR-11) rather than anything a profile page shows. A profile
+// endpoint that returned the whole entity would be leaking by default and
+// relying on nobody noticing.
+//
+// NIKMasked passes through as stored, never re-derived: the mask is the only
+// form of the NIK this service keeps beside the hash, and a hash cannot be
+// unmasked. An account mid-registration has "" here, which the page reads as
+// "not yet verified".
+func ToAccountProfile(a entity.Account) dto.AccountProfileResponse {
+	return dto.AccountProfileResponse{
+		Email:     a.Email,
+		NIKMasked: a.NIKMasked,
+	}
+}
+
 // ToRedirectContext converts an Engagement to the wire form (BR-09).
 //
 // The message is a human-readable hint, not a label key: contract §1.3 shows

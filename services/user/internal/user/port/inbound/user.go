@@ -20,6 +20,9 @@ type IUserUsecase interface {
 	// ValidateAccessToken resolves a bearer token to its account ID.
 	ValidateAccessToken(ctx context.Context, token string) (accountID string, err error)
 
+	// GetMyAccount returns the session owner's profile (contract §1.8).
+	GetMyAccount(ctx context.Context, accountID string) (dto.AccountProfileResponse, error)
+
 	// Saved NIKs (FR-32a..d)
 	GetSavedNIKs(ctx context.Context, accountID string) (dto.SavedNIKsResponse, error)
 	AddSavedNIK(ctx context.Context, accountID string, req dto.AddSavedNIKRequest) (dto.SavedNIKItem, error)

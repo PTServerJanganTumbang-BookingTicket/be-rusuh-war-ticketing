@@ -328,10 +328,9 @@ func (u *UserUsecase) Register(ctx context.Context, req dto.RegisterRequest) (dt
 		CreatedAt:     now,
 	}
 	consent := entity.ConsentRecord{
-		ID:            idgen.New(),
-		AccountID:     accountID,
-		PolicyVersion: req.Consent.PolicyVersion,
-		ConsentedAt:   now,
+		ID:          idgen.New(),
+		AccountID:   accountID,
+		ConsentedAt: now,
 	}
 	event, err := entity.NewOutboxEvent(idgen.New(), accountID, events.TypeAccountVerify,
 		events.AccountVerifyPayload{AccountID: accountID, Email: email, Token: verifyToken})

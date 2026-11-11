@@ -9,6 +9,28 @@ import (
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/user/internal/user/domain/dto"
 )
 
+// GetMyAccount handles GET /accounts/me (contract §1.8).
+//
+// Bearer only. This endpoint does not accept X-Grant-Token and must not: a
+// grant proves its bearer holds seats, and it carries no account identity at
+// all (§9) — so there is nothing in a grant that could answer "whose profile".
+//
+// No same-origin check, unlike the three handlers below: this one changes
+// nothing, and CSRF on a read a browser cannot see the response to buys an
+// attacker nothing.
+func (c *UserController) GetMyAccount(w http.ResponseWriter, r *http.Request) {
+	accountID, ok := c.requireAuth(w, r)
+	if !ok {
+		return
+	}
+	resp, err := c.usecase.GetMyAccount(r.Context(), accountID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	apinizer.WriteEnvelope(w, http.StatusOK, "Success", resp)
+}
+
 // GetSavedNIKs handles GET /accounts/me/saved-niks (FR-32a..c).
 func (c *UserController) GetSavedNIKs(w http.ResponseWriter, r *http.Request) {
 	accountID, ok := c.requireAuth(w, r)

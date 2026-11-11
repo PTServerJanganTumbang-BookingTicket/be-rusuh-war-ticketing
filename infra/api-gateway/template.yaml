@@ -256,6 +256,17 @@ Resources:
       Target: !Sub integrations/${UserIntegration}
 
   # Accounts routes
+  # GET /accounts/me — the profile page (contract §1.8). Registered before the
+  # saved-NIK routes only for readability: API Gateway matches the whole route
+  # key, so "/accounts/me" and "/accounts/me/saved-niks" are two distinct
+  # routes and neither shadows the other.
+  RouteAccountsMe:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UnifiedApi
+      RouteKey: GET /accounts/me
+      Target: !Sub integrations/${UserIntegration}
+
   RouteAccountsSavedNiksGet:
     Type: AWS::ApiGatewayV2::Route
     Properties:
@@ -381,11 +392,17 @@ Outputs:
         GET  /auth/verify-email
         POST /auth/refresh
         POST /auth/register
+        GET  /accounts/me
         GET  /accounts/me/saved-niks
         POST /accounts/me/saved-niks
         DELETE /accounts/me/saved-niks/{id}
         GET  /users/me/tickets
         GET  /tickets/{ticket_id}/eticket
+        GET  /payments/{booking_id}/methods
+        POST /payments/{booking_id}
+        POST /payments/{booking_id}/retry
+        GET  /payments/{booking_id}/status
+        POST /payments/webhook
         GET  /sys/ping
     Value: !Sub https://${UnifiedApi}.execute-api.${AWS::Region}.amazonaws.com
     Export:

@@ -129,6 +129,21 @@ func (mr *MockIUserUsecaseMockRecorder) ValidateAccessToken(ctx, token any) *gom
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ValidateAccessToken", reflect.TypeOf((*MockIUserUsecase)(nil).ValidateAccessToken), ctx, token)
 }
 
+// GetMyAccount mocks base method.
+func (m *MockIUserUsecase) GetMyAccount(ctx context.Context, accountID string) (dto.AccountProfileResponse, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetMyAccount", ctx, accountID)
+	ret0, _ := ret[0].(dto.AccountProfileResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetMyAccount indicates an expected call of GetMyAccount.
+func (mr *MockIUserUsecaseMockRecorder) GetMyAccount(ctx, accountID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMyAccount", reflect.TypeOf((*MockIUserUsecase)(nil).GetMyAccount), ctx, accountID)
+}
+
 // GetSavedNIKs mocks base method.
 func (m *MockIUserUsecase) GetSavedNIKs(ctx context.Context, accountID string) (dto.SavedNIKsResponse, error) {
 	m.ctrl.T.Helper()

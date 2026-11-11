@@ -33,6 +33,7 @@ exist`.
 | `0009_booking_domain` | `booking_items`, `nik_claims`, `tickets.booking_item_id`, SELECTING deadline index | `0008` |
 | `0010_drop_terms_and_holder_email` | drops the terms columns and `booking_items.holder_email` | `0009` |
 | `0011_payment_events` | `payment_events` (`gateway_event_id` unique), payment-deadline index for the HELD / AWAITING_PAYMENT sweep | `0010` |
+| `0012_drop_consent_policy_version` | drops `consent_records.policy_version`, which was `NOT NULL` and no longer written — until this runs, every registration fails the constraint | `0001` |
 
 Every statement uses `IF NOT EXISTS`, so re-running a file is harmless. That
 is the only thing standing in for a migration runner, so keep it true: a

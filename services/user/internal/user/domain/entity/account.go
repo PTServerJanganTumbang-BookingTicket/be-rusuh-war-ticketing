@@ -54,11 +54,15 @@ func (a Account) IsEmailVerified() bool { return a.EmailVerifiedAt != nil }
 // Append-only: no UPDATE, no DELETE (UU PDP No. 27/2022, FR-31d). The database
 // enforces this with a trigger, because a repair script must not be able to
 // rewrite the evidence either.
+//
+// What it records is WHO consented and WHEN. It no longer records which policy
+// version they saw: that value arrived from the client, so the record could
+// only ever be as reliable as whatever posted the form, and ConsentedAt plus a
+// versioned policy document answers the same question from the server's side.
 type ConsentRecord struct {
-	ID            string
-	AccountID     string
-	PolicyVersion string
-	ConsentedAt   time.Time
+	ID          string
+	AccountID   string
+	ConsentedAt time.Time
 }
 
 // MagicToken is a single-use emailed link.
