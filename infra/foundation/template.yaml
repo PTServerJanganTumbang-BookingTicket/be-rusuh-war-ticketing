@@ -582,12 +582,11 @@ Resources:
         PasswordLength: 64
         ExcludePunctuation: true
 
-  # One key does two jobs: it authenticates charge calls to the Core API, and
-  # it verifies every incoming notification -
-  # SHA512(order_id + status_code + gross_amount + ServerKey). A wrong value
-  # therefore does not merely stop new charges; it rejects every callback, so
-  # paid bookings are never confirmed and the money is taken with no ticket
-  # issued.
+  # Authenticates charge calls to the Core API (HTTP Basic). It no longer
+  # verifies notifications: Midtrans split signing off into a separate
+  # Signature Secret Key on 28 October 2026 - see MidtransSignatureSecretKeySecret
+  # below. A wrong value here stops new charges, so no customer is ever handed
+  # an instrument to pay.
   #
   # Placeholdered rather than generated: Midtrans issues this, it cannot be
   # invented here. Populate it by hand from the Midtrans dashboard - sandbox
@@ -597,9 +596,36 @@ Resources:
     Properties:
       Name: !Sub rusuh-${Environment}/midtrans-server-key
       Description: >
-        Midtrans Core API server key. Signs charges AND verifies notification
-        signatures. Populate by hand from the Midtrans dashboard.
+        Midtrans Core API server key. Authenticates charges only; notification
+        signatures use the separate signature secret key. Seeded by the
+        pipeline from the MIDTRANS_SERVER_KEY GitHub secret.
       SecretString: '{"server_key":"REPLACE_ME"}'
+
+  # Verifies the signature_key on every notification:
+  #   SHA512(order_id + status_code + gross_amount + SignatureSecretKey)
+  #
+  # A SEPARATE credential from the server key since Midtrans split the two on
+  # 28 October 2026. For a merchant that integrated before that date both
+  # dashboard values START OUT identical, so the server key appears to work in
+  # this slot and stops the moment either is regenerated - and server keys now
+  # carry expiry dates, so that is scheduled maintenance rather than bad luck.
+  #
+  # While this is at REPLACE_ME the service starts, reports healthy, issues
+  # virtual accounts and takes the customer's money, then rejects every
+  # callback as a forgery: no booking confirmed, and the sweep resells the
+  # seats. The symptom is indistinguishable from Midtrans never calling.
+  #
+  # Placeholdered rather than generated: Midtrans issues this, it cannot be
+  # invented here.
+  MidtransSignatureSecretKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub rusuh-${Environment}/midtrans-signature-secret-key
+      Description: >
+        Midtrans notification signature secret key. Verifies signature_key on
+        every callback. Seeded by the pipeline from the
+        MIDTRANS_SIGNATURE_SECRET_KEY GitHub secret.
+      SecretString: '{"signature_secret_key":"REPLACE_ME"}'
 
   AuroraMasterSecret:
     Type: AWS::SecretsManager::Secret
@@ -999,6 +1025,13 @@ Resources:
       Name: !Sub /rusuh/${Environment}/midtrans/server-key-secret-arn
       Type: String
       Value: !Ref MidtransServerKeySecret
+
+  SsmMidtransSignatureSecretKeySecretArn:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /rusuh/${Environment}/midtrans/signature-secret-key-secret-arn
+      Type: String
+      Value: !Ref MidtransSignatureSecretKeySecret
 
   SsmRedisAddr:
     Type: AWS::SSM::Parameter
