@@ -442,6 +442,62 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
+      - name: Preflight — check for orphaned secrets that would block stack creation
+        # Secrets with DeletionPolicy:Retain (and any secret pending deletion inside its
+        # 30-day recovery window) keep their names taken in Secrets Manager. CloudFormation
+        # will hit AlreadyExists, fail, and roll back — leaving the same debris behind.
+        # This step fails fast with a clear fix rather than letting a 10-minute deploy do it.
+        #
+        # This check only matters when the foundation stack does NOT already exist (first-time
+        # or retry after a failed create). If the stack is healthy the secrets belong to it
+        # and their presence is expected.
+        env:
+          ENV: ${{ needs.resolve-env.outputs.environment }}
+        run: |
+          set -euo pipefail
+          REGION="${{ vars.AWS_REGION }}"
+          STACK="rusuh-${ENV}-foundation"
+
+          # Skip the check when the stack is healthy — secrets belong to it.
+          STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK" --region "$REGION" \
+            --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo "DOES_NOT_EXIST")
+
+          HEALTHY_STATES="CREATE_COMPLETE UPDATE_COMPLETE UPDATE_ROLLBACK_COMPLETE"
+          for s in $HEALTHY_STATES; do
+            if [ "$STATUS" = "$s" ] && [ "$STATUS" != "UPDATE_ROLLBACK_COMPLETE" ]; then
+              echo "Stack $STACK is $STATUS — skipping orphan check."
+              exit 0
+            fi
+          done
+
+          echo "Stack status: $STATUS — checking for orphaned secrets..."
+          SECRETS=(
+            "rusuh-${ENV}/nik-pepper"
+            "rusuh-${ENV}/aurora-master"
+            "rusuh-${ENV}/database-url"
+            "rusuh-${ENV}/jwt-signing"
+            "rusuh-${ENV}/device-pepper"
+            "rusuh-${ENV}/dukcapil-api-key"
+            "rusuh-${ENV}/midtrans-server-key"
+            "rusuh-${ENV}/midtrans-signature-secret-key"
+          )
+          found=()
+          for secret in "${SECRETS[@]}"; do
+            if aws secretsmanager describe-secret \
+                 --secret-id "$secret" --region "$REGION" \
+                 >/dev/null 2>&1; then
+              found+=("$secret")
+            fi
+          done
+
+          if [ ${#found[@]} -gt 0 ]; then
+            echo "::error::Orphaned secrets found that will block stack creation:"
+            for s in "${found[@]}"; do echo "::error::  $s"; done
+            echo "::error::Run ./infra/cleanup-failed-foundation.sh --yes and retry."
+            exit 1
+          fi
+          echo "No orphaned secrets found — safe to deploy."
       - name: Deploy foundation stack
         env:
           ENV: ${{ needs.resolve-env.outputs.environment }}
