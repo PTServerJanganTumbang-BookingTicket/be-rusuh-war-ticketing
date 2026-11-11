@@ -1,9 +1,11 @@
 // Lambda entrypoint for the seed command.
-// Runs the same seed as `make seed` but from inside the VPC, so it can reach Aurora and ElastiCache.
+// Runs Postgres seeding from inside the VPC so it can reach Aurora.
+//
+// Redis seeding is handled separately via infra/redis-debug, which provides
+// CLI-style Redis access from inside the VPC.
 //
 // Deploy with: cd infra/seed-lambda && ./deploy.sh
 // Invoke with: aws lambda invoke --function-name rusuh-prod-seed --payload '{}' out.json
-// Reset+seed:  aws lambda invoke --function-name rusuh-prod-seed --payload '{"reset":true}' out.json
 package main
 
 import (
@@ -15,30 +17,30 @@ import (
 
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/jackc/pgx/v5"
-	goredis "github.com/redis/go-redis/v9"
 
-	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/envutil"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/pgutil"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/seed"
 )
 
 type Request struct {
-	Reset bool `json:"reset"` // if true, delete existing event keys before seeding
+	// Reset is deprecated - Redis seeding moved to infra/redis-debug
+	Reset bool `json:"reset,omitempty"`
 }
 
 type Response struct {
-	Events       int    `json:"events"`
-	RedisCreated int    `json:"redis_created"`
-	Reset        bool   `json:"reset"`
-	Message      string `json:"message"`
+	Events  int    `json:"events"`
+	Message string `json:"message"`
 }
 
 func handler(ctx context.Context, req Request) (Response, error) {
+	if req.Reset {
+		slog.Warn("reset flag is deprecated: Redis seeding has moved to infra/redis-debug")
+	}
+
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
 		return Response{}, fmt.Errorf("DATABASE_URL is not set")
 	}
-	addr := envutil.Env("REDIS_ADDR", "127.0.0.1:6379")
 
 	events := seed.JakartaEvents()
 
@@ -56,38 +58,9 @@ func handler(ctx context.Context, req Request) (Response, error) {
 	}
 	slog.Info("postgres seeded", slog.Int("events", len(events)))
 
-	// Redis
-	var rdb goredis.UniversalClient
-	if envutil.EnvBool("REDIS_CLUSTER", false) {
-		rdb = goredis.NewClusterClient(&goredis.ClusterOptions{Addrs: []string{addr}})
-	} else {
-		rdb = goredis.NewClient(&goredis.Options{Addr: addr})
-	}
-	defer func() { _ = rdb.Close() }()
-
-	if req.Reset {
-		slog.Info("resetting redis keys...")
-		if err := seed.ResetRedis(ctx, rdb, events); err != nil {
-			return Response{}, fmt.Errorf("redis reset: %w", err)
-		}
-	}
-
-	n, err := seed.Redis(ctx, rdb, events, time.Now())
-	if err != nil {
-		return Response{}, fmt.Errorf("redis seed: %w", err)
-	}
-	slog.Info("redis seeded", slog.Int("created", n))
-
-	msg := "seeded"
-	if req.Reset {
-		msg = "reset and seeded"
-	}
-
 	return Response{
-		Events:       len(events),
-		RedisCreated: n,
-		Reset:        req.Reset,
-		Message:      msg,
+		Events:  len(events),
+		Message: "postgres seeded (use infra/redis-debug for Redis seeding)",
 	}, nil
 }
 
