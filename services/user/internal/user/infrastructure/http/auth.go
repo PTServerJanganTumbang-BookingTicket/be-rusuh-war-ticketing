@@ -84,24 +84,38 @@ func (c *UserController) VerifyMagicLink(w http.ResponseWriter, r *http.Request)
 	apinizer.WriteEnvelope(w, http.StatusOK, "Login successful", resp)
 }
 
-// VerifyEmail handles GET /auth/verify-email (FR-31).
+// VerifyEmail handles GET /auth/verify-email (FR-31, contract §1.7).
 //
 // A distinct endpoint and a distinct token purpose: confirming an address must
 // not mint a session, or "please confirm your email" becomes a login bypass.
+//
+// The token arrives as a QUERY PARAMETER, which is what §1.7 declares and the
+// only thing that can work: this URL is clicked straight out of an email
+// client, so there is no cookie on the request — nothing in the registration
+// flow ever set one. Reading `magic_token` here, as this handler used to,
+// meant the link in every verification email answered 400 without ever
+// reaching the use case.
+//
+// §1.3 reads a cookie because its own flow is different: the frontend receives
+// the login token and sets it before calling that endpoint. The two are not
+// interchangeable, which is the whole point of them being separate endpoints
+// with separate token purposes.
 func (c *UserController) VerifyEmail(w http.ResponseWriter, r *http.Request) {
-	cookie, err := r.Cookie(magicTokenCookie)
-	if err != nil || cookie.Value == "" {
+	token := r.URL.Query().Get("token")
+	if token == "" {
 		writeError(w, apperror.
-			ErrBadRequest("magic_token cookie is required").
+			ErrBadRequest("token query parameter is required").
 			WithCode(apperror.CodeTokenInvalid))
 		return
 	}
-	if err := c.usecase.VerifyEmail(r.Context(), cookie.Value); err != nil {
+	if err := c.usecase.VerifyEmail(r.Context(), token); err != nil {
 		writeError(w, err)
 		return
 	}
-	c.clearCookie(w, magicTokenCookie)
-	apinizer.WriteEnvelope(w, http.StatusOK, "Email verified", nil)
+	// data {email_verified: true}, per §1.7. A bare {} would make the client
+	// infer success from the status code alone, and the contract gives it a
+	// field to read instead.
+	apinizer.WriteEnvelope(w, http.StatusOK, "Email verified", dto.VerifyEmailResponse{EmailVerified: true})
 }
 
 // Register handles POST /auth/register (FR-29, FR-30, FR-31a..d).

@@ -5,6 +5,15 @@ type RegisterResponse struct {
 	UserID string `json:"user_id"`
 }
 
+// VerifyEmailResponse is returned by GET /auth/verify-email (contract §1.7).
+//
+// One field, and it is always true: reaching this point means the token was
+// redeemed. It exists so the client reads a value rather than inferring
+// success from the status code, which is what an empty data {} would force.
+type VerifyEmailResponse struct {
+	EmailVerified bool `json:"email_verified"`
+}
+
 // VerifyMagicLinkResponse is returned by GET /auth/verify.
 type VerifyMagicLinkResponse struct {
 	AccessToken  string      `json:"access_token"`

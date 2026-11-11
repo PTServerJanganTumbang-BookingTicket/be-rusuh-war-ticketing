@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Service** | `services/user` (Lambda) |
-| **Auth** | `magic_token` cookie (single-use verification token) |
+| **Auth** | `token` query parameter (single-use verification token) |
 | **Contract** | Apidog `GET /auth/verify-email` · api-contracts §1.7 |
 | **Requirements** | FR-31 |
 | **Status** | done |
@@ -12,7 +12,7 @@
 
 Confirms ownership of the registered email address by consuming the verification
 link sent after `POST /auth/register`. Sets `accounts.email_verified_at` and
-clears the token cookie. **Does not issue any session token** — it proves control
+**Does not issue any session token** — it proves control
 of an address, which is not the same as granting login access.
 
 An unverified account can still purchase tickets (`email_verified_at` is not a
@@ -37,8 +37,8 @@ sequenceDiagram
     participant H as user-service
     participant DB as Aurora
 
-    C->>H: GET /auth/verify-email (Cookie: magic_token={plain})
-    H->>H: cookie present and non-empty?
+    C->>H: GET /auth/verify-email?token={plain}
+    H->>H: token present and non-empty?
     alt missing
         H-->>C: 400 TOKEN_INVALID
     end
@@ -54,19 +54,20 @@ sequenceDiagram
         H-->>C: 500 Internal
     end
 
-    H->>H: Clear magic_token cookie
+    H-->>C: 200 {email_verified: true}
     H-->>C: 200 "Email verified"
 ```
 
 ## 3. Steps
 
-1. Read `magic_token` cookie; return 400 `TOKEN_INVALID` if absent or empty.
-2. Compute `SHA-256(cookie value)`.
+1. Read the `token` **query parameter**; return 400 `TOKEN_INVALID` if absent
+   or empty. **Not a cookie** — see §6.
+2. Compute `SHA-256(token)`.
 3. `ConsumeMagicToken(hash, purpose=VERIFY_EMAIL)`: atomically marks used.
    Returns error if not found, expired, already used, or purpose mismatch.
 4. `MarkEmailVerified(token.AccountID)` — sets `email_verified_at = COALESCE(email_verified_at, now())`
    (idempotent; first writer wins).
-5. Clear `magic_token` cookie (MaxAge=-1).
+5. Answer 200 with `data {email_verified: true}`.
 6. Return 200.
 
 ## 4. Data touched
@@ -80,12 +81,26 @@ sequenceDiagram
 
 | HTTP | Code | When |
 |---|---|---|
-| 200 | — | Email verified |
-| 400 | `TOKEN_INVALID` | Cookie absent or empty |
+| 200 | — | Email verified, with `data {email_verified: true}` |
+| 400 | `TOKEN_INVALID` | `token` query parameter absent or empty |
 | 401 | `TOKEN_INVALID` | Token not found · already used · expired · wrong purpose |
 
 ## 6. Edge cases and decisions
 
+- **The token is a query parameter, not a cookie** (api-contracts §1.7). This
+  URL is clicked straight out of an email client, so there is no cookie on the
+  request and nothing in the registration flow ever set one. The handler read
+  `magic_token` until this was corrected, which meant the link in **every**
+  verification email answered 400 without the use case ever running — a 400
+  that looked like an expired token and was in fact an endpoint that could
+  never succeed.
+
+  §1.3 reads a cookie because its flow differs: there the frontend receives the
+  login token and sets it before calling the endpoint. The two are not
+  interchangeable, which is the point of them being separate endpoints with
+  separate token purposes — and a cookie is deliberately **not** accepted here
+  as a fallback, because honouring both would hide that one of them never
+  worked.
 - **No session issued**: confirming an address must not be a login bypass. A
   verification link proves control; a login link grants access.
 - **Purpose isolation**: `ConsumeMagicToken` filters on `purpose = VERIFY_EMAIL`.
@@ -99,8 +114,14 @@ sequenceDiagram
 
 ## 7. Tests
 
-- [x] unit: valid token → 200, email_verified_at set, token consumed
-- [x] unit: missing cookie → 400
+- [x] unit: valid token in the query → 200 with `data {email_verified: true}`,
+      `email_verified_at` set, token consumed
+- [x] unit: missing `token` parameter → 400 `TOKEN_INVALID`
+- [x] unit: `?token=` empty → 400, which is what a mail template with an
+      unrendered variable produces
+- [x] unit: a `magic_token` cookie is **not** accepted in its place
+- [x] unit: the response envelope carries `meta.server_time`, like every other
+      route (see `envelope_test.go`)
 - [x] unit: expired token → 401
 - [x] unit: already-used token → 401
 - [x] unit: login-purpose token presented here → 401 (purpose mismatch)

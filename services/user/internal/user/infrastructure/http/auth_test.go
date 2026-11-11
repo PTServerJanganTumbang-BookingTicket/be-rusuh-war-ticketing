@@ -125,22 +125,46 @@ func TestVerifyMagicLink_Unauthorized(t *testing.T) {
 	assert.Equal(t, apperror.CodeTokenInvalid, metaOf(t, rec)["error_code"])
 }
 
+// The token is a QUERY PARAMETER (§1.7), because this URL is clicked out of an
+// email client: there is no cookie on that request, and nothing in the
+// registration flow ever set one. This handler used to read `magic_token`,
+// which meant every verification email's link answered 400.
 func TestVerifyEmail_Success(t *testing.T) {
 	mux, uc := newTestServer(t)
 	uc.EXPECT().VerifyEmail(gomock.Any(), "tok-xyz").Return(nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/auth/verify-email", nil)
-	req.AddCookie(&http.Cookie{Name: "magic_token", Value: "tok-xyz"})
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusOK, rec.Code)
+	rec := serve(mux, httptestNewGet("/auth/verify-email?token=tok-xyz"))
+	require.Equal(t, http.StatusOK, rec.Code)
+	// data {email_verified: true}, not a bare {}: the client reads a value
+	// instead of inferring success from the status code.
+	data := decode(t, rec)["data"].(map[string]any)
+	assert.Equal(t, true, data["email_verified"])
+	assert.Equal(t, "Email verified", metaOf(t, rec)["message"])
 }
 
-func TestVerifyEmail_RequiresCookie(t *testing.T) {
+func TestVerifyEmail_RequiresTheTokenQueryParameter(t *testing.T) {
 	mux, _ := newTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/auth/verify-email", nil)
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
+	rec := serve(mux, httptestNewGet("/auth/verify-email"))
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Equal(t, apperror.CodeTokenInvalid, metaOf(t, rec)["error_code"])
+}
+
+// A cookie is NOT accepted in its place. The two verify endpoints read
+// deliberately different channels, and honouring both here would quietly
+// re-create the path that could never work while hiding that it never did.
+func TestVerifyEmail_IgnoresTheMagicTokenCookie(t *testing.T) {
+	mux, _ := newTestServer(t)
+	req := httptestNewGet("/auth/verify-email")
+	req.AddCookie(&http.Cookie{Name: "magic_token", Value: "tok-xyz"})
+	rec := serve(mux, req)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// An empty token is the same as none: ?token= is what a mail client produces
+// from a template whose variable did not render.
+func TestVerifyEmail_EmptyTokenIsRefused(t *testing.T) {
+	mux, _ := newTestServer(t)
+	rec := serve(mux, httptestNewGet("/auth/verify-email?token="))
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
