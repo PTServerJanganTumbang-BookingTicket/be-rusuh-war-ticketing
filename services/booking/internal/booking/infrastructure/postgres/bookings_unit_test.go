@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -117,13 +118,21 @@ func (r *fakeRows) Scan(dest ...any) error {
 type fakeBatch struct {
 	first    pgx.Row
 	second   pgx.Rows
+	third    pgx.Row // the third statement of Page, the account (QueryRow, after the categories)
 	queryErr error
+	rowCalls int
 }
 
 func (b *fakeBatch) Exec() (pgconn.CommandTag, error) { return pgconn.CommandTag{}, nil }
 func (b *fakeBatch) Query() (pgx.Rows, error)         { return b.second, b.queryErr }
-func (b *fakeBatch) QueryRow() pgx.Row                { return b.first }
-func (b *fakeBatch) Close() error                     { return nil }
+func (b *fakeBatch) QueryRow() pgx.Row {
+	b.rowCalls++
+	if b.rowCalls == 2 {
+		return b.third
+	}
+	return b.first
+}
+func (b *fakeBatch) Close() error { return nil }
 
 func bookingRow(status string, booking, payment any) fakeRow {
 	return fakeRow{vals: []any{"RB-1", "evt_a", status, booking, payment}}
@@ -200,9 +209,9 @@ func TestThePageReadsTheEventAndItsCategoriesInOneBatch(t *testing.T) {
 		{"cat_vip", "VIP", "Dekat", int64(1500000), 2},
 		{"cat_fest", "Festival", "", int64(850000), 3},
 	}}}}
-	e, cats, found, err := newStore(f).Page(ctx, "evt_a")
-	if err != nil || !found {
-		t.Fatalf("found=%v err=%v", found, err)
+	e, cats, acct, found, err := newStore(f).Page(ctx, "evt_a", "")
+	if err != nil || !found || acct != nil {
+		t.Fatalf("found=%v account=%+v err=%v", found, acct, err)
 	}
 	if e != (domain.Event{ID: "evt_a", Name: "Konser A", Date: "2026-12-25", Venue: "GBK", ImageURL: "https://cdn/a.jpg"}) {
 		t.Fatalf("event = %+v", e)
@@ -221,11 +230,11 @@ func TestThePageReadsTheEventAndItsCategoriesInOneBatch(t *testing.T) {
 
 func TestAnUnknownEventIsNotFoundAndAnEventWithoutCategoriesHasNone(t *testing.T) {
 	f := &fakeDB{batch: &fakeBatch{first: fakeRow{err: pgx.ErrNoRows}, second: &fakeRows{}}}
-	if _, _, found, err := newStore(f).Page(ctx, "evt_none"); err != nil || found {
+	if _, _, _, found, err := newStore(f).Page(ctx, "evt_none", ""); err != nil || found {
 		t.Fatalf("found=%v err=%v, want not found", found, err)
 	}
 	f = &fakeDB{batch: &fakeBatch{first: eventRow(), second: &fakeRows{}}}
-	if _, cats, found, err := newStore(f).Page(ctx, "evt_a"); err != nil || !found || len(cats) != 0 {
+	if _, cats, _, found, err := newStore(f).Page(ctx, "evt_a", ""); err != nil || !found || len(cats) != 0 {
 		t.Fatalf("categories = %+v found=%v err=%v, want found with none", cats, found, err)
 	}
 }
@@ -239,7 +248,7 @@ func TestEveryStepOfThePageReportsItsDatabaseError(t *testing.T) {
 	}
 	for name, b := range cases {
 		t.Run(name, func(t *testing.T) {
-			if _, _, found, err := newStore(&fakeDB{batch: b}).Page(ctx, "evt_a"); !errors.Is(err, errDB) || found {
+			if _, _, _, found, err := newStore(&fakeDB{batch: b}).Page(ctx, "evt_a", ""); !errors.Is(err, errDB) || found {
 				t.Fatalf("found=%v err=%v, want the database error", found, err)
 			}
 		})
@@ -309,3 +318,47 @@ func TestEveryStepOfTheDetailReportsItsDatabaseError(t *testing.T) {
 }
 
 func newStore(f *fakeDB) *Store { return &Store{db: f} }
+
+func accountRow(email string, nik any) fakeRow { return fakeRow{vals: []any{email, nik}} }
+
+func TestAnAccountGrantReadsItsEmailAndMaskedNIKInTheSameBatch(t *testing.T) {
+	f := &fakeDB{batch: &fakeBatch{first: eventRow(), second: &fakeRows{}, third: accountRow("buyer@example.com", "3171********0022")}}
+	_, _, acct, found, err := newStore(f).Page(ctx, "evt_a", "acc_1")
+	if err != nil || !found || acct == nil || acct.Email != "buyer@example.com" || acct.NIKMasked == nil || *acct.NIKMasked != "3171********0022" {
+		t.Fatalf("account = %+v found=%v err=%v", acct, found, err)
+	}
+	if len(f.batched) != 3 || !reflect.DeepEqual(f.batched[2].Arguments, []any{"acc_1"}) ||
+		!strings.Contains(f.batched[2].SQL, "FROM accounts WHERE id = $1") {
+		t.Fatalf("batch = %+v, want the account as the third statement of the same batch", f.batched)
+	}
+}
+
+func TestAnAccountWithoutAVerifiedNIKHasANullMaskedNIK(t *testing.T) {
+	f := &fakeDB{batch: &fakeBatch{first: eventRow(), second: &fakeRows{}, third: accountRow("buyer@example.com", nil)}}
+	_, _, acct, _, err := newStore(f).Page(ctx, "evt_a", "acc_1")
+	if err != nil || acct == nil || acct.NIKMasked != nil {
+		t.Fatalf("account = %+v err=%v, want nik_masked nil", acct, err)
+	}
+}
+
+func TestAGuestPageSendsNoAccountStatement(t *testing.T) {
+	f := &fakeDB{batch: &fakeBatch{first: eventRow(), second: &fakeRows{}}}
+	if _, _, acct, _, err := newStore(f).Page(ctx, "evt_a", ""); err != nil || acct != nil || len(f.batched) != 2 {
+		t.Fatalf("account = %+v statements = %d err=%v, want a guest to read the event and categories only", acct, len(f.batched), err)
+	}
+}
+
+func TestAMissingAccountRowIsNotAnError(t *testing.T) {
+	f := &fakeDB{batch: &fakeBatch{first: eventRow(), second: &fakeRows{}, third: fakeRow{err: pgx.ErrNoRows}}}
+	_, _, acct, found, err := newStore(f).Page(ctx, "evt_a", "acc_gone")
+	if err != nil || !found || acct != nil {
+		t.Fatalf("account = %+v found=%v err=%v, want the page without an account", acct, found, err)
+	}
+}
+
+func TestAnAccountReadFailureIsReported(t *testing.T) {
+	f := &fakeDB{batch: &fakeBatch{first: eventRow(), second: &fakeRows{}, third: fakeRow{err: errDB}}}
+	if _, _, _, found, err := newStore(f).Page(ctx, "evt_a", "acc_1"); !errors.Is(err, errDB) || found {
+		t.Fatalf("found=%v err=%v, want the database error (never a logged-in customer rendered as a guest)", found, err)
+	}
+}

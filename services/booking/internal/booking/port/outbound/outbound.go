@@ -17,9 +17,10 @@ type Bookings interface {
 
 // Catalog is the event catalog (events, ticket_categories).
 type Catalog interface {
-	// Page reads the event and its categories in display order (sort_order, then id) in one round trip.
-	// found is false when the event does not exist.
-	Page(ctx context.Context, eventID string) (e domain.Event, cats []domain.Category, found bool, err error)
+	// Page reads the event and its categories in display order (sort_order, then id) in one round trip. For a
+	// logged-in grant (accountID not empty) the same round trip reads the account; acct is nil for a guest and when
+	// the account row no longer exists. found is false when the event does not exist.
+	Page(ctx context.Context, eventID, accountID string) (e domain.Event, cats []domain.Category, acct *domain.Account, found bool, err error)
 }
 
 // Stock reads the live seat counts in Redis.

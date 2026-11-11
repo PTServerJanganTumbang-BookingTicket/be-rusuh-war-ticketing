@@ -44,6 +44,14 @@ type Event struct {
 	ImageURL string
 }
 
+// Account is what the ticket page shows of a logged-in customer: the email that pre-fills contact_email and the
+// masked NIK offered for the first seat. NIKMasked is nil when the account has no verified NIK. The full NIK and its
+// hash are never read (NFR-11).
+type Account struct {
+	Email     string  `json:"email"`
+	NIKMasked *string `json:"nik_masked"`
+}
+
 // Category is one ticket category of an event, in display order.
 type Category struct {
 	ID          string

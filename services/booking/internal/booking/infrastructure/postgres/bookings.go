@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -84,12 +85,20 @@ func scanBooking(row pgx.Row) (domain.Booking, error) {
 	return b, nil
 }
 
-// Page reads the event and its categories in display order, sent as one batch (one round trip).
-func (s *Store) Page(ctx context.Context, eventID string) (domain.Event, []domain.Category, bool, error) {
+// accountSQL reads what the page shows of the account. nik_masked is only ever set together with a verified NIK
+// (accounts_nik_all_or_nothing), so no further condition is needed.
+const accountSQL = `SELECT email, nik_masked FROM accounts WHERE id = $1`
+
+// Page reads the event and its categories in display order, and for a logged-in grant the account, sent as one batch
+// (one round trip). A guest sends no account statement; an account row that is gone gives a nil account, not an error.
+func (s *Store) Page(ctx context.Context, eventID, accountID string) (domain.Event, []domain.Category, *domain.Account, bool, error) {
 	batch := &pgx.Batch{}
 	batch.Queue(`SELECT id, name, event_date, venue, image_url FROM events WHERE id = $1`, eventID)
 	batch.Queue(`SELECT id, name, description, price, max_per_order
 FROM ticket_categories WHERE event_id = $1 ORDER BY sort_order, id`, eventID)
+	if accountID != "" {
+		batch.Queue(accountSQL, accountID)
+	}
 	res := s.db.SendBatch(ctx, batch)
 	defer func() { _ = res.Close() }()
 
@@ -99,30 +108,44 @@ FROM ticket_categories WHERE event_id = $1 ORDER BY sort_order, id`, eventID)
 	)
 	err := res.QueryRow().Scan(&e.ID, &e.Name, &date, &e.Venue, &e.ImageURL)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return domain.Event{}, nil, false, nil
+		return domain.Event{}, nil, nil, false, nil
 	}
 	if err != nil {
-		return domain.Event{}, nil, false, fmt.Errorf("read event: %w", err)
+		return domain.Event{}, nil, nil, false, fmt.Errorf("read event: %w", err)
 	}
 	e.Date = date.Format(time.DateOnly)
 
 	rows, err := res.Query()
 	if err != nil {
-		return domain.Event{}, nil, false, fmt.Errorf("read categories: %w", err)
+		return domain.Event{}, nil, nil, false, fmt.Errorf("read categories: %w", err)
 	}
-	defer rows.Close()
 	var cats []domain.Category
 	for rows.Next() {
 		var c domain.Category
 		if err := rows.Scan(&c.ID, &c.Name, &c.Description, &c.Price, &c.MaxPerOrder); err != nil {
-			return domain.Event{}, nil, false, fmt.Errorf("read category: %w", err)
+			rows.Close()
+			return domain.Event{}, nil, nil, false, fmt.Errorf("read category: %w", err)
 		}
 		cats = append(cats, c)
 	}
+	rows.Close() // the batch hands out its results in order: the cursor must be closed before the next statement
 	if err := rows.Err(); err != nil {
-		return domain.Event{}, nil, false, fmt.Errorf("read categories: %w", err)
+		return domain.Event{}, nil, nil, false, fmt.Errorf("read categories: %w", err)
 	}
-	return e, cats, true, nil
+	if accountID == "" {
+		return e, cats, nil, true, nil
+	}
+	var acct domain.Account
+	err = res.QueryRow().Scan(&acct.Email, &acct.NIKMasked)
+	if errors.Is(err, pgx.ErrNoRows) {
+		slog.Warn("ticket page: grant of an account that no longer exists", slog.String("account", accountID))
+		return e, cats, nil, true, nil
+	}
+	if err != nil {
+		// Not a fallback to "guest": a logged-in customer must not be shown a page without their own account.
+		return domain.Event{}, nil, nil, false, fmt.Errorf("read account: %w", err)
+	}
+	return e, cats, &acct, true, nil
 }
 
 // detailSQL reads the booking and its event, bound to id AND grant_token (ADR-005 §12).

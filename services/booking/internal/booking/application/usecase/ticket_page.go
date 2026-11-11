@@ -29,6 +29,8 @@ type TicketPageView struct {
 	Session    SessionView    `json:"session"`
 	Categories []CategoryView `json:"categories"`
 	Rules      RulesView      `json:"rules"`
+	// Account pre-fills the form of a logged-in customer; null for a guest (api-contracts §4.1).
+	Account *domain.Account `json:"account"`
 }
 
 // EventView is data.event.
@@ -93,7 +95,7 @@ func (p *TicketPage) Get(ctx context.Context, g grantauth.Grant, eventID string)
 		return TicketPageView{}, grantauth.ErrInvalid()
 	}
 
-	ev, cats, found, err := p.d.Catalog.Page(ctx, eventID)
+	ev, cats, acct, found, err := p.d.Catalog.Page(ctx, eventID, g.AccountID)
 	if err != nil {
 		return TicketPageView{}, unavailable("read catalog", err)
 	}
@@ -121,6 +123,7 @@ func (p *TicketPage) Get(ctx context.Context, g grantauth.Grant, eventID string)
 		Session:    session(currentDeadline(b), now),
 		Categories: p.categories(cats, levels),
 		Rules:      RulesView{MaxTicketsPerOrder: p.maxPerOrder, OneNIKPerTicket: true},
+		Account:    acct,
 	}, nil
 }
 
