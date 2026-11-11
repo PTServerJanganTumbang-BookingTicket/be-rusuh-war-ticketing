@@ -61,12 +61,17 @@ func main() {
 	}
 	defer db.Close()
 
-	tick := usecase.NewTick(cfg.Tick, postgres.NewBookings(db), redisadapter.NewQueue(rdb), systemClock{}, logMetrics{})
+	bookings := postgres.NewBookings(db)
+	tick := usecase.NewTick(cfg.Tick, bookings, redisadapter.NewQueue(rdb), systemClock{}, logMetrics{})
 	tick.UseEvents(redisadapter.NewEventSource(rdb), cfg.EventRefresh)
+	// A held booking nobody starts paying for within 10 minutes expires, and its seats and NIK locks go back.
+	tick.WithHeldSweep(bookings, redisadapter.NewHolds(rdb))
 	slog.Info("admission-ctl starting", slog.Duration("interval", cfg.Tick.Interval), slog.Duration("eventRefresh", cfg.EventRefresh))
 
-	// Loop returns when ctx ends. SIGTERM lets the tick in flight finish: Loop only checks ctx between ticks,
-	// so a half-admitted customer is the exception (crash), and RECOVER finishes those on the next start.
+	// Loop returns when ctx ends. Loop only checks ctx between ticks, but the Redis and Aurora calls inside a tick use
+	// ctx too, so a SIGTERM can cut a tick short. A half-admitted customer is then the exception, and RECOVER finishes
+	// those on the next start. The HELD sweep alone runs on its own context (its rows are already EXPIRED when the
+	// release starts and nothing retries them).
 	tick.Loop(ctx)
 	slog.Info("admission-ctl stopped")
 }

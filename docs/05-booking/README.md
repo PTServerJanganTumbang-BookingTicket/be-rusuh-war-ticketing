@@ -76,6 +76,7 @@ keep its admission place for ever, so that sweep ships with the ticket page.
 | Create booking | `POST /bookings` |
 | Booking detail | `GET /bookings/{booking_id}` |
 | SELECTING → EXPIRED sweep | admission-ctl, right after the GRANTED → LAPSED sweep |
+| HELD → EXPIRED sweep | admission-ctl, third in the same timer: ends a hold nobody started paying for and gives its seats and NIK locks back |
 | Service wiring | real Aurora writer + Redis, config (`DATABASE_URL`, `REDIS_ADDR`, `DEVICE_PEPPER`, `JWT_SECRET`, `ETICKET_SIGNING_KEY`, `MAX_TICKETS_PER_TRANSACTION`), SAM template with VPC and secrets |
 
 `POST /bookings` is mounted behind the grant. It checks typed NIKs through nik-verify's internal Lambda event (B4d, open); the HELD → EXPIRED sweep that returns held seats (B4f) is not built yet.
@@ -87,6 +88,7 @@ keep its admission place for ever, so that sweep ships with the ticket page.
 | `0008_ticket_categories` | `ticket_categories` (price, capacity, `max_per_order`, `sort_order`, …) |
 | `0009_booking_domain` | `booking_items` (one row per seat, with the category name, price and masked NIK as bought), `nik_claims` (one NIK = one seat per event, a database rule), `tickets.booking_item_id` (one ticket per seat), the SELECTING deadline index, and email required **from HELD on** |
 | `0010_drop_terms_and_holder_email` | removes the terms columns and check from `bookings` and `holder_email` from `booking_items` (consent is recorded at registration; the buyer's email receives every e-ticket). `tickets.holder_email` stays: it is the e-ticket's address |
+| `0012_held_deadline_index` | the partial index the HELD → EXPIRED sweep reads (`bookings (payment_expires_at) WHERE status = 'HELD'`) |
 
 ## 5. What is left
 
@@ -97,7 +99,7 @@ keep its admission place for ever, so that sweep ships with the ticket page.
 | ~~B4c~~ | built: `pkg/nikformat` (shared `Normalize` / `IsValidFormat`), `rediskeys` `NIKUsed`, `hold_booking.lua` + `release_hold.lua` with `redisscript.Hold` / `Release`. [02 §4, §8](02-create-booking.md), [lua-scripts.md §4](../lua-scripts.md) |
 | **B4d** | booking side built: `NIKVerifier` port, Lambda-invoke adapter, local fake, config, IAM statement. **Open:** nik-verify's internal `{op: validate}` Lambda event (needs nik-verify's owner). Plan: [02 §3.1 step 4, §4](02-create-booking.md) |
 | ~~B4e~~ | built: `POST /bookings` (use case, handler, Redis hold and queue adapters, Postgres transaction, route). Until nik-verify's internal event ships (B4d), the deployed booking answers 503 for a typed NIK. [02](02-create-booking.md) |
-| **B4f** | HELD → EXPIRED sweep in admission-ctl, with migration `0012` (partial index). Can run next to B4e. Plan: [02 §3.4](02-create-booking.md) |
+| ~~B4f~~ | built: HELD → EXPIRED sweep in admission-ctl (stock and NIK locks given back after the commit), migration `0012`. Needs `0012` applied before the worker runs it. [02 §3.4](02-create-booking.md) |
 | **B5** | Stock reconciliation: repairs stock and NIK keys left held after a crash. Before the load test |
 | 07-payment | The webhook that sets `CONFIRMED`; the ticket issuer, which writes `tickets.holder_email` = the booking's `contact_email`; keep `grant:{token}` after `CONFIRMED` |
 | user-service | `GET /tickets/{ticket_id}/eticket?t=…` checks the link with `eticket.Verify` |

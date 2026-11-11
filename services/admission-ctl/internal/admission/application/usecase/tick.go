@@ -29,7 +29,13 @@ const (
 	MetricEventDiscoveryFailures = "EventDiscoveryFailures"
 	MetricLapsed                 = "BookingsLapsed"
 	MetricSelectingExpired       = "BookingsSelectingExpired"
-	GaugeQueueDepth              = "QueueDepth"
+	MetricHeldExpired            = "BookingsHeldExpired"
+	// MetricReleaseFailed counts a hold that could not be given back after its booking expired (Redis down): the stock
+	// and NIK keys stay held without a booking until stock reconciliation (B5) repairs them.
+	MetricReleaseFailed = "ReleaseFailed"
+	// MetricReleaseStockMissing counts a stock key that was gone when a hold was released (not recreated; B5 restores it).
+	MetricReleaseStockMissing = "ReleaseStockMissing"
+	GaugeQueueDepth           = "QueueDepth"
 )
 
 // Config holds the tunables of the tick (config.go in cmd/worker reads them from the environment).
@@ -63,6 +69,9 @@ type Tick struct {
 	clock    outbound.Clock
 	metrics  outbound.Metrics
 	events   map[string]*eventState
+
+	held  outbound.HeldBookings // nil: the HELD sweep is off (WithHeldSweep)
+	holds outbound.Holds
 
 	source       outbound.Events // nil: tick cfg.Events
 	refreshEvery time.Duration

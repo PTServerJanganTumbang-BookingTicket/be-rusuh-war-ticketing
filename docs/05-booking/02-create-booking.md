@@ -251,6 +251,11 @@ seat count per category from `booking_items` (§3.2a). After `COMMIT`, per booki
 category's stock and deletes `nik:used` in Redis, then `DEL grant:{token}`.
 `AWAITING_PAYMENT` and `PENDING_CANCELLATION` (a payment is in flight) belong to 07-payment, which asks Midtrans first.
 
+The HELD sweep runs on a context the controller's shutdown cannot cancel, with its own 15 s deadline: once the transaction has
+committed the bookings are `EXPIRED` and nothing retries them, so a SIGTERM during a rolling deploy must not cancel the
+release and leak their stock and NIK locks. A booking with NIK claims but no seats counts as `ReleaseFailed` (the script
+needs the categories). The deadline comes from the controller's clock, as in the other two sweeps.
+
 ```mermaid
 sequenceDiagram
     autonumber
@@ -402,9 +407,9 @@ Integration (real Postgres + Redis cluster):
       (when it was the last seat of the event), stock ends at 0, never below
 - [x] two bookings with the same NIK: one wins, the other `NIK_ALREADY_USED`; `nik_claims` refuses a forced second row
 - [ ] submit at the deadline while the SELECTING sweep runs: exactly one wins; if the sweep wins, no stock or NIK is held
-- [ ] HELD sweep: a failure after the `UPDATE` rolls the status back too, so no `EXPIRED` booking keeps its `nik_claims`
+- [x] HELD sweep: a failure after the `UPDATE` rolls the status back too, so no `EXPIRED` booking keeps its `nik_claims` (unit test on a fake transaction)
 - [x] a `nik_claims` conflict inside the hold transaction rolls back, releases the hold and answers `NIK_ALREADY_USED`
-- [ ] HELD sweep: past `payment_expires_at` → `EXPIRED`, stock back, NIK keys and claims gone, grant gone; one second before,
+- [x] HELD sweep: past `payment_expires_at` → `EXPIRED`, stock back, NIK keys and claims gone, grant gone; one second before,
       untouched; `AWAITING_PAYMENT` never touched; two sweepers end it once; the sweep query uses its partial index
 
 ## 8. Tasks
@@ -420,9 +425,9 @@ Integration (real Postgres + Redis cluster):
       `NIK_VERIFY_TIMEOUT_MS` in config; template env and the `lambda:InvokeFunction` statement
 - [x] B4c: `rediskeys` builder for `nik:used`, `hold_booking.lua` + `release_hold.lua`
       (`docs/lua-scripts.md`)
-- [ ] B4f: migration `0012` with the HELD → EXPIRED sweep: partial index `bookings (payment_expires_at) WHERE status = 'HELD'`
+- [x] B4f: migration `0012` with the HELD → EXPIRED sweep: partial index `bookings (payment_expires_at) WHERE status = 'HELD'`
 - [x] B4e: tests and the use case `CreateBooking` (`application/usecase/create_booking.go`), the handler, the Redis hold and queue adapters, the Postgres `Orders` (`infrastructure/postgres/orders.go`), and mounting `POST /bookings`
-- [ ] B4f: HELD sweep in admission-ctl
+- [x] B4f: HELD sweep in admission-ctl (`ExpireHeldDue` in `infrastructure/postgres/held.go`, `Holds.Release` in `infrastructure/redis/holds.go`, `Tick.WithHeldSweep`)
 - [ ] `make verify`; fresh-subagent review (Lua + admission-ctl), `/code-review` (booking)
 - [ ] 07-payment: the ticket issuer fills `tickets.holder_email` (kept, migration `0002`) and the email payload with
       the booking's `contact_email`

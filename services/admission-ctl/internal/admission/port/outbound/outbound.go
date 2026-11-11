@@ -20,6 +20,21 @@ type Bookings interface {
 	ExpireSelectingDue(ctx context.Context, now time.Time) ([]domain.Ended, error)
 }
 
+// HeldBookings is the Aurora side of the HELD → EXPIRED sweep (docs/05-booking/02-create-booking.md §3.4).
+type HeldBookings interface {
+	// ExpireHeldDue moves every HELD booking whose payment_expires_at <= now to EXPIRED and deletes its nik_claims, in one
+	// transaction, and returns each with what it held. Once: a row another sweeper or the payment service already
+	// moved no longer matches. AWAITING_PAYMENT and PENDING_CANCELLATION (a payment is in flight) are never touched.
+	ExpireHeldDue(ctx context.Context, now time.Time) ([]domain.EndedHold, error)
+}
+
+// Holds is the Redis side of the same sweep: it gives an expired booking's seats and NIK locks back, once.
+type Holds interface {
+	// Release adds the held seats back to stock:{ev}:<category> and deletes the nik:used keys, atomically. A stock key
+	// that is gone is not recreated; stockMissing counts them (stock reconciliation restores them).
+	Release(ctx context.Context, h domain.EndedHold) (stockMissing int, err error)
+}
+
 // Queue is the Redis side. Every method is one Redis round trip (or one atomic script).
 type Queue interface {
 	// Snapshot reads now_serving and issued in one call. Missing fields are 0.

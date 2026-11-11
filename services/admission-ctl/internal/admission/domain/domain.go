@@ -33,6 +33,20 @@ type Ended struct {
 	GrantToken string
 }
 
+// SeatCount is the number of seats a held booking took in one category.
+type SeatCount struct {
+	CategoryID string
+	Qty        int64
+}
+
+// EndedHold is a HELD booking the sweep just expired (nobody started paying within 10 minutes), with what its hold took
+// and must give back: the seats per category from booking_items and the NIK hashes of the claims that were deleted.
+type EndedHold struct {
+	Ended
+	Seats []SeatCount
+	NIKs  []string
+}
+
 // Event is one sale the controller ticks.
 type Event struct {
 	ID         string
