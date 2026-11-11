@@ -66,17 +66,19 @@ func (s *EventSource) Discover(ctx context.Context) ([]domain.Event, error) {
 
 // scan lists the keys matching pattern on every master (a cluster client) or on the one node.
 func (s *EventSource) scan(ctx context.Context, pattern string) ([]string, error) {
+	return scanKeys(ctx, s.rdb, pattern)
+}
+
+// scanKeys lists the keys matching pattern on every master (a cluster client) or on the one node. A cluster client's own
+// SCAN would visit one node only.
+func scanKeys(ctx context.Context, rdb goredis.UniversalClient, pattern string) ([]string, error) {
 	var (
 		mu   sync.Mutex
 		keys []string
 	)
 	one := func(ctx context.Context, c *goredis.Client) error {
-		var local []string
-		it := c.Scan(ctx, 0, pattern, scanCount).Iterator()
-		for it.Next(ctx) {
-			local = append(local, it.Val())
-		}
-		if err := it.Err(); err != nil {
+		local, err := scanNode(ctx, c, pattern)
+		if err != nil {
 			return err
 		}
 		mu.Lock()
@@ -84,7 +86,7 @@ func (s *EventSource) scan(ctx context.Context, pattern string) ([]string, error
 		mu.Unlock()
 		return nil
 	}
-	switch c := s.rdb.(type) {
+	switch c := rdb.(type) {
 	case *goredis.ClusterClient:
 		if err := c.ForEachMaster(ctx, one); err != nil {
 			return nil, err
@@ -94,9 +96,36 @@ func (s *EventSource) scan(ctx context.Context, pattern string) ([]string, error
 			return nil, err
 		}
 	default:
-		return nil, fmt.Errorf("event discovery does not support %T", s.rdb)
+		return nil, fmt.Errorf("key scan does not support %T", rdb)
 	}
 	return keys, nil
+}
+
+// scanKeysOf lists the keys matching pattern on the one node that owns ownerKey's slot. Every key of an event carries the
+// {ev} hash tag, so they all live on one node, and scanning only that node avoids walking every master's keyspace.
+func scanKeysOf(ctx context.Context, rdb goredis.UniversalClient, ownerKey, pattern string) ([]string, error) {
+	switch c := rdb.(type) {
+	case *goredis.ClusterClient:
+		node, err := c.MasterForKey(ctx, ownerKey)
+		if err != nil {
+			return nil, err
+		}
+		return scanNode(ctx, node, pattern)
+	case *goredis.Client:
+		return scanNode(ctx, c, pattern)
+	default:
+		return nil, fmt.Errorf("key scan does not support %T", rdb)
+	}
+}
+
+// scanNode lists the keys matching pattern on one node.
+func scanNode(ctx context.Context, c *goredis.Client, pattern string) ([]string, error) {
+	var keys []string
+	it := c.Scan(ctx, 0, pattern, scanCount).Iterator()
+	for it.Next(ctx) {
+		keys = append(keys, it.Val())
+	}
+	return keys, it.Err()
 }
 
 // eventOfQueueKey reads the id out of "queue:{id}". It rejects "queue:{id}:by_ticket" and anything else.

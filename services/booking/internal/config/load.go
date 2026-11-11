@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/envutil"
 )
@@ -29,9 +30,17 @@ func Load() (Config, error) {
 			Password: os.Getenv("REDIS_PASSWORD"),
 			Cluster:  envutil.EnvBool("REDIS_CLUSTER", true),
 		},
-		Grant: Grant{DevicePepper: []byte(os.Getenv("DEVICE_PEPPER"))},
+		Grant: Grant{
+			DevicePepper: []byte(os.Getenv("DEVICE_PEPPER")),
+			JWTSecret:    jwtSecret(envutil.Env("APP_ENV", "local")),
+		},
+		NIKVerify: NIKVerify{
+			FunctionName: os.Getenv("NIK_VERIFY_FUNCTION_NAME"),
+			Timeout:      time.Duration(envutil.EnvInt("NIK_VERIFY_TIMEOUT_MS", 3000)) * time.Millisecond,
+		},
 		Booking: Booking{
 			MaxTicketsPerTransaction: envutil.EnvInt("MAX_TICKETS_PER_TRANSACTION", 3),
+			NIKLockTTL:               envutil.EnvDuration("SALE_WINDOW_SECONDS", 6*time.Hour),
 			ETicketSigningKey:        []byte(os.Getenv("ETICKET_SIGNING_KEY")),
 		},
 	}
@@ -40,6 +49,20 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// localJWTSecret is user-service's example.env value, so a token from the local login verifies on the local booking.
+// Never used outside APP_ENV=local: a default signing key is a forged-token generator.
+const localJWTSecret = "local-dev-jwt-secret-not-for-any-deployed-environment"
+
+func jwtSecret(appEnv string) string {
+	if v := os.Getenv("JWT_SECRET"); v != "" {
+		return v
+	}
+	if appEnv == "local" {
+		return localJWTSecret
+	}
+	return ""
 }
 
 func (c Config) validate() error {
@@ -58,11 +81,23 @@ func (c Config) validate() error {
 	if c.App.Env != "local" && len(c.Grant.DevicePepper) == 0 {
 		errs = append(errs, errors.New("DEVICE_PEPPER is required outside local: without queue's pepper every guest gets DEVICE_MISMATCH"))
 	}
+	if c.Grant.JWTSecret == "" {
+		errs = append(errs, errors.New("JWT_SECRET is required outside local: a known signing key forges sessions"))
+	}
 	if c.App.Env != "local" && len(c.Booking.ETicketSigningKey) == 0 {
 		errs = append(errs, errors.New("ETICKET_SIGNING_KEY is required outside local: e-ticket links must verify in user-service"))
 	}
+	if c.App.Env != "local" && c.NIKVerify.FunctionName == "" {
+		errs = append(errs, errors.New("NIK_VERIFY_FUNCTION_NAME is required outside local: the local fake must never check a NIK in a deployed environment"))
+	}
+	if c.NIKVerify.Timeout < time.Millisecond {
+		errs = append(errs, fmt.Errorf("NIK_VERIFY_TIMEOUT_MS must be at least 1, got %d", c.NIKVerify.Timeout.Milliseconds()))
+	}
 	if c.DB.MaxConns < 1 {
 		errs = append(errs, fmt.Errorf("DATABASE_MAX_CONNS must be at least 1, got %d", c.DB.MaxConns))
+	}
+	if c.Booking.NIKLockTTL < time.Second {
+		errs = append(errs, errors.New("SALE_WINDOW_SECONDS must be at least 1: a NIK lock without an expiry would leak for ever"))
 	}
 	if c.Booking.MaxTicketsPerTransaction < 1 {
 		errs = append(errs, fmt.Errorf("MAX_TICKETS_PER_TRANSACTION must be at least 1, got %d", c.Booking.MaxTicketsPerTransaction))

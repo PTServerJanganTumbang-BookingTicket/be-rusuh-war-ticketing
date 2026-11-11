@@ -91,6 +91,16 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/rusuh-${Environment}-booking:*
+        # POST /bookings checks typed NIKs by invoking nik-verify directly (no HTTP route, so the NIK hash never reaches a
+        # browser). This one function only. The call leaves the VPC through the NAT gateway; with NAT off the foundation
+        # needs an interface endpoint com.amazonaws.<region>.lambda.
+        - PolicyName: InvokeNikVerify
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:rusuh-${Environment}-nik-verify
 
   # ============================================================================
   # Lambda Function
@@ -126,6 +136,12 @@ Resources:
           MAX_TICKETS_PER_TRANSACTION: "3"
           DATABASE_URL: !Sub '{{resolve:secretsmanager:rusuh-${Environment}/database-url:SecretString:url}}'
           DEVICE_PEPPER: !Sub '{{resolve:secretsmanager:${DevicePepperSecretArn}:SecretString}}'
+          # Same secret user-service signs access tokens with and queue verifies with; grantauth checks account grants.
+          NIK_VERIFY_FUNCTION_NAME: !Sub rusuh-${Environment}-nik-verify
+          NIK_VERIFY_TIMEOUT_MS: "3000"
+          # A NIK lock whose booking never completes blocks that NIK for at most the sale window (same value as queue).
+          SALE_WINDOW_SECONDS: "21600"
+          JWT_SECRET: !Sub '{{resolve:secretsmanager:rusuh-${Environment}/jwt-signing:SecretString}}'
           ETICKET_SIGNING_KEY: !Sub '{{resolve:secretsmanager:${ETicketSigningKeySecretArn}:SecretString}}'
 
   # ============================================================================

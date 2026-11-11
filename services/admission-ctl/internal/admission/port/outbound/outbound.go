@@ -20,6 +20,50 @@ type Bookings interface {
 	ExpireSelectingDue(ctx context.Context, now time.Time) ([]domain.Ended, error)
 }
 
+// HeldBookings is the Aurora side of the HELD → EXPIRED sweep (docs/05-booking/02-create-booking.md §3.4).
+type HeldBookings interface {
+	// ExpireHeldDue moves every HELD booking whose payment_expires_at <= now to EXPIRED and deletes its nik_claims, in one
+	// transaction, and returns each with what it held. Once: a row another sweeper or the payment service already
+	// moved no longer matches. AWAITING_PAYMENT and PENDING_CANCELLATION (a payment is in flight) are never touched.
+	ExpireHeldDue(ctx context.Context, now time.Time) ([]domain.EndedHold, error)
+}
+
+// Holds is the Redis side of the same sweep: it gives an expired booking's seats and NIK locks back, once.
+type Holds interface {
+	// Release adds the held seats back to stock:{ev}:<category> and deletes the nik:used keys, atomically. A stock key
+	// that is gone is not recreated; stockMissing counts them (stock reconciliation restores them).
+	Release(ctx context.Context, h domain.EndedHold) (stockMissing int, err error)
+}
+
+// ReconcileBookings is the Aurora side of stock reconciliation (docs/05-booking/04-stock-reconciliation.md). Writer pool:
+// a replica's lag would read a fresh booking as missing and look like a leak.
+type ReconcileBookings interface {
+	// StockExpectations returns, per category of the event (from ticket_categories, not from Redis), its capacity and the
+	// seats taken by bookings in HELD, AWAITING_PAYMENT, PENDING_CANCELLATION or CONFIRMED.
+	StockExpectations(ctx context.Context, eventID string) ([]domain.StockExpectation, error)
+	// ClaimedNIKs lists the nik_hmac of every nik_claims row of the event.
+	ClaimedNIKs(ctx context.Context, eventID string) ([]string, error)
+}
+
+// StockRepair is the Redis side of stock reconciliation.
+type StockRepair interface {
+	// Levels reads stock:{ev}:<category> for every category in one call. missing lists the categories whose key is gone or
+	// is not a plain integer.
+	Levels(ctx context.Context, eventID string, categories []string) (levels map[string]int64, missing []string, err error)
+	// Restore sets a stock key that is gone to value, only if it is still absent (SET NX). restored is false when the key
+	// came back in the meantime.
+	Restore(ctx context.Context, eventID, category string, value int64) (restored bool, err error)
+	// Adjust adds delta only if the key still holds observed, never below zero (adjust_if_unchanged.lua).
+	Adjust(ctx context.Context, eventID, category string, observed, delta int64) (domain.AdjustResult, error)
+	// MissingLocks returns the hashes among hmacs whose nik:used key does not exist.
+	MissingLocks(ctx context.Context, eventID string, hmacs []string) ([]string, error)
+	// RestoreLock sets nik:used:{ev}:<hmac> with the TTL, only if it is absent (SET NX EX).
+	RestoreLock(ctx context.Context, eventID, hmac string, ttl time.Duration) (restored bool, err error)
+	// CountOrphans counts the event's nik:used keys whose hash is not in claimed. They are never deleted: one may belong to
+	// a hold that has not committed yet.
+	CountOrphans(ctx context.Context, eventID string, claimed map[string]struct{}) (int, error)
+}
+
 // Queue is the Redis side. Every method is one Redis round trip (or one atomic script).
 type Queue interface {
 	// Snapshot reads now_serving and issued in one call. Missing fields are 0.

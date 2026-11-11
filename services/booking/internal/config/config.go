@@ -1,13 +1,16 @@
 package config
 
+import "time"
+
 // Config is the root configuration for the application.
 type Config struct {
-	App     App
-	Log     Log
-	DB      DB
-	Redis   Redis
-	Grant   Grant
-	Booking Booking
+	App       App
+	Log       Log
+	DB        DB
+	Redis     Redis
+	Grant     Grant
+	Booking   Booking
+	NIKVerify NIKVerify
 }
 
 // App holds general application settings.
@@ -38,10 +41,18 @@ type Redis struct {
 // Grant configures pkg/grantauth.
 type Grant struct {
 	DevicePepper []byte // DEVICE_PEPPER, the same value queue's join uses
+	JWTSecret    string // JWT_SECRET, the key user-service signs access tokens with (account grants, ADR-006 §8.17)
+}
+
+// NIKVerify configures the call to nik-verify (docs/05-booking/02-create-booking.md §3.1 step 4).
+type NIKVerify struct {
+	FunctionName string        // NIK_VERIFY_FUNCTION_NAME: the Lambda to invoke; empty only in local (the fake runs)
+	Timeout      time.Duration // NIK_VERIFY_TIMEOUT_MS: deadline of one check, cold start included
 }
 
 // Booking holds the purchase rules and the e-ticket link key.
 type Booking struct {
-	MaxTicketsPerTransaction int    // BR-01
-	ETicketSigningKey        []byte // ETICKET_SIGNING_KEY, the same key notification and user-service use
+	MaxTicketsPerTransaction int           // BR-01
+	ETicketSigningKey        []byte        // ETICKET_SIGNING_KEY, the same key notification and user-service use
+	NIKLockTTL               time.Duration // SALE_WINDOW_SECONDS: the longest a NIK lock may block a NIK if its booking never completes
 }

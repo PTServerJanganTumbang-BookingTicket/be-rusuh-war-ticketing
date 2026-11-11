@@ -1,24 +1,75 @@
 package grantauth_test
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/grantauth"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/rediskeys"
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/token"
 )
 
 var pepper = []byte("test-pepper")
 
 const device = "d3f1a9c4b70e42f88a1c5e6072b9d4af"
+
+const expiredToken = "expired.jwt.token"
+
+// sessions signs with one secret; other signs with another, so its tokens must be refused. The verifier answers
+// ErrExpired for expiredToken, which an Issuer cannot produce without waiting.
+var (
+	sessions = mustIssuer("session-secret")
+	other    = mustIssuer("another-secret")
+)
+
+func mustIssuer(secret string) *token.Issuer {
+	i, err := token.NewIssuer(secret, "rusuh-user", time.Hour)
+	if err != nil {
+		panic(err)
+	}
+	return i
+}
+
+type verifier struct{}
+
+func (verifier) Verify(raw string) (token.Claims, error) {
+	if raw == expiredToken {
+		return token.Claims{}, token.ErrExpired
+	}
+	return sessions.Verify(raw)
+}
+
+func bearer(t *testing.T, i *token.Issuer, account string) map[string]string {
+	t.Helper()
+	tok, _, err := i.Issue(account, account+"@example.com", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return map[string]string{"Authorization": "Bearer " + tok}
+}
+
+func with(h map[string]string, kv ...string) map[string]string {
+	out := map[string]string{}
+	for k, v := range h {
+		out[k] = v
+	}
+	for i := 0; i < len(kv); i += 2 {
+		out[kv[i]] = kv[i+1]
+	}
+	return out
+}
 
 type rig struct {
 	mr      *miniredis.Miniredis
@@ -39,7 +90,7 @@ func newRig(t *testing.T) *rig {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
-	r.handler = grantauth.Middleware(rdb, grantauth.Config{DevicePepper: pepper})(next)
+	r.handler = grantauth.Middleware(rdb, grantauth.Config{DevicePepper: pepper, Tokens: verifier{}})(next)
 	return r
 }
 
@@ -134,7 +185,7 @@ func TestAGuestGrantFromItsOwnDevicePassesWithEveryField(t *testing.T) {
 func TestALoggedInGrantPassesWithoutADeviceID(t *testing.T) {
 	r := newRig(t)
 	r.accountGrant("gt_acc")
-	rec := r.call(t, map[string]string{grantauth.HeaderGrantToken: "gt_acc"})
+	rec := r.call(t, with(bearer(t, sessions, "acc_1"), grantauth.HeaderGrantToken, "gt_acc"))
 	if rec.Code != http.StatusNoContent || r.got == nil || r.got.AccountID != "acc_1" || r.got.DeviceHash != "" {
 		t.Fatalf("status = %d, grant = %+v; want a pass with account acc_1", rec.Code, r.got)
 	}
@@ -172,5 +223,126 @@ func TestDeviceHashIsTheHexHMACQueueJoinStores(t *testing.T) {
 	}
 	if got := grantauth.DeviceHash(pepper, ""); got != "" {
 		t.Fatalf("an empty device id must hash to empty, got %q", got)
+	}
+}
+
+func TestAnAccountGrantWithoutAnAuthorizationHeaderIsUnauthorized(t *testing.T) {
+	r := newRig(t)
+	r.accountGrant("gt_acc")
+	assertError(t, r.call(t, map[string]string{grantauth.HeaderGrantToken: "gt_acc"}), http.StatusUnauthorized, grantauth.CodeUnauthorized)
+}
+
+func TestAnAccountGrantWithAnUnreadableAuthorizationHeaderIsATokenInvalid(t *testing.T) {
+	for name, header := range map[string]string{"basic scheme": "Basic abc", "no token": "Bearer ", "bare word": "Bearer", "garbage": "Bearer not-a-jwt"} {
+		t.Run(name, func(t *testing.T) {
+			r := newRig(t)
+			r.accountGrant("gt_acc")
+			assertError(t, r.call(t, map[string]string{grantauth.HeaderGrantToken: "gt_acc", "Authorization": header}),
+				http.StatusUnauthorized, grantauth.CodeTokenInvalid)
+		})
+	}
+}
+
+func TestAnAccountGrantWithAnExpiredTokenIsTokenExpired(t *testing.T) {
+	r := newRig(t)
+	r.accountGrant("gt_acc")
+	assertError(t, r.call(t, map[string]string{grantauth.HeaderGrantToken: "gt_acc", "Authorization": "Bearer " + expiredToken}),
+		http.StatusUnauthorized, grantauth.CodeTokenExpired)
+}
+
+func TestAnAccountGrantWithATokenSignedByAnotherSecretIsATokenInvalid(t *testing.T) {
+	r := newRig(t)
+	r.accountGrant("gt_acc")
+	assertError(t, r.call(t, with(bearer(t, other, "acc_1"), grantauth.HeaderGrantToken, "gt_acc")),
+		http.StatusUnauthorized, grantauth.CodeTokenInvalid)
+}
+
+func TestAnAccountGrantWithTheValidTokenOfAnotherAccountIsUnauthorized(t *testing.T) {
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	r := newRig(t)
+	r.accountGrant("gt_acc")
+	defer func() {
+		if !strings.Contains(logs.String(), "metric=GrantAccountMismatch") {
+			t.Errorf("log = %q, want metric=GrantAccountMismatch", logs.String())
+		}
+	}()
+	assertError(t, r.call(t, with(bearer(t, sessions, "acc_2"), grantauth.HeaderGrantToken, "gt_acc")),
+		http.StatusUnauthorized, grantauth.CodeUnauthorized)
+	if r.got != nil {
+		t.Fatal("the handler must not run for another account's session")
+	}
+}
+
+func TestAnAccountGrantWithItsOwnTokenPassesAndTheGrantKeepsItsAccount(t *testing.T) {
+	r := newRig(t)
+	r.accountGrant("gt_acc")
+	// a device id, if sent, is not checked for an account grant
+	rec := r.call(t, with(bearer(t, sessions, "acc_1"), grantauth.HeaderGrantToken, "gt_acc", grantauth.HeaderDeviceID, "whatever"))
+	want := grantauth.Grant{Token: "gt_acc", EventID: "evt_a", BookingID: "RB-2", QueueToken: "qt_2", AccountID: "acc_1"}
+	if rec.Code != http.StatusNoContent || r.got == nil || *r.got != want {
+		t.Fatalf("status = %d, grant = %+v; want a pass with %+v", rec.Code, r.got, want)
+	}
+}
+
+func TestAGuestGrantIgnoresTheAuthorizationHeader(t *testing.T) {
+	headers := map[string]map[string]string{
+		"none":             {},
+		"a valid token":    bearer(t, sessions, "acc_9"),
+		"an invalid token": {"Authorization": "Bearer not-a-jwt"},
+		"an expired token": {"Authorization": "Bearer " + expiredToken},
+		"another scheme":   {"Authorization": "Basic abc"},
+	}
+	for name, h := range headers {
+		t.Run(name, func(t *testing.T) {
+			r := newRig(t)
+			r.guestGrant("gt_guest")
+			rec := r.call(t, with(h, grantauth.HeaderGrantToken, "gt_guest", grantauth.HeaderDeviceID, device))
+			if rec.Code != http.StatusNoContent || r.got == nil || r.got.DeviceHash == "" {
+				t.Fatalf("status = %d, grant = %+v; want a pass as the guest", rec.Code, r.got)
+			}
+		})
+	}
+}
+
+func TestADeadGrantIsReportedBeforeABadToken(t *testing.T) {
+	r := newRig(t)
+	assertError(t, r.call(t, map[string]string{grantauth.HeaderGrantToken: "gt_nope", "Authorization": "Bearer not-a-jwt"}),
+		http.StatusUnauthorized, grantauth.CodeGrantTokenInvalid)
+}
+
+func TestTheMiddlewareRefusesToBuildWithoutATokenVerifier(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("Middleware without Tokens must panic at construction, not fail the first account request")
+		}
+	}()
+	grantauth.Middleware(nil, grantauth.Config{DevicePepper: pepper})
+}
+
+func TestBearerTokenReadsTheSchemeCaseInsensitivelyAndTrimsTheToken(t *testing.T) {
+	cases := []struct {
+		header string
+		token  string
+		ok     bool
+	}{
+		{"", "", true},
+		{"Bearer abc", "abc", true},
+		{"bearer abc", "abc", true},
+		{"Bearer  abc ", "abc", true},
+		{"Bearer", "", false},
+		{"Bearer ", "", false},
+		{"Bearer    ", "", false}, // whitespace only: rejected, not a silent guest
+		{"Basic abc", "", false},
+		{"Bearer abc.def.ghi", "abc.def.ghi", true},
+		{"abc", "", false},
+	}
+	for _, c := range cases {
+		tok, ok := grantauth.BearerToken(c.header)
+		if tok != c.token || ok != c.ok {
+			t.Errorf("BearerToken(%q) = (%q, %v), want (%q, %v)", c.header, tok, ok, c.token, c.ok)
+		}
 	}
 }

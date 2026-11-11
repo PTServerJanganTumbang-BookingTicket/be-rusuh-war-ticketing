@@ -12,9 +12,9 @@ Sources: ADR-006 §3.4, §4.1, §8.12 (§8.11 `free_slots` removed by §8.14) ·
 | `advance_now_serving.lua` | **built** (`pkg/redisscript`) | admission-ctl only | every 500 ms tick, per event | decide how many people to let in, raise `now_serving` |
 | `hset_if_exists.lua` | **built** (`pkg/redisscript`) | admission-ctl (FINISH) | after a customer's booking row exists | copy the grant into `token:<queue_token>` only if that hash still exists, so an expired token is never recreated without a TTL |
 | token-bucket rate limiter | **built** (Lua embedded in `pkg/ratelimit/ratelimit.go`) | join (per IP and per account), sse-server (per IP); user and nik-verify have their own limiters | on every request that passes a limiter | refill the bucket by elapsed time and take one token, atomically |
-| `hold_booking.lua` | planned (`05-booking/02-create-booking.md`) | booking service | the customer presses Pay (`POST /bookings`) | reserve stock across categories and lock every seat's NIK, all or nothing |
-| `release_hold.lua` | planned (same plan) | booking service, admission-ctl | the booking transaction fails after the hold, or a `HELD` booking expires | give the stock back and delete the NIK locks |
-| `adjust_if_unchanged.lua` | planned (admission-ctl plan) | admission-ctl, stock reconciliation | periodic correction of stock counters | correct a counter only if it still has the value that was read |
+| `hold_booking.lua` | built (`05-booking/02-create-booking.md`) | booking service | the customer presses Pay (`POST /bookings`) | reserve stock across categories and lock every seat's NIK, all or nothing |
+| `release_hold.lua` | built (same plan) | booking service, admission-ctl | the booking transaction fails after the hold, or a `HELD` booking expires | give the stock back and delete the NIK locks |
+| `adjust_if_unchanged.lua` | built (`05-booking/04-stock-reconciliation.md`) | admission-ctl, stock reconciliation | periodic correction of stock counters | correct a counter only if it still has the value that was read |
 
 ```mermaid
 flowchart LR
@@ -79,34 +79,48 @@ It never removes tokens from `by_ticket`. A member whose score is ≤ `now_servi
 
 Join and sse-server use `pkg/ratelimit`. The user and nik-verify services have their own limiters, which are Handoko's work and not covered here.
 
-## 4. `hold_booking.lua` and `release_hold.lua` (planned)
+## 4. `hold_booking.lua` and `release_hold.lua`
 
-**Spec:** `docs/05-booking/02-create-booking.md` §3.2 · **Code:** `pkg/redisscript/` (not written yet)
+**Spec:** `docs/05-booking/02-create-booking.md` §3.2 · **Code:** `pkg/redisscript/hold_booking.lua`, `release_hold.lua`, `hold.go` (`Hold`, `Release`)
 
 **`hold_booking.lua` — what for.** Take the seats when the customer presses Pay. Three phases, in one atomic call:
 1. check **every** category has enough stock (a missing key is `STOCK_UNINITIALIZED`, not zero) before changing anything;
 2. lock each seat's NIK with `SET NX EX`; one already taken undoes the locks made so far;
 3. decrement the stock; a negative count (`STOCK_NEGATIVE`) undoes everything.
 
-It answers `HELD`, `NO_STOCK` (with the category index), `NIK_TAKEN` (with the seat index), or a guard code. It never
+It answers `{code, index}`: `HELD`, `NO_STOCK` (category index), `STOCK_UNINITIALIZED` (category index; it wins over a
+category that is merely short), `NIK_TAKEN` (seat index), `STOCK_NEGATIVE` (category index, everything undone), or a
+guard (`QTY_INVALID`, `QTY_EXCEEDED`, `NIK_COUNT_MISMATCH`). A stock value that is not a plain integer counts as
+`STOCK_UNINITIALIZED`. Indexes count from 0 in the order of the request. It never
 touches `queue:{ev}`.
+
+**Call shape.** `KEYS` = `stock:{ev}:<cat>` per category, then `nik:used:{ev}:<hmac>` per seat. `ARGV` = number of
+categories, number of NIKs, the per-order limit, the NIK lock TTL in seconds, then one quantity per category. A category
+appears once per call (booking adds up the seats of a category); a repeat that would drive the stock below zero is
+caught by `STOCK_NEGATIVE`. The NIK lock TTL is required: a lock without an expiry would live for ever.
 
 **When.** Once per `POST /bookings`, inside the booking transaction, after the booking row is locked (the booking moves
 `SELECTING → HELD`).
 
 **`release_hold.lua` — what for.** The reverse: add the stock back and delete the NIK locks, in one call. Used when the
-booking transaction fails after the hold, and by the HELD → EXPIRED sweep.
+booking transaction fails after the hold, and by the HELD → EXPIRED sweep. **Call it once per hold:** it adds the stock
+back every time it runs; a crash between the commit and the release is repaired by stock reconciliation (B5), not by
+running it twice. It returns `{niks_deleted, stock_missing}`. A stock key that is gone is **not** recreated (the next
+hold then answers `STOCK_UNINITIALIZED` instead of selling a made-up count; reconciliation restores it), and every
+argument is checked before anything is written.
 
 **Keys.** `stock:{ev}:<category>` per category and `nik:used:{ev}:<hmac>` per seat. All carry the `{ev}` hash tag, so one
 call can touch them in the cluster. `advance_now_serving.lua` also reads the stock keys.
 
-## 5. `adjust_if_unchanged.lua` (planned)
+## 5. `adjust_if_unchanged.lua`
 
 **What for.** Correct a stock counter that drifted, but only if it still holds the value the caller read. A double run therefore never corrects twice.
 
 **When.** The periodic stock reconciliation (step B5 in `05-booking/README.md`).
 
-**Spec:** not written yet.
+**Spec:** `docs/05-booking/04-stock-reconciliation.md` §4.1 · **Code:** `pkg/redisscript/adjust_if_unchanged.lua`, `adjust.go` (`AdjustIfUnchanged`).
+
+**Call shape.** `KEYS` = the one `stock:{ev}:<cat>` key. `ARGV` = the value the caller read, the delta. It answers `{code, value}`: `ADJUSTED` (the key held the observed value and the result is not below zero), `CHANGED` (it moved since: nothing written), `MISSING` (gone, or not a plain integer: nothing written, the caller restores it with `SET NX`) or `BELOW_ZERO` (nothing written). It writes only its own key and never creates it.
 
 ## 6. How scripts are loaded
 

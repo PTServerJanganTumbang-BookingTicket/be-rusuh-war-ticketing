@@ -29,7 +29,7 @@ sequenceDiagram
     participant B as booking-service
     participant DB as Aurora (writer)
 
-    C->>G: GET /bookings/{id} + X-Grant-Token (+ X-Device-Id)
+    C->>G: GET /bookings/{id} + X-Grant-Token (+ X-Device-Id, or Authorization for an account grant)
     G-->>C: 401 / 400 on a bad grant (README §2)
     G->>B: Grant{booking_id, ...}
     alt grant.booking_id != path id
@@ -110,6 +110,10 @@ The token expires at **event_date + 1 day, 00:00 Asia/Jakarta** (the gate opens 
 
 ## 6. Edge cases
 
+- **An ended booking usually answers 401 `GRANT_TOKEN_INVALID`, not `EXPIRED`.** Every sweep that ends a booking
+  (`LAPSED`, `EXPIRED`) also deletes its grant, and `pkg/grantauth` checks the grant before the booking is read.
+  `EXPIRED` only shows in the short gap between the two. A customer on the Payment page whose 10 minutes run out gets
+  the 401; the client calls `GET /queue/me`, which answers `EXPIRED` (contract §4.4).
 - **Four `data.status` values** (§3 step 3). `PENDING_CANCELLATION` shows as `PENDING_PAYMENT` because the payment may
   still arrive (ADR-005 §7, 30 s grace). Not the §5.4 vocabulary (`PENDING`/`FAILED`), which is about the payment, not
   the booking.

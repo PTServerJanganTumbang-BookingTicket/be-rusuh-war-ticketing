@@ -57,6 +57,11 @@ func (e Event) ByTicket() string { return "queue:" + e.tag() + ":by_ticket" }
 // Stock is stock:{ev}:<category>.
 func (e Event) Stock(category string) string { return "stock:" + e.tag() + ":" + category }
 
+// NIKUsed is nik:used:{ev}:<nik_hmac>, "this NIK holds a seat for this event": a fast duplicate check set by
+// hold_booking.lua. The database (nik_claims) is the rule. It shares the {ev} tag with the stock keys, so one script
+// call can touch both.
+func (e Event) NIKUsed(nikHmac string) string { return "nik:used:" + e.tag() + ":" + nikHmac }
+
 // Acct is acct:{ev}:<account_id>, the account's one engagement (BR-07).
 func (e Event) Acct(accountID string) string { return "acct:" + e.tag() + ":" + accountID }
 

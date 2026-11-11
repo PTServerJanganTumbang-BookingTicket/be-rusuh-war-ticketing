@@ -12,6 +12,7 @@ import (
 
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/grantauth"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/rediskeys"
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/token"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/admission-ctl/internal/admission/domain"
 )
 
@@ -27,6 +28,14 @@ func TestAGrantWrittenByTheControllerIsAcceptedByGrantauth(t *testing.T) {
 	pepper := []byte("contract-pepper")
 	const device = "contract-device-0001"
 	suffix := fmt.Sprint(time.Now().UnixNano())
+	sessions, err := token.NewIssuer("contract-session-secret", "rusuh-user", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _, err := sessions.Issue("acc_contract", "contract@example.com", false)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	cases := []struct {
 		name    string
@@ -41,9 +50,10 @@ func TestAGrantWrittenByTheControllerIsAcceptedByGrantauth(t *testing.T) {
 			want:    grantauth.Grant{DeviceHash: grantauth.DeviceHash(pepper, device)},
 		},
 		{
-			name: "logged-in customer",
-			info: domain.TokenInfo{AccountID: "acc_contract"},
-			want: grantauth.Grant{AccountID: "acc_contract"},
+			name:    "logged-in customer",
+			info:    domain.TokenInfo{AccountID: "acc_contract"},
+			headers: map[string]string{"Authorization": "Bearer " + session},
+			want:    grantauth.Grant{AccountID: "acc_contract"},
 		},
 	}
 	for _, tc := range cases {
@@ -56,7 +66,7 @@ func TestAGrantWrittenByTheControllerIsAcceptedByGrantauth(t *testing.T) {
 			}
 
 			var got *grantauth.Grant
-			h := grantauth.Middleware(rdb, grantauth.Config{DevicePepper: pepper})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			h := grantauth.Middleware(rdb, grantauth.Config{DevicePepper: pepper, Tokens: sessions})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if g, ok := grantauth.FromContext(r.Context()); ok {
 					got = &g
 				}

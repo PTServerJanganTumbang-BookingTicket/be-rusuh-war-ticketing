@@ -20,6 +20,7 @@ var (
 	now      = time.Date(2026, 11, 10, 19, 2, 0, 0, time.UTC)
 	deadline = now.Add(3 * time.Minute)
 	grant    = grantauth.Grant{Token: "gt_1", EventID: "evt_a", BookingID: "RB-1", QueueToken: "qt_1", DeviceHash: "h"}
+	account  = grantauth.Grant{Token: "gt_2", EventID: "evt_a", BookingID: "RB-1", QueueToken: "qt_1", AccountID: "acc_1"}
 	errDown  = errors.New("connection refused")
 )
 
@@ -39,14 +40,17 @@ func (f *fakeBookings) ClaimForSelection(_ context.Context, id, token string) (d
 }
 
 type fakeCatalog struct {
-	event domain.Event
-	found bool
-	cats  []domain.Category
-	err   error
+	event      domain.Event
+	found      bool
+	cats       []domain.Category
+	account    *domain.Account
+	err        error
+	accountIDs []string // the account id of every call ("" for a guest)
 }
 
-func (f *fakeCatalog) Page(context.Context, string) (domain.Event, []domain.Category, bool, error) {
-	return f.event, f.cats, f.found, f.err
+func (f *fakeCatalog) Page(_ context.Context, _, accountID string) (domain.Event, []domain.Category, *domain.Account, bool, error) {
+	f.accountIDs = append(f.accountIDs, accountID)
+	return f.event, f.cats, f.account, f.found, f.err
 }
 
 type fakeStock struct {
@@ -274,5 +278,67 @@ func TestADatabaseOrRedisFailureIsA503(t *testing.T) {
 			_, err := r.uc.Get(context.Background(), grant, "evt_a")
 			wantAppError(t, err, http.StatusServiceUnavailable, "INTERNAL_ERROR")
 		})
+	}
+}
+
+func strp(s string) *string { return &s }
+
+func TestAnAccountGrantGetsTheAccountsEmailAndMaskedNIK(t *testing.T) {
+	r := newRig()
+	r.c.account = &domain.Account{Email: "buyer@example.com", NIKMasked: strp("3171********0022")}
+	v, err := r.uc.Get(context.Background(), account, "evt_a")
+	if err != nil || v.Account == nil || v.Account.Email != "buyer@example.com" || v.Account.NIKMasked == nil || *v.Account.NIKMasked != "3171********0022" {
+		t.Fatalf("account = %+v (%v)", v.Account, err)
+	}
+	if !reflect.DeepEqual(r.c.accountIDs, []string{"acc_1"}) {
+		t.Fatalf("catalog called with %v, want the grant's account id", r.c.accountIDs)
+	}
+}
+
+func TestAnAccountWithoutANIKGetsNullForTheNIKButKeepsTheEmail(t *testing.T) {
+	r := newRig()
+	r.c.account = &domain.Account{Email: "buyer@example.com"}
+	v, err := r.uc.Get(context.Background(), account, "evt_a")
+	if err != nil || v.Account == nil || v.Account.NIKMasked != nil {
+		t.Fatalf("account = %+v (%v), want nik_masked null", v.Account, err)
+	}
+	b, _ := json.Marshal(v.Account)
+	if string(b) != `{"email":"buyer@example.com","nik_masked":null}` {
+		t.Fatalf("json = %s", b)
+	}
+}
+
+func TestAGuestGrantGetsNullAndTheCatalogIsAskedWithoutAnAccount(t *testing.T) {
+	r := newRig()
+	v, err := r.uc.Get(context.Background(), grant, "evt_a")
+	if err != nil || v.Account != nil {
+		t.Fatalf("account = %+v (%v), want null for a guest", v.Account, err)
+	}
+	if !reflect.DeepEqual(r.c.accountIDs, []string{""}) {
+		t.Fatalf("catalog called with %v, want no account id for a guest", r.c.accountIDs)
+	}
+	b, _ := json.Marshal(v)
+	if !strings.Contains(string(b), `"account":null`) {
+		t.Fatalf("the page must carry account:null for a guest, not omit it: %s", b)
+	}
+}
+
+func TestAnAccountThatNoLongerExistsRendersThePageWithNullAccount(t *testing.T) {
+	r := newRig() // account grant, but the catalog returns no account row
+	v, err := r.uc.Get(context.Background(), account, "evt_a")
+	if err != nil || v.Account != nil || len(v.Categories) == 0 {
+		t.Fatalf("account = %+v categories = %d (%v), want the page without an account", v.Account, len(v.Categories), err)
+	}
+}
+
+func TestThePageNeverCarriesAFullNIKOrAHash(t *testing.T) {
+	r := newRig()
+	r.c.account = &domain.Account{Email: "buyer@example.com", NIKMasked: strp("3171********0022")}
+	v, _ := r.uc.Get(context.Background(), account, "evt_a")
+	b, _ := json.Marshal(v.Account)
+	var keys map[string]any
+	_ = json.Unmarshal(b, &keys)
+	if len(keys) != 2 || keys["email"] == nil || keys["nik_masked"] == nil {
+		t.Fatalf("account keys = %v, want exactly email and nik_masked", keys)
 	}
 }

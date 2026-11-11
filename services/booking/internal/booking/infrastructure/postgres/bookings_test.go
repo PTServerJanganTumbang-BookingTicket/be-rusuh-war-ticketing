@@ -107,8 +107,8 @@ func TestTheCatalogReadsTheEventAndItsCategoriesInDisplayOrder(t *testing.T) {
 		}
 	}
 	s := NewStore(pool)
-	e, cats, found, err := s.Page(ctx, "evt_a")
-	if err != nil || !found || e != (domain.Event{ID: "evt_a", Name: "Konser A", Date: "2026-12-25", Venue: "GBK", ImageURL: "https://cdn/a.jpg"}) {
+	e, cats, acct, found, err := s.Page(ctx, "evt_a", "")
+	if err != nil || !found || acct != nil || e != (domain.Event{ID: "evt_a", Name: "Konser A", Date: "2026-12-25", Venue: "GBK", ImageURL: "https://cdn/a.jpg"}) {
 		t.Fatalf("event %+v found=%v err=%v", e, found, err)
 	}
 	if len(cats) != 3 || cats[0].ID != "cat_vip" || cats[1].ID != "cat_fest" || cats[2].ID != "cat_trib" {
@@ -117,8 +117,37 @@ func TestTheCatalogReadsTheEventAndItsCategoriesInDisplayOrder(t *testing.T) {
 	if cats[0] != (domain.Category{ID: "cat_vip", Name: "VIP", Description: "Dekat", Price: 1500000, MaxPerOrder: 2}) {
 		t.Fatalf("VIP = %+v", cats[0])
 	}
-	if _, _, found, err := s.Page(ctx, "evt_none"); err != nil || found {
+	if _, _, _, found, err := s.Page(ctx, "evt_none", ""); err != nil || found {
 		t.Fatalf("unknown event found=%v err=%v", found, err)
+	}
+}
+
+// The account of a logged-in grant comes back in the same call, with the masked NIK only when one is verified.
+func TestThePageReadsTheAccountOfALoggedInGrant(t *testing.T) {
+	pool := pgtest.New(t)
+	for _, q := range []string{
+		`INSERT INTO events (id, name, event_date, venue, image_url) VALUES ('evt_a', 'Konser A', '2026-12-25', 'GBK', 'https://cdn/a.jpg')`,
+		`INSERT INTO accounts (id, email, nik_hmac, nik_masked, nik_verified_at) VALUES ('acc_nik', 'nik@example.com', 'hmac_1', '3171********0022', now())`,
+		`INSERT INTO accounts (id, email) VALUES ('acc_plain', 'plain@example.com')`,
+	} {
+		if _, err := pool.Exec(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := NewStore(pool)
+	_, _, acct, found, err := s.Page(ctx, "evt_a", "acc_nik")
+	if err != nil || !found || acct == nil || acct.Email != "nik@example.com" || acct.NIKMasked == nil || *acct.NIKMasked != "3171********0022" {
+		t.Fatalf("account with a NIK = %+v found=%v err=%v", acct, found, err)
+	}
+	_, _, acct, _, err = s.Page(ctx, "evt_a", "acc_plain")
+	if err != nil || acct == nil || acct.Email != "plain@example.com" || acct.NIKMasked != nil {
+		t.Fatalf("account without a NIK = %+v err=%v, want nik_masked nil", acct, err)
+	}
+	if _, _, acct, found, err = s.Page(ctx, "evt_a", "acc_gone"); err != nil || !found || acct != nil {
+		t.Fatalf("missing account = %+v found=%v err=%v, want the page without an account", acct, found, err)
+	}
+	if _, _, acct, _, err = s.Page(ctx, "evt_a", ""); err != nil || acct != nil {
+		t.Fatalf("guest = %+v err=%v, want no account", acct, err)
 	}
 }
 
@@ -147,7 +176,7 @@ func TestTheStoreReportsDatabaseErrors(t *testing.T) {
 	if _, _, err := s.ClaimForSelection(ctx, "RB-1", "gt"); err == nil {
 		t.Error("ClaimForSelection hid a database error")
 	}
-	if _, _, _, err := s.Page(ctx, "evt_a"); err == nil {
+	if _, _, _, _, err := s.Page(ctx, "evt_a", "acc_1"); err == nil {
 		t.Error("Page hid a database error")
 	}
 	if _, _, err := s.Detail(ctx, "RB-1", "gt"); err == nil {

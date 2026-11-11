@@ -25,7 +25,7 @@ source below, the source wins and the plan gets fixed.
 | `02-accounts/tickets/` | Accounts › Tickets (`GET /users/me/tickets`, `GET /tickets/{ticket_id}/eticket`) | `services/user` | not started |
 | [`03-events/`](03-events/README.md) | Events | `services/events` | **built** (both endpoints, templates, CI job, gateway routes; CloudFront open) |
 | [`04-queue/`](04-queue/README.md) | Queue | `services/queue`, `services/sse-server`, `services/admission-ctl` | **planning** |
-| [`05-booking/`](05-booking/README.md) | Booking | `services/booking` (+ sweeps in `services/admission-ctl`) | **in progress**: both GET endpoints built; `POST /bookings` planned |
+| [`05-booking/`](05-booking/README.md) | Booking | `services/booking` (+ sweeps in `services/admission-ctl`) | **in progress**: both GET endpoints built; Authorization check and ticket page `account` built; `POST /bookings` planned (B4c–B4f) |
 | [`06-nik/`](06-nik/README.md) | NIK | `services/nik-verify` | **documented** — branch |
 | `07-payment/` | Payment | `services/payment-api` | not started |
 | `08-admin/` | Admin | `services/payment-api` | not started |

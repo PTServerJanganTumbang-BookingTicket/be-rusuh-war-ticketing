@@ -15,6 +15,7 @@ import (
 
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/apinizer"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/apperror"
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/grantauth"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/queue/internal/queue/application/usecase"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/queue/internal/queue/domain"
 )
@@ -79,7 +80,7 @@ func (h *Handler) Join(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	bearer, ok := bearerToken(r.Header.Get("Authorization"))
+	bearer, ok := grantauth.BearerToken(r.Header.Get("Authorization"))
 	if !ok {
 		apinizer.WriteError(w, apperror.ErrUnauthorized("Sesi tidak valid").WithCode(domain.CodeTokenInvalid))
 		return
@@ -181,20 +182,6 @@ func (h *Handler) clearCookie(eventID string) *http.Cookie {
 	return c
 }
 
-// bearerToken returns the token of "Bearer <token>". No header is fine (guest);
-// any other non-empty value is rejected rather than silently ignored.
-func bearerToken(h string) (string, bool) {
-	if h == "" {
-		return "", true
-	}
-	const prefix = "Bearer "
-	if len(h) <= len(prefix) || !strings.EqualFold(h[:len(prefix)], prefix) {
-		return "", false
-	}
-	tok := strings.TrimSpace(h[len(prefix):])
-	return tok, tok != ""
-}
-
 func presentedQueueToken(r *http.Request) string {
 	if v := r.Header.Get(HeaderQueueToken); v != "" {
 		return v
@@ -220,7 +207,7 @@ func ClientIP(r *http.Request) string {
 
 // Me handles GET /events/{event_id}/queue/me: where is this customer now? It is a read, not cacheable.
 func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
-	bearer, ok := bearerToken(r.Header.Get("Authorization"))
+	bearer, ok := grantauth.BearerToken(r.Header.Get("Authorization"))
 	if !ok {
 		apinizer.WriteError(w, apperror.ErrUnauthorized("Sesi tidak valid").WithCode(domain.CodeTokenInvalid))
 		return
