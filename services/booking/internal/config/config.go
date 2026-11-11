@@ -38,6 +38,7 @@ type Redis struct {
 // Grant configures pkg/grantauth.
 type Grant struct {
 	DevicePepper []byte // DEVICE_PEPPER, the same value queue's join uses
+	JWTSecret    string // JWT_SECRET, the key user-service signs access tokens with (account grants, ADR-006 §8.17)
 }
 
 // Booking holds the purchase rules and the e-ticket link key.

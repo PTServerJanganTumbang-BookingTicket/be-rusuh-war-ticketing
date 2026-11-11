@@ -29,7 +29,10 @@ func Load() (Config, error) {
 			Password: os.Getenv("REDIS_PASSWORD"),
 			Cluster:  envutil.EnvBool("REDIS_CLUSTER", true),
 		},
-		Grant: Grant{DevicePepper: []byte(os.Getenv("DEVICE_PEPPER"))},
+		Grant: Grant{
+			DevicePepper: []byte(os.Getenv("DEVICE_PEPPER")),
+			JWTSecret:    jwtSecret(envutil.Env("APP_ENV", "local")),
+		},
 		Booking: Booking{
 			MaxTicketsPerTransaction: envutil.EnvInt("MAX_TICKETS_PER_TRANSACTION", 3),
 			ETicketSigningKey:        []byte(os.Getenv("ETICKET_SIGNING_KEY")),
@@ -40,6 +43,20 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// localJWTSecret is user-service's example.env value, so a token from the local login verifies on the local booking.
+// Never used outside APP_ENV=local: a default signing key is a forged-token generator.
+const localJWTSecret = "local-dev-jwt-secret-not-for-any-deployed-environment"
+
+func jwtSecret(appEnv string) string {
+	if v := os.Getenv("JWT_SECRET"); v != "" {
+		return v
+	}
+	if appEnv == "local" {
+		return localJWTSecret
+	}
+	return ""
 }
 
 func (c Config) validate() error {
@@ -57,6 +74,9 @@ func (c Config) validate() error {
 	}
 	if c.App.Env != "local" && len(c.Grant.DevicePepper) == 0 {
 		errs = append(errs, errors.New("DEVICE_PEPPER is required outside local: without queue's pepper every guest gets DEVICE_MISMATCH"))
+	}
+	if c.Grant.JWTSecret == "" {
+		errs = append(errs, errors.New("JWT_SECRET is required outside local: a known signing key forges sessions"))
 	}
 	if c.App.Env != "local" && len(c.Booking.ETicketSigningKey) == 0 {
 		errs = append(errs, errors.New("ETICKET_SIGNING_KEY is required outside local: e-ticket links must verify in user-service"))

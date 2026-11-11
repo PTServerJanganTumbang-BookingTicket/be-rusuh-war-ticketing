@@ -126,6 +126,8 @@ Resources:
           MAX_TICKETS_PER_TRANSACTION: "3"
           DATABASE_URL: !Sub '{{resolve:secretsmanager:rusuh-${Environment}/database-url:SecretString:url}}'
           DEVICE_PEPPER: !Sub '{{resolve:secretsmanager:${DevicePepperSecretArn}:SecretString}}'
+          # Same secret user-service signs access tokens with and queue verifies with; grantauth checks account grants.
+          JWT_SECRET: !Sub '{{resolve:secretsmanager:rusuh-${Environment}/jwt-signing:SecretString}}'
           ETICKET_SIGNING_KEY: !Sub '{{resolve:secretsmanager:${ETicketSigningKeySecretArn}:SecretString}}'
 
   # ============================================================================

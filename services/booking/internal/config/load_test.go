@@ -38,6 +38,7 @@ func TestLoad_envOverrides(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://prod")
 	t.Setenv("DEVICE_PEPPER", "pepper")
 	t.Setenv("ETICKET_SIGNING_KEY", "key")
+	t.Setenv("JWT_SECRET", "jwt")
 	t.Setenv("LOG_LEVEL", "debug")
 	t.Setenv("LOG_FORMAT", "text")
 
@@ -95,7 +96,7 @@ func TestLoad_portZeroOutOfRange(t *testing.T) {
 func clearB1(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{"APP_ENV", "APP_PORT", "DATABASE_MAX_CONNS", "REDIS_ADDR", "REDIS_PASSWORD",
-		"REDIS_CLUSTER", "DEVICE_PEPPER", "MAX_TICKETS_PER_TRANSACTION", "AWS_LAMBDA_FUNCTION_NAME", "ETICKET_SIGNING_KEY"} {
+		"REDIS_CLUSTER", "DEVICE_PEPPER", "MAX_TICKETS_PER_TRANSACTION", "AWS_LAMBDA_FUNCTION_NAME", "ETICKET_SIGNING_KEY", "JWT_SECRET"} {
 		t.Setenv(k, "")
 	}
 	t.Setenv("DATABASE_URL", "postgres://local")
@@ -180,5 +181,32 @@ func TestTheETicketKeyIsReadAndRequiredOutsideLocal(t *testing.T) {
 	t.Setenv("DEVICE_PEPPER", "p")
 	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "ETICKET_SIGNING_KEY") {
 		t.Fatalf("err = %v, want ETICKET_SIGNING_KEY reported outside local", err)
+	}
+}
+
+func TestTheJWTSecretIsReadAndRequiredOutsideLocal(t *testing.T) {
+	clearB1(t)
+	t.Setenv("JWT_SECRET", "s")
+	if cfg, err := Load(); err != nil || cfg.Grant.JWTSecret != "s" {
+		t.Fatalf("secret = %q (%v)", cfg.Grant.JWTSecret, err)
+	}
+	clearB1(t)
+	t.Setenv("APP_ENV", "preprod")
+	t.Setenv("DEVICE_PEPPER", "p")
+	t.Setenv("ETICKET_SIGNING_KEY", "k")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "JWT_SECRET") {
+		t.Fatalf("err = %v, want JWT_SECRET reported outside local", err)
+	}
+}
+
+func TestLocallyTheJWTSecretDefaultsToUserServicesDevSecret(t *testing.T) {
+	clearB1(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// services/user/example.env: a token from the local login must verify on the local booking.
+	if cfg.Grant.JWTSecret != "local-dev-jwt-secret-not-for-any-deployed-environment" {
+		t.Fatalf("local secret = %q", cfg.Grant.JWTSecret)
 	}
 }

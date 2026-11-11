@@ -17,6 +17,7 @@ import (
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/eticket"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/grantauth"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/pgutil"
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/token"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/booking/internal/booking/application/usecase"
 	bookinghttp "github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/booking/internal/booking/infrastructure/http"
 	bookingpg "github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/booking/internal/booking/infrastructure/postgres"
@@ -83,7 +84,11 @@ func NewHandler(cfg config.Config, d Deps) (http.Handler, error) {
 	mux := http.NewServeMux()
 	apinizer.RegisterHealthCheck(mux, "/sys/ping")
 
-	grant := grantauth.Middleware(d.Redis, grantauth.Config{DevicePepper: cfg.Grant.DevicePepper})
+	sessions, err := token.NewIssuer(cfg.Grant.JWTSecret, "rusuh-user", time.Hour)
+	if err != nil {
+		return nil, fmt.Errorf("access token verifier (JWT_SECRET): %w", err)
+	}
+	grant := grantauth.Middleware(d.Redis, grantauth.Config{DevicePepper: cfg.Grant.DevicePepper, Tokens: sessions})
 	metrics := emf.New("Rusuh/Booking", os.Stdout)
 	store := bookingpg.NewStore(d.DB)
 	ticketPage := usecase.NewTicketPage(usecase.TicketPageDeps{
