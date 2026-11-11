@@ -93,6 +93,29 @@ func (g *fakeGateway) Status(ctx context.Context, orderID string) (portout.Statu
 	return portout.StatusResult{}, nil
 }
 
+// fakeSwitches stands in for the operator kill switch. The zero value has
+// nothing switched off, which is the normal state and keeps every existing
+// test reading as it did before the switch existed.
+type fakeSwitches struct {
+	off   entity.Disabled
+	err   error
+	calls int
+}
+
+func (s *fakeSwitches) Disabled(ctx context.Context) (entity.Disabled, error) {
+	s.calls++
+	return s.off, s.err
+}
+
+// offMethod and offBank build the set the adapter would return.
+func offMethod(id string) entity.Disabled {
+	return entity.Disabled{entity.MethodSwitch{MethodID: id}: {}}
+}
+
+func offBank(methodID, bank string) entity.Disabled {
+	return entity.Disabled{entity.MethodSwitch{MethodID: methodID, BankCode: bank}: {}}
+}
+
 type fakeBreaker struct {
 	allowFn    func(ctx context.Context) (bool, error)
 	successes  int
@@ -158,6 +181,7 @@ type harness struct {
 	gw    *fakeGateway
 	brk   *fakeBreaker
 	creds *fakeCredentials
+	sw    *fakeSwitches
 	cfg   Config
 }
 
@@ -168,12 +192,13 @@ func newHarness(t *testing.T, mutate ...func(*harness)) *harness {
 		gw:    &fakeGateway{},
 		brk:   &fakeBreaker{},
 		creds: &fakeCredentials{},
+		sw:    &fakeSwitches{},
 		cfg:   testConfig(),
 	}
 	for _, m := range mutate {
 		m(h)
 	}
-	uc := New(h.repo, h.gw, h.brk, h.creds, h.cfg).(*PaymentUsecase)
+	uc := New(h.repo, h.gw, h.brk, h.creds, h.sw, h.cfg).(*PaymentUsecase)
 	uc.now = func() time.Time { return fixedNow }
 	h.uc = uc
 	return h

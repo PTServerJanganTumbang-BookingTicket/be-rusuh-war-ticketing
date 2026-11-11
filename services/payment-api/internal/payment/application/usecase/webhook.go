@@ -58,6 +58,7 @@ func (u *PaymentUsecase) HandleNotification(ctx context.Context, n dto.Notificat
 		GrossAmount:       parseGrossAmount(n.GrossAmount),
 		Raw:               raw,
 		Now:               u.now(),
+		PaidAt:            n.PaidAt(),
 		MaxAttempts:       u.cfg.MaxPaymentAttempts,
 	})
 	if errors.Is(err, portout.ErrDuplicateEvent) {

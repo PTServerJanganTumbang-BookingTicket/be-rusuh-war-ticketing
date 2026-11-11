@@ -16,7 +16,7 @@ import (
 // column added by another service's migration cannot change Scan order.
 const bookingColumns = `
     id, event_id, COALESCE(account_id, ''), COALESCE(contact_email, ''), status,
-    held_at, payment_expires_at, COALESCE(payment_ref, ''), payment_attempts,
+    held_at, payment_expires_at, COALESCE(payment_ref, ''), paid_at, payment_attempts,
     COALESCE(payment_method, ''), payment_disputed, COALESCE(grant_token, ''),
     COALESCE(queue_token, '')`
 
@@ -29,7 +29,7 @@ func scanBooking(row pgx.Row) (bookingRow, error) {
 	var out bookingRow
 	err := row.Scan(
 		&out.b.ID, &out.b.EventID, &out.b.AccountID, &out.b.ContactEmail, &out.b.Status,
-		&out.b.HeldAt, &out.b.PaymentExpiresAt, &out.b.PaymentRef, &out.b.PaymentAttempts,
+		&out.b.HeldAt, &out.b.PaymentExpiresAt, &out.b.PaymentRef, &out.b.PaidAt, &out.b.PaymentAttempts,
 		&out.b.PaymentMethod, &out.b.PaymentDisputed, &out.b.GrantToken, &out.queueToken,
 	)
 	return out, err
@@ -376,9 +376,20 @@ func (r *BookingRepository) ApplyNotification(ctx context.Context, in portout.No
 		// PENDING_CANCELLATION is accepted alongside AWAITING_PAYMENT: letting
 		// a callback land during the 30-second grace is the entire purpose of
 		// having a grace.
+		// paid_at comes from the gateway's settlement_time, not from now():
+		// the notification can arrive minutes after the money moved, and it is
+		// the money the receipt is about. COALESCE covers a notification that
+		// carried no usable timestamp — a CONFIRMED row must not be left with
+		// a NULL payment time, because §5.4 has to answer paid_at with
+		// something and the alternative is faking it from the deadline again.
+		//
+		// Set only on the transition. A later notification for the same
+		// booking takes the ActionRecordOnly path and never reaches here, so
+		// the first settlement's time is the one that stands.
 		tag, err := tx.Exec(ctx,
-			`UPDATE bookings SET status = 'CONFIRMED'
-              WHERE id = $1 AND status IN ('AWAITING_PAYMENT', 'PENDING_CANCELLATION')`, b.ID)
+			`UPDATE bookings SET status = 'CONFIRMED', paid_at = COALESCE($2, now())
+              WHERE id = $1 AND status IN ('AWAITING_PAYMENT', 'PENDING_CANCELLATION')`,
+			b.ID, in.PaidAt)
 		if err != nil {
 			return out, wrapDB(err, "could not confirm booking")
 		}

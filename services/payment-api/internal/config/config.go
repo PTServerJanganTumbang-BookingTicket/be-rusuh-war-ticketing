@@ -101,6 +101,15 @@ type Payment struct {
 
 	// IconBase prefixes the method and bank icon URLs in §5.1.
 	IconBase string
+	// SwitchCacheTTL is how long the operator kill switch
+	// (payment_method_switches, migration 0014) is cached in process.
+	//
+	// It is the delay between an operator inserting a row and customers
+	// seeing it. Seconds, deliberately: the switch replaces a deploy, and
+	// reading the table on every §5.1 would add a query to the hottest path
+	// in the service for state that changes a handful of times a year. Zero
+	// disables the cache, which is what a debugging session wants.
+	SwitchCacheTTL time.Duration
 }
 
 // IsLocal reports whether this is a local development run.

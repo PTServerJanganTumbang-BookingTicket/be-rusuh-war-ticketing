@@ -34,6 +34,8 @@ exist`.
 | `0010_drop_terms_and_holder_email` | drops the terms columns and `booking_items.holder_email` | `0009` |
 | `0011_payment_events` | `payment_events` (`gateway_event_id` unique), payment-deadline index for the HELD / AWAITING_PAYMENT sweep | `0010` |
 | `0012_drop_consent_policy_version` | drops `consent_records.policy_version`, which was `NOT NULL` and no longer written — until this runs, every registration fails the constraint | `0001` |
+| `0013_bookings_paid_at` | adds `bookings.paid_at`, the gateway settlement time §5.4 reports. Until this runs, `paid_at` is substituted with the payment deadline | `0004` |
+| `0014_payment_method_switches` | append-only operator kill switch for a payment method or one bank under it. Subtracts from the code catalogue, never defines it | — |
 
 Every statement uses `IF NOT EXISTS`, so re-running a file is harmless. That
 is the only thing standing in for a migration runner, so keep it true: a

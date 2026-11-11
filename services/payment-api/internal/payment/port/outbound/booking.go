@@ -116,6 +116,11 @@ type NotificationInput struct {
 	GrossAmount int64
 	Raw         []byte
 	Now         time.Time
+	// PaidAt is the gateway's settlement time, nil when the notification
+	// carried neither a settlement nor a transaction time. The repository
+	// falls back to Now for a confirm, so bookings.paid_at is never NULL on a
+	// CONFIRMED row this code wrote.
+	PaidAt      *time.Time
 	MaxAttempts int
 }
 

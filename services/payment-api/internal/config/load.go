@@ -47,6 +47,8 @@ func Load() (Config, error) {
 			MaxAttempts:         envutil.EnvInt("MAX_PAYMENT_ATTEMPTS", 5),
 			SettledTombstoneTTL: envutil.EnvDuration("SETTLED_TOMBSTONE_SECONDS", 3600*time.Second),
 			IconBase:            envutil.Env("PAYMENT_ICON_BASE", "https://cdn.rusuh.id/icons"),
+			SwitchCacheTTL: time.Duration(
+				envutil.EnvInt("PAYMENT_SWITCH_CACHE_SECONDS", 10)) * time.Second,
 		},
 	}
 

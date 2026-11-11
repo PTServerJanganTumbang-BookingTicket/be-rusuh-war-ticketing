@@ -1,5 +1,7 @@
 package dto
 
+import "time"
+
 // Notification is a Midtrans Core API HTTP notification (§5.5).
 //
 // Every field is a string, including the money and the timestamps, because
@@ -32,6 +34,41 @@ type Notification struct {
 		Bank     string `json:"bank"`
 		VANumber string `json:"va_number"`
 	} `json:"va_numbers"`
+}
+
+// wib is Asia/Jakarta, fixed rather than loaded from the host tzdata: a
+// Lambda image without zoneinfo would otherwise fail at runtime, on a path
+// that only runs when real money has moved.
+var wib = time.FixedZone("WIB", 7*60*60)
+
+// midtransTimeLayout is what Midtrans sends: no zone marker, so the zone has
+// to be supplied rather than parsed.
+const midtransTimeLayout = "2006-01-02 15:04:05"
+
+// PaidAt is when the money actually moved, in UTC.
+//
+// settlement_time first, transaction_time second. They differ, and the
+// difference is the point: on a virtual account, transaction_time is when the
+// VA was created and settlement_time is when the customer actually paid into
+// it — up to ten minutes apart, and it is the second one a receipt is about.
+//
+// Nil when neither field is present or parseable. The caller substitutes its
+// own clock then, because a confirmed booking with no payment time at all is
+// worse than one whose time is a few seconds late: §5.4 has to answer paid_at
+// with something, and the alternative is the deadline it used to fake.
+func (n Notification) PaidAt() *time.Time {
+	for _, raw := range []string{n.SettlementTime, n.TransactionTime} {
+		if raw == "" {
+			continue
+		}
+		t, err := time.ParseInLocation(midtransTimeLayout, raw, wib)
+		if err != nil {
+			continue
+		}
+		utc := t.UTC()
+		return &utc
+	}
+	return nil
 }
 
 // GatewayEventID is the derived idempotency key.

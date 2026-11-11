@@ -3,6 +3,7 @@ package dto
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -73,4 +74,54 @@ func TestNotification_RoundTripsGrossAmountUnchanged(t *testing.T) {
 	var back Notification
 	require.NoError(t, json.Unmarshal(raw, &back))
 	assert.Equal(t, "3000000.00", back.GrossAmount)
+}
+
+// ── PaidAt (migration 0013) ─────────────────────────────────────────────────
+
+// settlement_time and transaction_time differ, and the difference is the
+// point: on a virtual account, transaction_time is when the VA was created and
+// settlement_time is when the customer actually paid into it. A receipt is
+// about the second one.
+func TestNotificationPaidAt_PrefersSettlementTimeOverTransactionTime(t *testing.T) {
+	n := Notification{
+		TransactionTime: "2026-03-01 17:00:00",
+		SettlementTime:  "2026-03-01 17:08:30",
+	}
+	got := n.PaidAt()
+	require.NotNil(t, got)
+	// WIB is UTC+7, so 17:08:30 WIB is 10:08:30 UTC.
+	assert.Equal(t, time.Date(2026, 3, 1, 10, 8, 30, 0, time.UTC), *got)
+	assert.Equal(t, time.UTC, got.Location(), "stored UTC, whatever the gateway sends")
+}
+
+// A pending notification carries no settlement_time. transaction_time is then
+// the only clock on offer and is still better than ours.
+func TestNotificationPaidAt_FallsBackToTransactionTime(t *testing.T) {
+	n := Notification{TransactionTime: "2026-03-01 17:00:00"}
+	got := n.PaidAt()
+	require.NotNil(t, got)
+	assert.Equal(t, time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC), *got)
+}
+
+// Midtrans sends "YYYY-MM-DD HH:mm:ss" with NO zone marker, so the zone has to
+// be supplied. Parsing it as UTC would record every Indonesian payment seven
+// hours early — and on a ten-minute window that is not a rounding error, it is
+// a timestamp before the booking was even held.
+func TestNotificationPaidAt_ParsesAsJakartaNotUTC(t *testing.T) {
+	n := Notification{SettlementTime: "2026-03-01 00:30:00"}
+	got := n.PaidAt()
+	require.NotNil(t, got)
+	assert.Equal(t, "2026-02-28T17:30:00Z", got.Format(time.RFC3339),
+		"00:30 WIB on 1 March is 17:30 UTC on 28 February — 2026 is not a leap year")
+}
+
+func TestNotificationPaidAt_NilWhenNeitherTimeIsUsable(t *testing.T) {
+	assert.Nil(t, Notification{}.PaidAt())
+	assert.Nil(t, Notification{SettlementTime: "not a timestamp"}.PaidAt())
+	// A malformed settlement_time still lets a good transaction_time through.
+	n := Notification{SettlementTime: "garbage", TransactionTime: "2026-03-01 17:00:00"}
+	require.NotNil(t, n.PaidAt())
+	// ISO-8601 is NOT what Midtrans sends, and accepting it would hide a
+	// change in their format behind a timestamp that happens to parse.
+	assert.Nil(t, Notification{SettlementTime: "2026-03-01T17:00:00Z"}.PaidAt())
 }

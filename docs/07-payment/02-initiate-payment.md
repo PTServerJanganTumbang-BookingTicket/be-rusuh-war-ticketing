@@ -97,22 +97,36 @@ sequenceDiagram
    `bank_transfer` or `gopay`; a `bank_transfer` must name an opened bank. The
    bank gets its own code (`BANK_NOT_SUPPORTED`) because "bca typed as bcaa" and
    "no method at all" are different fixes for the client.
-2. `BEGIN`, then `SELECT … FOR UPDATE` bound on `id` **and** `grant_token`.
-3. Branch on status:
+2. **Then the operator kill switch** (`payment_method_switches`, migration
+   `0014`): if the method, or the chosen bank under it, is switched off, answer
+   `503 PAYMENT_GATEWAY_UNAVAILABLE` and stop.
+
+   Checked here and not only on §5.1 because a customer who loaded the payment
+   page **before** an operator switched BCA off still has a BCA button on
+   screen. A switch enforced only on the listing does nothing for exactly the
+   people already mid-checkout — the ones about to be handed an instrument
+   nobody can pay. Before the lock and before the gateway, so refusing costs
+   the customer only a choice of method.
+
+   Switching off a **method** also refuses each of its banks, so a client
+   holding a bank code from an older page cannot slip past a method-level
+   switch.
+3. `BEGIN`, then `SELECT … FOR UPDATE` bound on `id` **and** `grant_token`.
+4. Branch on status:
    - `AWAITING_PAYMENT` → **replay**. Read the stored charge back from
      `payment_events`, commit, return. No gateway call and no writes.
    - `HELD` → the only state a charge may start from.
    - anything else → `409 BOOKING_STATUS_INVALID`, with no gateway contact.
-4. `SELECT COALESCE(SUM(unit_price),0) FROM booking_items` under the lock.
+5. `SELECT COALESCE(SUM(unit_price),0) FROM booking_items` under the lock.
    `booking_items` is the authority on price, because `unit_price` is copied at
    purchase and must not follow a later catalogue change. A total of zero means
    the hold never completed, which is a status problem rather than an internal
    error.
-5. `order_id = valueobject.OrderID(booking.ID, booking.PaymentAttempts)`.
-6. Read the breaker **inside** the charge closure, so step 3's replay is not
+6. `order_id = valueobject.OrderID(booking.ID, booking.PaymentAttempts)`.
+7. Read the breaker **inside** the charge closure, so step 4's replay is not
    gated by it.
-7. `POST /v2/charge` with `custom_expiry.order_time = held_at` rendered in WIB.
-8. Write the status, store the charge response, `COMMIT`.
+8. `POST /v2/charge` with `custom_expiry.order_time = held_at` rendered in WIB.
+9. Write the status, store the charge response, `COMMIT`.
 
 The charge happens **under the lock**. Two concurrent Pay clicks have to
 serialise somewhere, and the `bookings` row is the only thing both of them
@@ -145,7 +159,16 @@ ten minutes to every charge, so BR-05 would never bind.
 | 401 | `GRANT_TOKEN_MISSING` / `GRANT_TOKEN_INVALID` / `DEVICE_MISMATCH` | Guard |
 | 404 | `NOT_FOUND` | No such booking, or not the token holder's |
 | 409 | `BOOKING_STATUS_INVALID` | Not `HELD`, already terminal, or a booking with no seats |
-| 503 | `PAYMENT_GATEWAY_UNAVAILABLE` | Breaker open, or the gateway could not be reached |
+| 503 | `PAYMENT_GATEWAY_UNAVAILABLE` | Breaker open, the gateway could not be reached, **or** the method or bank is switched off by an operator (migration `0014`) |
+
+The switch reuses `PAYMENT_GATEWAY_UNAVAILABLE` rather than introducing a code
+of its own. From the client's side the situation and the remedy are identical —
+this method cannot be used right now, pick another — and from the customer's
+side an operator switching BCA off *is* BCA being unavailable. The operational
+distinction is in the log line, which names the method, the bank and the
+booking. A distinct `METHOD_UNAVAILABLE` would be more precise and would cost
+an Appendix A entry and a client change; it is worth adding only if a frontend
+ever needs to tell the two apart.
 
 **200, not 201.** A replayed initiate creates nothing and the client cannot tell
 the two apart, so neither should the status code.

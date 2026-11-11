@@ -160,7 +160,8 @@ virtual account.
 | Redis | `payment:breaker:state`, `payment:breaker:failures` | this service | Distinct from `dukcapil:breaker:state`: one upstream being down says nothing about the other |
 | Redis | `token:{uuid}`, `acct:{ev}:{account_id}` | queue-service | Deleted here on settlement |
 | Redis | `settled:{uuid}` | this service | The §3.3 tombstone. Holds the booking id and nothing else |
-| Aurora | `bookings`, `booking_items`, `payment_events`, `tickets`, `nik_claims`, `outbox` | this service | Migrations `0006`–`0010` (booking domain) and `0011` (`payment_events`) |
+| Aurora | `bookings`, `booking_items`, `payment_events`, `tickets`, `nik_claims`, `outbox` | this service | Migrations `0006`–`0010` (booking domain), `0011` (`payment_events`), `0013` (`bookings.paid_at`) |
+| Aurora | `payment_method_switches` | operators, by hand | Read-only here, append-only by design. Migration `0014` |
 
 ## 7. Schema
 
@@ -170,6 +171,8 @@ migrations. Only one table is this service's own:
 | Object | Migration | Why payment-api needs it |
 |---|---|---|
 | `payment_events` with `gateway_event_id UNIQUE` | `0011_payment_events` | The webhook's idempotency guard, and where a charge response is stored for replay |
+| `bookings.paid_at` | `0013_bookings_paid_at` | The gateway's settlement time, which §5.4 reports. Before it, `paid_at` was substituted with the payment DEADLINE — a timestamp in the future of the response carrying it |
+| `payment_method_switches` | `0014_payment_method_switches` | The operator kill switch: turn a method, or one bank under it, off mid-sale with no deploy. Append-only; subtracts from the code catalogue and never defines it |
 | `bookings.grant_token` + partial unique index | `0006`–`0010` | The ownership key every query binds on |
 | `booking_items` | `0006`–`0010` | One row per NIK (BR-02). The authority on price, and what tickets are issued from |
 | `nik_claims` | `0006`–`0010` | Released on expiry, or BR-02 would block the customer from ever buying again |
@@ -206,7 +209,38 @@ internet**, so one public route must exist — with direct access off, the URL f
 the dashboard is the unified gateway's (`/rusuh/{env}/api/url`) plus
 `/payments/webhook`.
 
-## 9. Open decisions
+## 9. Turning a payment method off mid-sale
+
+`entity.Catalogue()` is what the code can charge. `payment_method_switches`
+(migration `0014`) is what an operator has turned off since. §5.1 masks the
+first with the second, and §5.2 refuses a charge for anything switched off —
+both, because a customer who loaded the page before the switch still has the
+button on screen.
+
+Turning something off, and on again, are both **inserts**:
+
+```sql
+-- off
+INSERT INTO payment_method_switches (method_id, bank_code, available, reason, changed_by)
+VALUES ('bank_transfer', 'bca', false, 'BCA VA timeouts, confirmed with ops', 'hdwic');
+
+-- on
+INSERT INTO payment_method_switches (method_id, bank_code, available, reason, changed_by)
+VALUES ('bank_transfer', 'bca', true, 'BCA recovered 21:28', 'hdwic');
+```
+
+`bank_code NULL` disables the whole method. `expires_at` makes a switch revert
+itself, which is worth using: the failure mode is not forgetting to switch BCA
+off, it is switching it off during an incident and nobody remembering to switch
+it back, so a bank stays dark for a week and the first sign is a conversion
+graph.
+
+The read is the latest row per method and bank, which is why turning something
+back on is an insert rather than a `DELETE`: the incident timeline survives.
+`RUNBOOK.md` has the operator procedure, and
+[01-get-payment-methods.md](01-get-payment-methods.md) §6 has the design.
+
+## 10. Open decisions
 
 | # | Decision |
 |---|---|

@@ -32,11 +32,19 @@ func (u *PaymentUsecase) GetStatus(ctx context.Context, bookingID, grantToken st
 	case entity.StatusConfirmed:
 		return dto.StatusResponse{
 			Status: dto.StatusPaid,
-			// paid_at is not a column; the settlement time lives in
-			// payment_events. The contract renders a timestamp here and the
-			// booking's deadline is the closest stored instant, so the
-			// frontend gets a value without a second query on a polling path.
-			PaidAt:      iso(b.PaymentExpiresAt),
+			// The gateway's settlement time, stored on the booking when the
+			// webhook confirmed it (migration 0013).
+			//
+			// This used to report payment_expires_at — the DEADLINE — because
+			// there was no column to answer with. For a customer who paid at
+			// minute 2 of a ten-minute window that was a timestamp eight
+			// minutes in the future of the response carrying it.
+			//
+			// Still empty for a booking confirmed before 0013: those rows have
+			// no paid_at and the settlement time is in payment_events.raw.
+			// Omitted rather than substituted, because a wrong timestamp on a
+			// receipt is worse than an absent one.
+			PaidAt:      iso(b.PaidAt),
 			RedirectURL: "/bookings/" + b.ID + "/success",
 		}, nil
 

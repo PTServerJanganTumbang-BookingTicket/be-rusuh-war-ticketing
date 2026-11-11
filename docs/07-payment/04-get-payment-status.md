@@ -98,6 +98,32 @@ conflict with and no gateway to depend on.
 
 ## 6. Edge cases and decisions
 
+- **`paid_at` is the gateway's settlement time, not ours and not the deadline.**
+  It comes from `bookings.paid_at`, which the webhook writes in the same
+  statement as the `CONFIRMED` transition (migration `0013`), taken from the
+  notification's `settlement_time` — falling back to `transaction_time`, and to
+  the database's `now()` only if the notification carried neither.
+
+  Before that column existed this endpoint reported `payment_expires_at`, the
+  **deadline**. For a customer who paid at minute 2 of a ten-minute window that
+  was a timestamp eight minutes in the *future* of the response carrying it:
+  visibly wrong on a receipt, and misleading rather than merely imprecise when
+  someone later reconciles against Midtrans.
+
+  `settlement_time` is preferred over `transaction_time` because they differ
+  and the difference is the point: on a virtual account `transaction_time` is
+  when the VA was created and `settlement_time` is when the customer actually
+  paid into it — up to ten minutes apart here, and it is the second one a
+  receipt is about. Both arrive as `YYYY-MM-DD HH:mm:ss` in **WIB with no zone
+  marker**, so they are parsed as Asia/Jakarta; parsing them as UTC would record
+  every payment seven hours early, which on a ten-minute window is a timestamp
+  from before the booking was held.
+
+  A booking confirmed **before** `0013` has no `paid_at`, and the field is then
+  **omitted** rather than substituted: a wrong timestamp on a receipt is worse
+  than an absent one, and the settlement time is still in `payment_events.raw`
+  for anyone who needs it.
+
 - **`reason` is passed through, not translated.** It is the gateway's
   `status_message`, for support rather than for display; the frontend shows its
   own localised text and puts `reason` in the detail. With cards out of scope
@@ -105,13 +131,9 @@ conflict with and no gateway to depend on.
   `gopay`.
 - **`can_retry` is `payment_attempts < MAX_PAYMENT_ATTEMPTS`**, and "retry"
   there means calling §5.2 again — not §5.3.
-- **`paid_at` is not a column.** The settlement time lives in `payment_events`.
-  The contract renders a timestamp here, and the booking's stored deadline is
-  the closest instant available, so the frontend gets a value without a second
-  query on a polling path. **OPEN:** read the real settlement time from
-  `payment_events` if the displayed value matters; today it is approximate and
-  nothing in the UI depends on it.
-- A countdown that has run out reports `0`, not a negative number.
+- A deadline already past is reported as it stands, not clamped: the client's
+  own countdown lands on zero, and clamping would hide the one case worth
+  telling apart — a window that ran out while a callback is still in flight.
 - **OPEN:** the contract shows no explicit rate limit for this endpoint, and
   none is implemented. At 300,000 concurrent customers polling every few
   seconds, this is the highest-volume endpoint in the service. API Gateway
@@ -132,6 +154,9 @@ Implemented in `internal/payment/application/usecase/get_status_test.go` and
       `expired_at`
 - [x] unit: a deadline in the past → reported unchanged, not clamped to now
 - [x] unit: `server_time` present on every polled answer
+- [x] unit: PAID reports the stored settlement time, and never the deadline
+- [x] unit: a booking confirmed before `0013` omits `paid_at` rather than
+      substituting one
 - [x] unit: unknown booking → 404
 - [x] unit (handler): `meta.message` tracks the status
 - [ ] integration: poll through a full settlement and confirm the transition
@@ -142,5 +167,10 @@ Implemented in `internal/payment/application/usecase/get_status_test.go` and
 - [x] `PaymentUsecase.GetStatus` with the full mapping
 - [x] `statusMessage` for `meta.message`
 - [x] handler + route
+- [ ] `expired_at` for a `LAPSED` booking: it reports `payment_expires_at`,
+      which is NULL for a booking that lapsed before it was ever `HELD`, so the
+      field is omitted even though the contract's EXPIRED shape includes it.
+      `booking_expires_at` is the right source and is not currently selected
 - [ ] decide on polling throttles (above)
-- [ ] decide whether `paid_at` should come from `payment_events`
+- [x] `paid_at` from `bookings.paid_at`, written by the webhook from the
+      gateway's settlement time (migration `0013`)

@@ -52,7 +52,7 @@ sequenceDiagram
     H->>H: if action ≠ record/late and payment_ref ≠ order_id → record only
 
     alt ActionConfirm
-        H->>DB: UPDATE bookings SET status='CONFIRMED'<br/>WHERE status IN ('AWAITING_PAYMENT','PENDING_CANCELLATION')
+        H->>DB: UPDATE bookings SET status='CONFIRMED',<br/>paid_at = COALESCE(settlement_time, now())<br/>WHERE status IN ('AWAITING_PAYMENT','PENDING_CANCELLATION')
         H->>DB: INSERT tickets … ON CONFLICT (booking_item_id) DO NOTHING RETURNING id
         H->>DB: INSERT outbox (ticket.issue) × one per issued seat
     else ActionLateSettlement
@@ -244,6 +244,35 @@ describes. That is the whole point of the pattern: no instant exists at which a
 booking is `CONFIRMED` and its e-ticket email is not queued, and none at which
 the email is queued for a booking that rolled back.
 
+### `paid_at`, in the same statement as the transition
+
+The confirm writes `paid_at` alongside `status`, from the notification's
+`settlement_time` (migration `0013`):
+
+```sql
+UPDATE bookings SET status = 'CONFIRMED', paid_at = COALESCE($2, now())
+ WHERE id = $1 AND status IN ('AWAITING_PAYMENT', 'PENDING_CANCELLATION')
+```
+
+One statement, so no `CONFIRMED` row can exist without a payment time — §5.4
+has to answer `paid_at` with something, and the alternative is what it used to
+do: report `payment_expires_at`, the deadline, which for a customer who paid at
+minute 2 of a ten-minute window was a timestamp eight minutes in the future.
+
+- **`settlement_time`, then `transaction_time`, then `now()`.** The first two
+  differ and the difference is the point: on a virtual account
+  `transaction_time` is when the VA was created and `settlement_time` is when
+  the customer paid into it. `now()` is the last resort, and it is the
+  database's clock rather than the handler's so the value comes from the same
+  source as the transition.
+- **Parsed as WIB.** Midtrans sends `YYYY-MM-DD HH:mm:ss` with no zone marker.
+  Parsing it as UTC would record every payment seven hours early — on a
+  ten-minute window, a settlement from before the booking was held.
+- **Written only on the transition.** A second notification for the same
+  booking takes `ActionRecordOnly` and never reaches this statement, so the
+  first settlement's time is the one that stands. A capture followed by a
+  settlement the next day does not overwrite it.
+
 ## 9. Post-commit credential cleanup
 
 Best effort, after the commit, and **only** for an applied confirm:
@@ -297,7 +326,7 @@ with an alarm on every execution before production.
 | Store | Key / table | Op |
 |---|---|---|
 | Aurora | `payment_events` | INSERT (first statement, `UNIQUE` guard) |
-| Aurora | `bookings` | SELECT … FOR UPDATE, then UPDATE per action |
+| Aurora | `bookings` | SELECT … FOR UPDATE, then UPDATE per action. A confirm also writes `paid_at` |
 | Aurora | `booking_items` | SELECT (seats: id, category, price, NIK hmac and mask) |
 | Aurora | `tickets` | INSERT … ON CONFLICT DO NOTHING |
 | Aurora | `nik_claims` | DELETE on expiry |
@@ -368,6 +397,12 @@ Implemented in `internal/payment/domain/valueobject/{signature,transition,order_
       address (§8.15)
 - [x] unit: credential cleanup runs only for an applied confirm, and a Redis
       failure never fails the webhook
+- [x] unit: a confirm stores the gateway's settlement time in `paid_at`, in the
+      same statement as the status change
+- [x] unit: a notification carrying no usable timestamp falls back to the
+      database's `now()`, so no `CONFIRMED` row lacks a payment time
+- [x] unit: `settlement_time` wins over `transaction_time`, both are read as
+      WIB, and an ISO-8601 value is rejected rather than silently accepted
 - [x] unit (handler): every outcome answers 200 with an identical body; an
       unparseable body is a 200 and is never processed; the literal
       `/payments/webhook` route beats `POST /payments/{booking_id}`

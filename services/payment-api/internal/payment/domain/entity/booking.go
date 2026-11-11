@@ -37,10 +37,14 @@ type Booking struct {
 	HeldAt           *time.Time
 	PaymentExpiresAt *time.Time
 	PaymentRef       string
-	PaymentAttempts  int
-	PaymentMethod    string
-	PaymentDisputed  bool
-	GrantToken       string
+	// PaidAt is the gateway's settlement time, set once on confirm. NULL for
+	// every booking that is not CONFIRMED, and for bookings confirmed before
+	// migration 0013 added the column.
+	PaidAt          *time.Time
+	PaymentAttempts int
+	PaymentMethod   string
+	PaymentDisputed bool
+	GrantToken      string
 
 	// Total is the sum of booking_items.unit_price, computed per request
 	// rather than denormalised onto the row. booking_items is the authority

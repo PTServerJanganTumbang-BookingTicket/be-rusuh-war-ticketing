@@ -83,6 +83,7 @@ sequenceDiagram
 | Redis | `grant:{token}` | HGETALL | Guard only |
 | Aurora | `bookings` | SELECT | Bound on `id` **and** `grant_token` |
 | Redis | `payment:breaker:state` | GET | Drives `enabled`; fail open |
+| Aurora | `payment_method_switches` | SELECT (latest per method/bank, cached) | The operator kill switch; fail open |
 
 Nothing is written.
 
@@ -120,6 +121,58 @@ Nothing is written.
   `dukcapil:breaker:state`. One upstream being down says nothing about the
   other, and sharing a key would couple two unrelated outages.
 
+### The operator kill switch
+
+`enabled` answers two questions at once, and they have different owners:
+
+| Layer | Answers | Who changes it | How fast |
+|---|---|---|---|
+| **Catalogue** (`entity.Catalogue`) | which methods exist *at all* | a deploy | ~15 min |
+| **Breaker** (`payment:breaker:state`) | is Midtrans answering? | itself | seconds |
+| **Switches** (`payment_method_switches`) | has an operator turned this off? | an operator | seconds |
+
+The breaker knows whether **Midtrans** is answering; it knows nothing about one
+bank behind it. So when BCA's virtual accounts start failing at minute 20 of a
+sale, every customer still sees BCA offered, still gets a VA number they cannot
+pay into, and still loses their seats to the sweep. Migration `0014` is the
+lever for that: one `INSERT` and BCA stops being offered, with no deploy.
+
+**The switch can only ever subtract.** The list is built from the code, then
+masked by `entity.ApplyDisabled`. A row naming a method the code does not know
+is ignored and logged, never advertised — because offering a method the charge
+path cannot shape is the one failure this design refuses to make possible. That
+is also why the catalogue is not itself a table: a method needs a charge-body
+shaper and an instruction extractor before it is chargeable, and neither is a
+column.
+
+Two shapes on the wire, because the contract has two:
+
+- A disabled **method** stays in the list with `enabled: false`. The field
+  already exists, the frontend already greys it out, and a customer who reads
+  "unavailable" learns more than one whose options silently shrank.
+- A disabled **bank** is **removed** from `banks[]`. `Bank` is
+  `{code, name, icon_url}` with no `enabled` field, so there is nothing to set,
+  and adding one would be a contract change for an incident tool.
+- Every bank off becomes `enabled: false` with no `banks` at all: "choose a
+  bank" with no banks is a dead end, and an empty array answers the frontend's
+  own question — is there a bank step — ambiguously.
+
+**Fail open, deliberately.** An unreadable switch table is treated as "nothing
+is switched off", and the read never returns an error the caller must handle. A
+kill switch that hides every payment method when its own storage hiccups is a
+worse outage than the one it was built for — and if Aurora is unreachable, §5.2
+cannot charge anything anyway, because it needs the same database to lock the
+booking.
+
+**Cached for `PAYMENT_SWITCH_CACHE_SECONDS`** (default 10). That is the delay
+between the `INSERT` and customers seeing it, and it is the honest cost of not
+adding a query to the hottest path in the service for state that changes a
+handful of times a year. The switch replaces a fifteen-minute deploy; it does
+not need to be synchronous.
+
+The operator procedure is in `RUNBOOK.md`; §5.2 enforces the same switch, which
+[02-initiate-payment.md](02-initiate-payment.md) explains.
+
 ## 7. Tests
 
 Implemented in `internal/payment/application/usecase/get_methods_test.go`,
@@ -134,6 +187,16 @@ Implemented in `internal/payment/application/usecase/get_methods_test.go`,
 - [x] unit: breaker OPEN → every method `enabled: false`
 - [x] unit: breaker read error → fails open, methods enabled
 - [x] unit: a non-`ErrNotFound` repository error stays a 500, not a 404
+- [x] unit: a switched-off bank is not offered, and the method stays enabled
+- [x] unit: a switched-off method is listed with `enabled: false`
+- [x] unit: every bank off → the method is disabled, not emptied
+- [x] unit: a switch for an unknown method changes nothing
+- [x] unit: an unreadable switch table offers every method
+- [x] unit: an unowned booking is still 404, and the switch store is not even
+      consulted
+- [x] unit (adapter): latest row per method and bank wins; `available = true`
+      ends a switch; an expired switch is filtered in SQL; the cache serves the
+      TTL then refreshes; an unreadable table keeps the last known state
 - [x] unit: handler passes the path id and the context grant, never a header
 - [x] unit: route without the guard → 500, and the use case is never reached
 

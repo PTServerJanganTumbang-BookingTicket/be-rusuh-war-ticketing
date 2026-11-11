@@ -64,8 +64,12 @@ func newMux(pool *pgxpool.Pool, rdb *goredis.Client, cfg paymentcfg.Config) (*Se
 	gateway := midtrans.New(cfg.Midtrans.BaseURL, cfg.Midtrans.ServerKey, cfg.Midtrans.Timeout)
 	breaker := paymentredis.NewCircuitBreaker(rdb, cfg.Midtrans.BreakerThreshold, cfg.Midtrans.BreakerOpenFor)
 	credentials := paymentredis.NewCredentialStore(rdb)
+	// Cached, because §5.1 is on the path of every customer on the payment
+	// page. The TTL is how long a switch takes to bite: seconds, because the
+	// lever exists to replace a fifteen-minute deploy, not to be synchronous.
+	switches := postgres.NewSwitchRepository(pool, cfg.Payment.SwitchCacheTTL, nil)
 
-	uc := usecase.New(repo, gateway, breaker, credentials, usecase.Config{
+	uc := usecase.New(repo, gateway, breaker, credentials, switches, usecase.Config{
 		IconBase:            cfg.Payment.IconBase,
 		PaymentTTL:          cfg.Payment.TTL,
 		MinRetryRemaining:   cfg.Payment.MinRetryRemaining,

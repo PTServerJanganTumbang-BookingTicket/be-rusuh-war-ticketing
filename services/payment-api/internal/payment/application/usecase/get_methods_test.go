@@ -94,6 +94,94 @@ func TestGetMethods_BreakerUnreadable_FailsOpen(t *testing.T) {
 // A repository failure that is not ErrNotFound must stay a 500, not be
 // flattened into a 404: "the database is down" and "no such booking" need
 // different responses from an operator's point of view.
+// ── the operator kill switch (migration 0014) ───────────────────────────────
+
+func TestGetMethods_ASwitchedOffBankIsNotOffered(t *testing.T) {
+	h := newHarness(t)
+	h.repo.getOwnedFn = func(context.Context, string, string) (entity.Booking, error) {
+		return heldBooking(entity.StatusHeld), nil
+	}
+	h.sw.off = offBank(entity.MethodBankTransfer, entity.BankBCA)
+
+	out, err := h.uc.GetMethods(context.Background(), "RB-00912", "grant-abc")
+	require.NoError(t, err)
+	require.Len(t, out.Methods, 2)
+	assert.True(t, out.Methods[0].Enabled, "the method still works through the other three banks")
+	require.Len(t, out.Methods[0].Banks, 3)
+	for _, b := range out.Methods[0].Banks {
+		assert.NotEqual(t, entity.BankBCA, b.Code)
+	}
+}
+
+func TestGetMethods_ASwitchedOffMethodIsOfferedAsDisabled(t *testing.T) {
+	h := newHarness(t)
+	h.repo.getOwnedFn = func(context.Context, string, string) (entity.Booking, error) {
+		return heldBooking(entity.StatusHeld), nil
+	}
+	h.sw.off = offMethod(entity.MethodGoPay)
+
+	out, err := h.uc.GetMethods(context.Background(), "RB-00912", "grant-abc")
+	require.NoError(t, err)
+	require.Len(t, out.Methods, 2, "still listed, so the customer is told rather than left guessing")
+	assert.Equal(t, entity.MethodGoPay, out.Methods[1].ID)
+	assert.False(t, out.Methods[1].Enabled)
+	assert.True(t, out.Methods[0].Enabled)
+}
+
+// The switch subtracts; it never adds. A row for a method the code cannot
+// charge must not put that method in front of a customer, because §5.2 would
+// then refuse it — or worse, mint an instrument nothing can shape.
+func TestGetMethods_ASwitchForAnUnknownMethodIsInert(t *testing.T) {
+	h := newHarness(t)
+	h.repo.getOwnedFn = func(context.Context, string, string) (entity.Booking, error) {
+		return heldBooking(entity.StatusHeld), nil
+	}
+	h.sw.off = offMethod("credit_card")
+
+	out, err := h.uc.GetMethods(context.Background(), "RB-00912", "grant-abc")
+	require.NoError(t, err)
+	require.Len(t, out.Methods, 2)
+	assert.True(t, out.Methods[0].Enabled)
+	assert.True(t, out.Methods[1].Enabled)
+	for _, m := range out.Methods {
+		assert.NotEqual(t, "credit_card", m.ID)
+	}
+}
+
+// A kill switch whose own storage is unreachable must not be able to take
+// payments down. Guessing "nothing is off" is the only safe direction: the
+// worst case is that a switched-off method is offered during a database
+// outage, in which case §5.2 cannot charge anything anyway.
+func TestGetMethods_SwitchStoreUnreadable_OffersEveryMethod(t *testing.T) {
+	h := newHarness(t)
+	h.repo.getOwnedFn = func(context.Context, string, string) (entity.Booking, error) {
+		return heldBooking(entity.StatusHeld), nil
+	}
+	h.sw.err = errors.New("pq: connection refused")
+
+	out, err := h.uc.GetMethods(context.Background(), "RB-00912", "grant-abc")
+	require.NoError(t, err)
+	require.Len(t, out.Methods, 2)
+	assert.True(t, out.Methods[0].Enabled)
+	assert.Len(t, out.Methods[0].Banks, 4)
+}
+
+// Ownership is still resolved first. A switch must not turn this endpoint into
+// an oracle that answers before the booking is checked.
+func TestGetMethods_UnownedBookingIs404EvenWithSwitchesSet(t *testing.T) {
+	h := newHarness(t)
+	h.repo.getOwnedFn = func(context.Context, string, string) (entity.Booking, error) {
+		return entity.Booking{}, portout.ErrNotFound
+	}
+	h.sw.off = offMethod(entity.MethodGoPay)
+
+	_, err := h.uc.GetMethods(context.Background(), "RB-00912", "grant-abc")
+	var appErr *apperror.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, http.StatusNotFound, appErr.HTTPStatus)
+	assert.Zero(t, h.sw.calls, "the switch store is not even consulted")
+}
+
 func TestGetMethods_RepositoryError_IsNotMappedTo404(t *testing.T) {
 	h := newHarness(t)
 	boom := errors.New("postgres: connection reset")

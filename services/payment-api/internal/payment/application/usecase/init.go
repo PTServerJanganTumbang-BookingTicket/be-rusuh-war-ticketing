@@ -1,9 +1,12 @@
 package usecase
 
 import (
+	"context"
 	"errors"
+	"log/slog"
 	"time"
 
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/payment-api/internal/payment/domain/entity"
 	portin "github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/payment-api/internal/payment/port/inbound"
 	portout "github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/payment-api/internal/payment/port/outbound"
 )
@@ -33,6 +36,7 @@ type PaymentUsecase struct {
 	gateway     portout.IMidtransClient
 	breaker     portout.ICircuitBreaker
 	credentials portout.ICredentialStore
+	switches    portout.IMethodSwitches
 	cfg         Config
 
 	// now is injectable so the TTL arithmetic is testable without sleeping.
@@ -52,6 +56,7 @@ func New(
 	gateway portout.IMidtransClient,
 	breaker portout.ICircuitBreaker,
 	credentials portout.ICredentialStore,
+	switches portout.IMethodSwitches,
 	cfg Config,
 ) portin.IPaymentUsecase {
 	return &PaymentUsecase{
@@ -59,7 +64,27 @@ func New(
 		gateway:     gateway,
 		breaker:     breaker,
 		credentials: credentials,
+		switches:    switches,
 		cfg:         cfg,
 		now:         func() time.Time { return time.Now().UTC() },
 	}
+}
+
+// disabledMethods reads the operator kill switch, treating an unreadable
+// switch store as "nothing is switched off".
+//
+// The adapter already does that and returns a nil error, so this is belt and
+// braces for any other implementation of the port: the one thing a kill switch
+// must never do is take payments down when its own storage is unavailable.
+func (u *PaymentUsecase) disabledMethods(ctx context.Context) entity.Disabled {
+	if u.switches == nil {
+		return nil
+	}
+	off, err := u.switches.Disabled(ctx)
+	if err != nil {
+		slog.WarnContext(ctx, "method switches unreadable, offering every method",
+			slog.Any("err", err))
+		return nil
+	}
+	return off
 }

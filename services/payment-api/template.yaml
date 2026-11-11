@@ -117,6 +117,17 @@ Parameters:
       e-ticket email sees a paid booking rather than an expiry screen
       (contract §3.3).
 
+  PaymentSwitchCacheSeconds:
+    Type: Number
+    Default: 10
+    MinValue: 0
+    MaxValue: 300
+    Description: >
+      How long the operator kill switch (payment_method_switches, migration
+      0014) is cached in process. This is the delay between an operator
+      inserting a row and customers seeing it, traded against a query on the
+      hottest path in the service. Zero disables the cache.
+
   PaymentIconBase:
     Type: String
     Default: https://cdn.rusuh.id/icons
@@ -176,6 +187,7 @@ Resources:
           MAX_PAYMENT_ATTEMPTS: !Ref MaxPaymentAttempts
           SETTLED_TOMBSTONE_SECONDS: !Ref SettledTombstoneSeconds
           PAYMENT_ICON_BASE: !Ref PaymentIconBase
+          PAYMENT_SWITCH_CACHE_SECONDS: !Ref PaymentSwitchCacheSeconds
           # ── Secrets, injected by CloudFormation at deploy time ──────────
           # The Go config loader reads these as PLAIN environment variables
           # (os.Getenv) and validate() refuses to start without them, so

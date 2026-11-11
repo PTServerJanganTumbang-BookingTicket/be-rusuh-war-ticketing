@@ -37,6 +37,32 @@ func (u *PaymentUsecase) Initiate(ctx context.Context, bookingID, grantToken str
 			WithCode(apperror.CodeBankNotSupported)
 	}
 
+	// The kill switch is checked HERE and not only on §5.1, because a customer
+	// who loaded the payment page before an operator switched BCA off still
+	// has a BCA button on screen. A switch enforced only on the listing does
+	// nothing for exactly the people already mid-checkout, who are the ones
+	// about to lose seats to an instrument they cannot pay.
+	//
+	// Before the booking is locked and before any gateway call: nothing has
+	// changed yet, so refusing costs the customer only a choice of method.
+	if off := u.disabledMethods(ctx); off != nil {
+		switch {
+		case off.MethodOff(req.Method):
+			slog.InfoContext(ctx, "charge refused, method switched off by an operator",
+				slog.String("method", req.Method), slog.String("booking_id", bookingID))
+			return dto.InitiateResponse{}, apperror.
+				ErrServiceUnavailable("payment method is temporarily unavailable").
+				WithCode(apperror.CodePaymentGatewayUnavailable)
+		case req.Bank != "" && off.BankOff(req.Method, req.Bank):
+			slog.InfoContext(ctx, "charge refused, bank switched off by an operator",
+				slog.String("method", req.Method), slog.String("bank", req.Bank),
+				slog.String("booking_id", bookingID))
+			return dto.InitiateResponse{}, apperror.
+				ErrServiceUnavailable("selected bank is temporarily unavailable").
+				WithCode(apperror.CodePaymentGatewayUnavailable)
+		}
+	}
+
 	var gatewayErr error
 	charge := func(ctx context.Context, b entity.Booking, orderID string) (portout.ChargeResult, error) {
 		allowed, err := u.breaker.Allow(ctx)

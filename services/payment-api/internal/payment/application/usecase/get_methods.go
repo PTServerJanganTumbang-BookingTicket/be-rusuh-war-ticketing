@@ -31,7 +31,10 @@ func (u *PaymentUsecase) GetMethods(ctx context.Context, bookingID, grantToken s
 		allowed = true
 	}
 
-	methods := entity.Catalogue(u.cfg.IconBase, allowed)
+	// The catalogue is what the code can charge; the switches are what an
+	// operator has turned off since. Masking here rather than inside Catalogue
+	// keeps the code the only place a method can be ADDED.
+	methods := entity.ApplyDisabled(entity.Catalogue(u.cfg.IconBase, allowed), u.disabledMethods(ctx))
 	out := dto.MethodsResponse{Methods: make([]dto.Method, 0, len(methods))}
 	for _, m := range methods {
 		row := dto.Method{

@@ -620,6 +620,50 @@ func notifyTx(booking []any, items ...[]any) *mockTx {
 // One ticket per booking_item, one e-ticket email per holder, all inside the
 // transaction that set the status - there is no instant at which a booking is
 // CONFIRMED and its email is not queued.
+// paid_at is written in the same statement as the CONFIRMED transition, from
+// the gateway's own settlement time (migration 0013). §5.4 reports it, and
+// before the column existed it reported the payment DEADLINE instead.
+func TestApplyNotification_Confirm_StoresTheGatewaySettlementTime(t *testing.T) {
+	tx := notifyTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912:1")))
+	settled := time.Date(2026, 3, 1, 10, 8, 30, 0, time.UTC)
+
+	_, err := newRepo(&mockDB{tx: tx}).ApplyNotification(context.Background(), portout.NotificationInput{
+		BookingID: "RB-00912", OrderID: "RB-00912:1",
+		GatewayEventID:    "RB-00912:1:settlement:200",
+		TransactionStatus: "settlement", FraudStatus: "accept",
+		PaidAt: &settled, Now: fixedNow, MaxAttempts: 5,
+	})
+	require.NoError(t, err)
+
+	confirms := tx.execMatching("status = 'CONFIRMED'")
+	require.Len(t, confirms, 1)
+	assert.Contains(t, confirms[0].sql, "paid_at = COALESCE($2, now())",
+		"one statement, so a confirmed booking never lacks a payment time")
+	require.Len(t, confirms[0].args, 2)
+	assert.Equal(t, &settled, confirms[0].args[1])
+}
+
+// A notification with no usable timestamp still has to leave a CONFIRMED row
+// with a paid_at, because §5.4 must answer with something and the alternative
+// is faking it from the deadline again. COALESCE in SQL rather than a Go
+// fallback, so the value comes from the same clock as the transition.
+func TestApplyNotification_Confirm_WithoutAGatewayTimeFallsBackInSQL(t *testing.T) {
+	tx := notifyTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912:1")))
+
+	_, err := newRepo(&mockDB{tx: tx}).ApplyNotification(context.Background(), portout.NotificationInput{
+		BookingID: "RB-00912", OrderID: "RB-00912:1",
+		GatewayEventID:    "RB-00912:1:settlement:200",
+		TransactionStatus: "settlement", FraudStatus: "accept",
+		PaidAt: nil, Now: fixedNow, MaxAttempts: 5,
+	})
+	require.NoError(t, err)
+
+	confirms := tx.execMatching("status = 'CONFIRMED'")
+	require.Len(t, confirms, 1)
+	assert.Contains(t, confirms[0].sql, "COALESCE($2, now())")
+	assert.Nil(t, confirms[0].args[1], "and the database supplies now()")
+}
+
 func TestApplyNotification_Settlement_ConfirmsIssuesAndEnqueues(t *testing.T) {
 	items := [][]any{
 		{"bi-1", "EV-1", "cat-1", "Festival", int64(1500000), "hmac-1", "3171****33", "a@example"},

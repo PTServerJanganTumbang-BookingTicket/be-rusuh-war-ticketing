@@ -21,15 +21,44 @@ func statusOf(t *testing.T, h *harness, b entity.Booking) dto.StatusResponse {
 	return out
 }
 
-func TestGetStatus_Confirmed_IsPaid(t *testing.T) {
+// paid_at is the GATEWAY's settlement time, stored on the booking by the
+// webhook (migration 0013) — not the payment deadline, which is what this
+// endpoint reported before the column existed. For a customer who paid at
+// minute 2 of a ten-minute window, the deadline was a timestamp eight minutes
+// in the future of the response carrying it.
+func TestGetStatus_Confirmed_IsPaidWithTheSettlementTime(t *testing.T) {
 	h := newHarness(t)
-	out := statusOf(t, h, heldBooking(entity.StatusConfirmed))
+	b := heldBooking(entity.StatusConfirmed)
+	// Paid at minute 2 of a window that opened five minutes before fixedNow.
+	paid := b.HeldAt.Add(2 * time.Minute)
+	b.PaidAt = &paid
+
+	out := statusOf(t, h, b)
 
 	assert.Equal(t, dto.StatusPaid, out.Status)
 	assert.Equal(t, "/bookings/RB-00912/success", out.RedirectURL)
-	assert.NotEmpty(t, out.PaidAt)
+	assert.Equal(t, paid.UTC().Format(time.RFC3339), out.PaidAt)
+	assert.NotEqual(t, b.PaymentExpiresAt.UTC().Format(time.RFC3339), out.PaidAt,
+		"the deadline is not the payment time")
+	// And it is in the past, which the old behaviour could not promise.
+	assert.True(t, paid.Before(fixedNow))
 	// A settled booking has no deadline left to show.
 	assert.Empty(t, out.ExpiresAt)
+}
+
+// Bookings confirmed before migration 0013 have no paid_at. The field is
+// omitted rather than substituted: a wrong timestamp on a receipt is worse
+// than an absent one, and the settlement time is still in payment_events.raw
+// for anyone who needs it.
+func TestGetStatus_ConfirmedBeforeThePaidAtColumn_OmitsIt(t *testing.T) {
+	h := newHarness(t)
+	b := heldBooking(entity.StatusConfirmed)
+	b.PaidAt = nil
+
+	out := statusOf(t, h, b)
+	assert.Equal(t, dto.StatusPaid, out.Status)
+	assert.Empty(t, out.PaidAt)
+	assert.Equal(t, "/bookings/RB-00912/success", out.RedirectURL)
 }
 
 func TestGetStatus_ExpiredAndLapsed_AreExpired(t *testing.T) {

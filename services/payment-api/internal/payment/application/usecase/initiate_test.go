@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
 	"time"
 
@@ -67,6 +68,99 @@ func TestInitiate_GoPay_NeedsNoBank(t *testing.T) {
 	assert.Equal(t, entity.MethodGoPay, out.Method)
 	assert.Equal(t, entity.MethodGoPay, h.gw.lastCharge.PaymentType)
 	assert.Empty(t, h.gw.lastCharge.Bank)
+}
+
+// ── the operator kill switch (migration 0014) ───────────────────────────────
+//
+// Checked on §5.2 and not only on §5.1, because a customer who loaded the
+// payment page before an operator switched BCA off still has a BCA button on
+// screen. A switch enforced only on the listing does nothing for the people
+// already mid-checkout, who are precisely the ones about to be handed an
+// instrument they cannot pay.
+
+func TestInitiate_ASwitchedOffMethodIsRefusedBeforeAnythingHappens(t *testing.T) {
+	h := newHarness(t)
+	h.sw.off = offMethod(entity.MethodGoPay)
+
+	_, err := h.uc.Initiate(context.Background(), "RB-00912", "grant-abc",
+		dto.InitiateRequest{Method: entity.MethodGoPay})
+
+	var appErr *apperror.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, http.StatusServiceUnavailable, appErr.HTTPStatus)
+	assert.Equal(t, apperror.CodePaymentGatewayUnavailable, appErr.ErrorCode)
+	// Nothing was locked, nothing was charged: the customer loses only a
+	// choice of method.
+	assert.Zero(t, h.gw.chargeCalls)
+	assert.Empty(t, h.repo.lastInitiate.BookingID, "the repository was never called")
+}
+
+func TestInitiate_ASwitchedOffBankIsRefused(t *testing.T) {
+	h := newHarness(t)
+	h.sw.off = offBank(entity.MethodBankTransfer, entity.BankBCA)
+
+	_, err := h.uc.Initiate(context.Background(), "RB-00912", "grant-abc",
+		dto.InitiateRequest{Method: entity.MethodBankTransfer, Bank: entity.BankBCA})
+
+	var appErr *apperror.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, http.StatusServiceUnavailable, appErr.HTTPStatus)
+	assert.Zero(t, h.gw.chargeCalls)
+	assert.Empty(t, h.repo.lastInitiate.BookingID)
+}
+
+// Switching off one bank must not close the method. BNI still charges.
+func TestInitiate_AnotherBankUnderTheSameMethodStillCharges(t *testing.T) {
+	h := newHarness(t)
+	h.sw.off = offBank(entity.MethodBankTransfer, entity.BankBCA)
+	h.repo.initiateFn = chargingRepo(heldBooking(entity.StatusHeld), "RB-00912:1")
+
+	_, err := h.uc.Initiate(context.Background(), "RB-00912", "grant-abc",
+		dto.InitiateRequest{Method: entity.MethodBankTransfer, Bank: entity.BankBNI})
+	require.NoError(t, err)
+	assert.Equal(t, 1, h.gw.chargeCalls)
+}
+
+// Switching off the METHOD closes every bank under it, so a client that kept a
+// bank code from an older page cannot slip past the method-level switch.
+func TestInitiate_AMethodOffAlsoRefusesEachOfItsBanks(t *testing.T) {
+	for _, bank := range []string{entity.BankBCA, entity.BankBNI, entity.BankBRI, entity.BankCIMB} {
+		t.Run(bank, func(t *testing.T) {
+			h := newHarness(t)
+			h.sw.off = offMethod(entity.MethodBankTransfer)
+
+			_, err := h.uc.Initiate(context.Background(), "RB-00912", "grant-abc",
+				dto.InitiateRequest{Method: entity.MethodBankTransfer, Bank: bank})
+			var appErr *apperror.AppError
+			require.ErrorAs(t, err, &appErr)
+			assert.Equal(t, http.StatusServiceUnavailable, appErr.HTTPStatus)
+			assert.Zero(t, h.gw.chargeCalls)
+		})
+	}
+}
+
+// A switch for something else does not interfere.
+func TestInitiate_AnUnrelatedSwitchDoesNotBlockTheCharge(t *testing.T) {
+	h := newHarness(t)
+	h.sw.off = offMethod(entity.MethodBankTransfer)
+	h.repo.initiateFn = chargingRepo(heldBooking(entity.StatusHeld), "RB-00912:1")
+
+	_, err := h.uc.Initiate(context.Background(), "RB-00912", "grant-abc",
+		dto.InitiateRequest{Method: entity.MethodGoPay})
+	require.NoError(t, err)
+	assert.Equal(t, 1, h.gw.chargeCalls)
+}
+
+// The switch store being down must not stop payments.
+func TestInitiate_SwitchStoreUnreadable_ChargesAnyway(t *testing.T) {
+	h := newHarness(t)
+	h.sw.err = errors.New("pq: connection refused")
+	h.repo.initiateFn = chargingRepo(heldBooking(entity.StatusHeld), "RB-00912:1")
+
+	_, err := h.uc.Initiate(context.Background(), "RB-00912", "grant-abc",
+		dto.InitiateRequest{Method: entity.MethodGoPay})
+	require.NoError(t, err)
+	assert.Equal(t, 1, h.gw.chargeCalls)
 }
 
 func TestInitiate_UnsupportedMethod_IsRejectedBeforeAnyLookup(t *testing.T) {

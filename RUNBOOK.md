@@ -266,6 +266,68 @@ aws cloudformation deploy \
 
 ---
 
+## Turning a payment method off, mid-sale
+
+A bank fails while a sale is running — BCA's virtual accounts start timing out,
+Midtrans itself is fine. The payment breaker will not help: it knows whether
+**Midtrans** is answering and nothing about one bank behind it. So customers
+keep choosing BCA, keep getting a VA number they cannot pay into, and lose
+their seats to the sweep ten minutes later.
+
+One `INSERT` stops it being offered. No deploy.
+
+```sql
+INSERT INTO payment_method_switches (method_id, bank_code, available, reason, changed_by, expires_at)
+VALUES ('bank_transfer', 'bca', false, 'BCA VA timeouts, confirmed with ops', 'your-name', now() + interval '2 hours');
+```
+
+- `bank_code NULL` turns the **whole method** off instead of one bank.
+  `method_id` is the Midtrans `payment_type`: `bank_transfer` or `gopay`.
+- `reason` and `changed_by` are **required**, and a blank one is refused. You
+  are writing for whoever reads this row at 2am, possibly you.
+- **Set `expires_at`.** The switch then reverts itself. The real failure mode is
+  not forgetting to switch BCA off — it is switching it off during an incident
+  and nobody remembering to switch it back, so a bank stays dark for a week and
+  the first sign is a conversion graph. `NULL` means "until someone says
+  otherwise", which is sometimes right and should be a deliberate choice.
+
+It takes effect within `PAYMENT_SWITCH_CACHE_SECONDS` (default 10). §5.1 stops
+offering it and §5.2 refuses a charge for it, so customers already holding the
+page are covered too.
+
+**Turning it back on is another INSERT, never a DELETE or an UPDATE:**
+
+```sql
+INSERT INTO payment_method_switches (method_id, bank_code, available, reason, changed_by)
+VALUES ('bank_transfer', 'bca', true, 'BCA recovered 21:28', 'your-name');
+```
+
+The table is append-only by design. A `DELETE` would re-enable the bank and
+destroy the answer to the question you will actually be asked afterwards — why
+could nobody pay with BCA between 20:14 and 21:30, and who decided that.
+
+**What is switched off right now:**
+
+```sql
+SELECT DISTINCT ON (method_id, bank_code) method_id, bank_code, available, reason, changed_by, changed_at, expires_at
+FROM payment_method_switches
+WHERE expires_at IS NULL OR expires_at > now()
+ORDER BY method_id, bank_code, changed_at DESC, id DESC;
+```
+
+Rows with `available = true` are switches that have **ended**; only
+`available = false` is in force.
+
+Two things this cannot do. It cannot turn a method **on** that the code does
+not implement — a row for `credit_card` is ignored and logged, because a method
+needs a charge-body shaper and an instruction extractor in Go before anything
+can be charged with it. And if Aurora is unreachable the switch fails **open**,
+offering everything: a kill switch that hides every payment method when its own
+storage hiccups is a worse outage than the one it exists for, and in that state
+§5.2 cannot charge anything anyway.
+
+---
+
 ## When something fails
 
 | Symptom | Do this |
@@ -275,6 +337,7 @@ aws cloudformation deploy \
 | Foundation left in `ROLLBACK_*`, retry fails on "already exists" | `bash infra/cleanup-failed-foundation.sh` (dry run first). It refuses to touch a healthy stack and will not delete the NIK pepper. |
 | A service returns 500 on `/sys/ping` | Read its log group — `aws logs tail /aws/lambda/rusuh-prod-<svc> --since 30m`. Init failures are almost always a bad `DATABASE_URL` or an unreachable dependency. |
 | `password authentication failed` | The cluster and the connection string are a generation apart. See *The one thing to internalise*. |
+| One bank is failing but Midtrans is up | Switch that bank off — see *Turning a payment method off, mid-sale* above. The breaker cannot see inside Midtrans. |
 | Lint fails with `Unexpected HTTP response: 504` | Not a lint finding — the action could not download its binary. Re-run. `max-parallel: 2` makes it rare. |
 
 ---

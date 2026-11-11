@@ -283,6 +283,7 @@ func bookingValues(status entity.BookingStatus, mutate ...func([]any)) []any {
 		&held,           // held_at
 		&exp,            // payment_expires_at
 		"",              // payment_ref
+		nil,             // paid_at — NULL until a settlement confirms it
 		0,               // payment_attempts
 		"",              // payment_method
 		false,           // payment_disputed
@@ -300,7 +301,13 @@ func withPaymentRef(ref string) func([]any) {
 }
 
 func withAttempts(n int) func([]any) {
-	return func(v []any) { v[8] = n }
+	return func(v []any) { v[9] = n }
+}
+
+// withPaidAt sets the settlement time migration 0013 added. Only a CONFIRMED
+// booking has one.
+func withPaidAt(t time.Time) func([]any) {
+	return func(v []any) { v[8] = &t }
 }
 
 func withExpiresAt(t time.Time) func([]any) {
