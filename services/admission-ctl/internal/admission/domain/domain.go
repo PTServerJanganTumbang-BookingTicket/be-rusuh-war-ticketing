@@ -47,6 +47,32 @@ type EndedHold struct {
 	NIKs  []string
 }
 
+// StockExpectation is what Aurora says one category should hold in Redis: its capacity (immutable during a sale) minus the
+// seats of the bookings that still take them (HELD, AWAITING_PAYMENT, PENDING_CANCELLATION, CONFIRMED).
+type StockExpectation struct {
+	CategoryID string
+	Capacity   int64
+	Taken      int64
+}
+
+// Expected is the stock Redis should hold. Never negative: more seats taken than capacity is an Aurora-side problem that
+// reconciliation does not paper over by driving the counter below zero.
+func (e StockExpectation) Expected() int64 { return max(e.Capacity-e.Taken, 0) }
+
+// AdjustResult is what the compare-and-adjust script answered (docs/lua-scripts.md §5).
+type AdjustResult struct {
+	Code  string // ADJUSTED, CHANGED, MISSING or BELOW_ZERO
+	Value int64
+}
+
+// Answers of the compare-and-adjust script.
+const (
+	AdjustAdjusted  = "ADJUSTED"
+	AdjustChanged   = "CHANGED"
+	AdjustMissing   = "MISSING"
+	AdjustBelowZero = "BELOW_ZERO"
+)
+
 // Event is one sale the controller ticks.
 type Event struct {
 	ID         string

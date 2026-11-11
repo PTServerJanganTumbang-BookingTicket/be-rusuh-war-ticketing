@@ -66,6 +66,8 @@ func main() {
 	tick.UseEvents(redisadapter.NewEventSource(rdb), cfg.EventRefresh)
 	// A held booking nobody starts paying for within 10 minutes expires, and its seats and NIK locks go back.
 	tick.WithHeldSweep(bookings, redisadapter.NewHolds(rdb))
+	// Once a minute per open sale, Redis stock and NIK locks are compared with Aurora and repaired (0 turns it off).
+	tick.WithReconcile(usecase.NewReconciler(cfg.Reconcile, bookings, redisadapter.NewRepair(rdb), logMetrics{}))
 	slog.Info("admission-ctl starting", slog.Duration("interval", cfg.Tick.Interval), slog.Duration("eventRefresh", cfg.EventRefresh))
 
 	// Loop returns when ctx ends. Loop only checks ctx between ticks, but the Redis and Aurora calls inside a tick use

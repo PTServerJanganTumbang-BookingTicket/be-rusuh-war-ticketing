@@ -148,7 +148,7 @@ first seat (`use_account_nik: true` on `POST /bookings`). Both can be changed. C
   | Case | `account` |
   |---|---|
   | guest grant | `null` |
-  | account grant, account with a verified NIK | `{email, nik_masked: "3171********0022"}` |
+  | account grant, account with a verified NIK | `{email, nik_masked: "3171**********22"}` |
   | account grant, account without a NIK | `{email, nik_masked: null}` |
   | account grant, no `accounts` row (deleted during the sale) | `null`, logged; the page still renders |
 

@@ -293,7 +293,7 @@ New code:
 
   ```json
   request:  {"op": "validate", "nik": "3171 0000 0000 0022"}
-  response: {"nik_hmac": "…", "nik_masked": "3171********0022", "valid": true, "status": "ACTIVE", "source": "verified"}
+  response: {"nik_hmac": "…", "nik_masked": "3171**********22", "valid": true, "status": "ACTIVE", "source": "verified"}
   error:    {"error_code": "DUKCAPIL_UNAVAILABLE"}  or  {"error_code": "VALIDATION_ERROR"}
   ```
 

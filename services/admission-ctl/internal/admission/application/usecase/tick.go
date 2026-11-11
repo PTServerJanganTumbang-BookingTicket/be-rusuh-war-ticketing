@@ -35,7 +35,16 @@ const (
 	MetricReleaseFailed = "ReleaseFailed"
 	// MetricReleaseStockMissing counts a stock key that was gone when a hold was released (not recreated; B5 restores it).
 	MetricReleaseStockMissing = "ReleaseStockMissing"
-	GaugeQueueDepth           = "QueueDepth"
+	// Stock reconciliation (docs/05-booking/04-stock-reconciliation.md).
+	MetricStockKeyRestored   = "StockKeyRestored"
+	MetricStockAdjusted      = "StockAdjusted"
+	MetricStockAdjustRefused = "StockAdjustRefused"
+	MetricStockDriftTooLarge = "StockDriftTooLarge"
+	MetricNikClaimRestored   = "NikClaimRestored"
+	MetricReconcileFailures  = "ReconcileFailures"
+	GaugeQueueDepth          = "QueueDepth"
+	GaugeStockDrift          = "StockDrift" // the largest absolute drift of the last reconciliation run
+	GaugeNikOrphans          = "NikOrphans" // nik:used keys with no nik_claims row (never deleted)
 )
 
 // Config holds the tunables of the tick (config.go in cmd/worker reads them from the environment).
@@ -69,6 +78,8 @@ type Tick struct {
 	clock    outbound.Clock
 	metrics  outbound.Metrics
 	events   map[string]*eventState
+
+	recon *Reconciler // nil: reconciliation is off (WithReconcile)
 
 	held  outbound.HeldBookings // nil: the HELD sweep is off (WithHeldSweep)
 	holds outbound.Holds
@@ -112,12 +123,14 @@ func (t *Tick) state(id string) *eventState {
 // Run ticks every event once. The sweep goes first, so a place freed by a lapse is used by this very tick.
 func (t *Tick) Run(ctx context.Context) {
 	t.Sweep(ctx)
-	for _, ev := range t.currentEvents(ctx) {
+	events := t.currentEvents(ctx)
+	for _, ev := range events {
 		if err := t.RunEvent(ctx, ev); err != nil {
 			t.metrics.Inc(MetricTickFailures)
 			slog.Error("admission tick failed", slog.String("event", ev.ID), slog.Any("err", err))
 		}
 	}
+	t.reconcileOne(ctx, events)
 }
 
 // Loop ticks until ctx ends. A tick that takes longer than the interval delays the next one (never overlaps it)

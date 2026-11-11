@@ -14,7 +14,7 @@ Sources: ADR-006 §3.4, §4.1, §8.12 (§8.11 `free_slots` removed by §8.14) ·
 | token-bucket rate limiter | **built** (Lua embedded in `pkg/ratelimit/ratelimit.go`) | join (per IP and per account), sse-server (per IP); user and nik-verify have their own limiters | on every request that passes a limiter | refill the bucket by elapsed time and take one token, atomically |
 | `hold_booking.lua` | built (`05-booking/02-create-booking.md`) | booking service | the customer presses Pay (`POST /bookings`) | reserve stock across categories and lock every seat's NIK, all or nothing |
 | `release_hold.lua` | built (same plan) | booking service, admission-ctl | the booking transaction fails after the hold, or a `HELD` booking expires | give the stock back and delete the NIK locks |
-| `adjust_if_unchanged.lua` | planned (admission-ctl plan) | admission-ctl, stock reconciliation | periodic correction of stock counters | correct a counter only if it still has the value that was read |
+| `adjust_if_unchanged.lua` | built (`05-booking/04-stock-reconciliation.md`) | admission-ctl, stock reconciliation | periodic correction of stock counters | correct a counter only if it still has the value that was read |
 
 ```mermaid
 flowchart LR
@@ -112,13 +112,15 @@ argument is checked before anything is written.
 **Keys.** `stock:{ev}:<category>` per category and `nik:used:{ev}:<hmac>` per seat. All carry the `{ev}` hash tag, so one
 call can touch them in the cluster. `advance_now_serving.lua` also reads the stock keys.
 
-## 5. `adjust_if_unchanged.lua` (planned)
+## 5. `adjust_if_unchanged.lua`
 
 **What for.** Correct a stock counter that drifted, but only if it still holds the value the caller read. A double run therefore never corrects twice.
 
 **When.** The periodic stock reconciliation (step B5 in `05-booking/README.md`).
 
-**Spec:** not written yet.
+**Spec:** `docs/05-booking/04-stock-reconciliation.md` §4.1 · **Code:** `pkg/redisscript/adjust_if_unchanged.lua`, `adjust.go` (`AdjustIfUnchanged`).
+
+**Call shape.** `KEYS` = the one `stock:{ev}:<cat>` key. `ARGV` = the value the caller read, the delta. It answers `{code, value}`: `ADJUSTED` (the key held the observed value and the result is not below zero), `CHANGED` (it moved since: nothing written), `MISSING` (gone, or not a plain integer: nothing written, the caller restores it with `SET NX`) or `BELOW_ZERO` (nothing written). It writes only its own key and never creates it.
 
 ## 6. How scripts are loaded
 

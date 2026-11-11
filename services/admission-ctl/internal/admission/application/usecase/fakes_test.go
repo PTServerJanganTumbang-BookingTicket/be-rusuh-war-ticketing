@@ -81,6 +81,7 @@ type fakeQueue struct {
 	advance    redisscript.Result
 	advanceErr error
 	view       domain.EventView
+	viewErr    error
 
 	ops       []string
 	dequeued  []string
@@ -145,7 +146,7 @@ func (q *fakeQueue) Dequeue(_ context.Context, _, qt string) error {
 }
 func (q *fakeQueue) View(context.Context, string) (domain.EventView, error) {
 	q.log("View")
-	return q.view, nil
+	return q.view, q.viewErr
 }
 func (q *fakeQueue) SetRate(_ context.Context, _ string, r int64) error {
 	q.log("SetRate")
