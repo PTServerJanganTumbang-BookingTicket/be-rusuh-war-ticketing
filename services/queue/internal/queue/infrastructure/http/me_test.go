@@ -68,6 +68,8 @@ func TestMeAnswersEveryStateWithTheContractsFields(t *testing.T) {
 			map[string]any{"state": "GRANTED", "grant_token": "gt_1", "booking_expires_at": "2026-11-10T19:05:00Z", "server_time": "2026-11-10T19:00:00.000Z"}},
 		{"selecting", usecase.MeResult{State: domain.MeSelecting, GrantToken: "gt_1", BookingID: "RB-1", BookingExpiresAt: exp, ServerTime: t0},
 			map[string]any{"state": "SELECTING", "grant_token": "gt_1", "booking_id": "RB-1", "booking_expires_at": "2026-11-10T19:05:00Z", "server_time": "2026-11-10T19:00:00.000Z"}},
+		{"held", usecase.MeResult{State: domain.MeHeld, GrantToken: "gt_1", BookingID: "RB-1", PaymentExpiresAt: pay, ServerTime: t0},
+			map[string]any{"state": "HELD", "grant_token": "gt_1", "booking_id": "RB-1", "payment_expires_at": "2026-11-10T19:10:00Z", "server_time": "2026-11-10T19:00:00.000Z"}},
 		{"awaiting payment", usecase.MeResult{State: domain.MeAwaitingPayment, GrantToken: "gt_1", BookingID: "RB-1", PaymentExpiresAt: pay, PaymentRef: "pay_1", ServerTime: t0},
 			map[string]any{"state": "AWAITING_PAYMENT", "grant_token": "gt_1", "booking_id": "RB-1", "payment_expires_at": "2026-11-10T19:10:00Z", "payment_ref": "pay_1", "server_time": "2026-11-10T19:00:00.000Z"}},
 		{"confirmed", usecase.MeResult{State: domain.MeConfirmed, BookingID: "RB-1"}, map[string]any{"state": "CONFIRMED", "booking_id": "RB-1"}},

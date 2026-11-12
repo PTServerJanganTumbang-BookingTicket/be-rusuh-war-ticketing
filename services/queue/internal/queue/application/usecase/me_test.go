@@ -134,11 +134,17 @@ func TestMeMapsEveryBookingStatus(t *testing.T) {
 			return r.GrantToken == "G1" && r.BookingExpiresAt.Equal(exp) && r.BookingID == ""
 		}},
 		{"SELECTING", domain.MeSelecting, func(r MeResult) bool { return r.BookingID == "RB-1" && r.GrantToken == "G1" }},
-		{"HELD", domain.MeSelecting, func(r MeResult) bool { return r.BookingID == "RB-1" }},
+		{"HELD", domain.MeHeld, func(r MeResult) bool {
+			return r.BookingID == "RB-1" && r.GrantToken == "G1" && r.PaymentExpiresAt.Equal(pay) && r.BookingExpiresAt.IsZero()
+		}},
 		{"AWAITING_PAYMENT", domain.MeAwaitingPayment, func(r MeResult) bool {
 			return r.PaymentRef == "pay_1" && r.PaymentExpiresAt.Equal(pay) && r.BookingID == "RB-1" && r.GrantToken == "G1"
 		}},
-		{"PENDING_CANCELLATION", domain.MeAwaitingPayment, func(r MeResult) bool { return r.PaymentRef == "pay_1" }},
+		// Past its deadline, in the 30 s grace: still AWAITING_PAYMENT with the real deadline, which tells the client to
+		// show "memverifikasi pembayaran", not the expired screen (api-contracts §3.3, v2.27).
+		{"PENDING_CANCELLATION", domain.MeAwaitingPayment, func(r MeResult) bool {
+			return r.PaymentRef == "pay_1" && r.PaymentExpiresAt.Equal(pay) && r.BookingID == "RB-1" && r.GrantToken == "G1"
+		}},
 		{"CONFIRMED", domain.MeConfirmed, func(r MeResult) bool { return r.BookingID == "RB-1" && r.GrantToken == "" }},
 		{"EXPIRED", domain.MeExpired, func(r MeResult) bool { return r.GrantToken == "" && r.BookingID == "" }},
 		{"LAPSED", domain.MeExpired, func(r MeResult) bool { return r.GrantToken == "" }},

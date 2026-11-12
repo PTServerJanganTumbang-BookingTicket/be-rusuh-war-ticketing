@@ -98,7 +98,8 @@ func TestNewConnectsToTheConfiguredRedisAndDatabase(t *testing.T) {
 	if addr == "" || dsn == "" || testing.Short() {
 		t.Skip("set REDIS_ADDR and DATABASE_URL (make verify does)")
 	}
-	cfg := config.Config{App: config.App{Env: "local"}, DB: config.DB{URL: dsn, MaxConns: 1}, Redis: config.Redis{Addr: addr, Cluster: true}}
+	cfg := config.Config{App: config.App{Env: "local"}, DB: config.DB{URL: dsn, MaxConns: 1}, Redis: config.Redis{Addr: addr, Cluster: true},
+		Grant: config.Grant{JWTSecret: sessionSecret}}
 	h, deps, err := delivery.New(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)

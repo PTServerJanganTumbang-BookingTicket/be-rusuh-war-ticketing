@@ -78,10 +78,17 @@ sequenceDiagram
 |---|---|---|---|---|
 | token hash, no `grant_token` | — | `QUEUED` | `ticket_no`, `now_serving` | Waiting Room ("almost there" when `ticket_no ≤ now_serving`) |
 | Aurora | `GRANTED` | `GRANTED` | `grant_token`, `booking_expires_at`, `server_time` | Detail Ticket |
-| Aurora | `SELECTING`, `HELD` | `SELECTING` | + `booking_id` | Detail Ticket (countdown continues) |
+| Aurora | `SELECTING` | `SELECTING` | + `booking_id` | Detail Ticket (countdown continues) |
+| Aurora | `HELD` | `HELD` | `grant_token`, `booking_id`, `payment_expires_at`, `server_time` | Payment (choose a method; the 10-minute countdown continues) |
 | Aurora | `AWAITING_PAYMENT`, `PENDING_CANCELLATION` | `AWAITING_PAYMENT` | `grant_token`, `booking_id`, `payment_expires_at`, `payment_ref`, `server_time` | Payment |
 | Aurora, or `settled:{uuid}` | `CONFIRMED` | `CONFIRMED` | `booking_id` (tombstone also clears the cookie) | Success |
 | Aurora, or no token and no tombstone | `EXPIRED`, `LAPSED`, `ABANDONED` | `EXPIRED` | — | Expired screen |
+
+**`HELD` is its own state** (2026-11-12). Pay was pressed, the seats and NIKs are held, and no payment has started. The
+deadline that counts is `payment_expires_at` (10 minutes from Pay), not `booking_expires_at` (5 minutes from the grant,
+already over or about to be). Reported as `SELECTING` with `booking_expires_at`, a customer who refreshed after pressing
+Pay was shown "waktu habis" while their seats were still held. `grant_token` is returned because
+`POST /payments/{booking_id}` needs it.
 
 Deadlines are **always read from Aurora** and returned as absolute timestamps; the client counts down against
 `server_time`. They never shift (ADR-006 §4.3). `grant_token` and `booking_id` come from the `bookings` row, which is
@@ -136,6 +143,7 @@ the authority on the current status.
 
 Unit (fakes for the ports):
 - [x] every row of the state mapping table (`TestMeMapsEveryBookingStatus`)
+- [x] `HELD` → `HELD` with `grant_token`, `booking_id`, `payment_expires_at`; no `booking_expires_at` in the body
 - [x] a waiting customer is answered from Redis and Aurora is never called
 - [x] pending (`ticket_no ≤ now_serving`, no grant): `QUEUED`; missing from `by_ticket` too → `LostGrant`
 - [x] no row anywhere although a `grant_token` exists → `QUEUED` and `LostGrant`
@@ -159,4 +167,6 @@ Integration (real Redis cluster + `pgtest`):
 - [x] HTTP handler + route, `Cache-Control: no-store`, cookie re-issue / clear
 - [x] metric `LostGrant` (reuse `DeviceMismatch`, `TokenAccountMismatch`)
 - [x] admission-ctl: booking id prefix `RB-` (decision 4)
+- [x] `HELD` state: domain constant, use case mapping, HTTP body (`grant_token`, `booking_id`, `payment_expires_at`, `server_time`)
+- [x] API docs: api-contracts §3.3 table + changelog (v2.27), Apidog `state` enum and example (documentations, staged only)
 - [x] API docs: api-contracts §3.3 one sentence for decision 5 (`EXPIRED` keeps the cookie) and the `X-Device-Id` line for guests (decision 1)
