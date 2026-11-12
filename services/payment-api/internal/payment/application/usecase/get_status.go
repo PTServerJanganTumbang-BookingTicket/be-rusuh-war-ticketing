@@ -33,7 +33,9 @@ func (u *PaymentUsecase) GetStatus(ctx context.Context, bookingID, grantToken st
 	// reading a receipt and support reading a decline both need to know what
 	// was charged and by which method; that it already failed does not make
 	// the amount less interesting.
-	return resp.WithPaymentDetail(b.PaymentRef, b.PaymentMethod, b.PaymentStatus, b.PaymentAmount), nil
+	return resp.WithPaymentDetail(
+		b.PaymentRef, b.PaymentMethod, b.PaymentStatus, b.PaymentAmount, b.PaymentInstructions,
+	), nil
 }
 
 // statusFor maps a booking onto its §5.4 status. It deliberately knows nothing

@@ -216,6 +216,7 @@ func TestGetStatus_PaymentDetailIsPresentOnEveryStatus(t *testing.T) {
 			b.PaymentMethod = "bank_transfer"
 			b.PaymentStatus = "settlement"
 			b.PaymentAmount = &amount
+			b.PaymentInstructions = map[string]string{"bank": "bca", "va_number": "8801234567890"}
 			if st == entity.StatusConfirmed {
 				paid := b.HeldAt.Add(2 * time.Minute)
 				b.PaidAt = &paid
@@ -228,6 +229,8 @@ func TestGetStatus_PaymentDetailIsPresentOnEveryStatus(t *testing.T) {
 			assert.Equal(t, "settlement", out.PaymentStatus)
 			require.NotNil(t, out.TotalAmount)
 			assert.Equal(t, amount, *out.TotalAmount)
+			assert.Equal(t, "8801234567890", out.Instructions["va_number"])
+			assert.Equal(t, "bca", out.Instructions["bank"])
 		})
 	}
 }
@@ -247,6 +250,7 @@ func TestGetStatus_NoChargeYet_OmitsThePaymentDetail(t *testing.T) {
 	assert.Empty(t, out.Method)
 	assert.Empty(t, out.PaymentStatus)
 	assert.Nil(t, out.TotalAmount, "a nil amount must stay nil, not become 0")
+	assert.Nil(t, out.Instructions, "no charge means nothing to do, not an empty object")
 }
 
 // payment_status is the GATEWAY's view and bookings.status is ours. They are
@@ -263,4 +267,43 @@ func TestGetStatus_GatewayStatusIsReportedSeparatelyFromOurs(t *testing.T) {
 
 	assert.Equal(t, dto.StatusPending, out.Status, "our lifecycle status")
 	assert.Equal(t, "deny", out.PaymentStatus, "the gateway's, unchanged")
+}
+
+// The VA number is the whole point of returning instructions on §5.4: a
+// customer who closed the tab mid-payment reopens the status page and must
+// still be able to pay. §5.2 returned it once and is not idempotent to
+// re-trigger from the UI.
+func TestGetStatus_PendingTransfer_CarriesTheVirtualAccount(t *testing.T) {
+	h := newHarness(t)
+	b := heldBooking(entity.StatusAwaitingPayment)
+	b.PaymentRef = "RB-00912:1"
+	b.PaymentMethod = "bank_transfer"
+	b.PaymentInstructions = map[string]string{"bank": "bca", "va_number": "8801234567890"}
+
+	out := statusOf(t, h, b)
+
+	assert.Equal(t, dto.StatusPending, out.Status)
+	assert.Equal(t, "bank_transfer", out.Method)
+	assert.Equal(t, "bca", out.Instructions["bank"])
+	assert.Equal(t, "8801234567890", out.Instructions["va_number"])
+}
+
+// The shape is method-dependent, which is why it is a map: an e-wallet has no
+// VA number and a transfer has no QR url. A struct would carry one NULL field
+// for every payment ever made.
+func TestGetStatus_PendingEWallet_CarriesTheQRAndDeeplink(t *testing.T) {
+	h := newHarness(t)
+	b := heldBooking(entity.StatusAwaitingPayment)
+	b.PaymentMethod = "gopay"
+	b.PaymentInstructions = map[string]string{
+		"qr_url":       "https://api.sandbox.veritrans.co.id/v2/gopay/tx-1/qr-code",
+		"deeplink_url": "https://simulator.sandbox.midtrans.com/gopay/ui/checkout",
+	}
+
+	out := statusOf(t, h, b)
+
+	assert.Equal(t, "gopay", out.Method)
+	assert.Contains(t, out.Instructions["qr_url"], "qr-code")
+	assert.Contains(t, out.Instructions["deeplink_url"], "checkout")
+	assert.NotContains(t, out.Instructions, "va_number")
 }

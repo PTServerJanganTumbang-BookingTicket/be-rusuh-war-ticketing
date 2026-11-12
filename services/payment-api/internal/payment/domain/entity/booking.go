@@ -50,9 +50,16 @@ type Booking struct {
 	// PaymentStatus is the gateway's transaction_status, NOT Status. It
 	// answers "what did Midtrans last say about the money", where Status
 	// answers "where is this booking". Empty before any charge.
-	PaymentStatus   string
-	PaymentDisputed bool
-	GrantToken      string
+	PaymentStatus string
+	// PaymentInstructions is what the customer needs in order to pay, for the
+	// CURRENT attempt (0018): {bank, va_number} for a transfer,
+	// {qr_url, deeplink_url} for an e-wallet. nil before any charge.
+	//
+	// The extracted fields, not the raw gateway body — that stays in
+	// payment_events.raw, where the audit trail keeps one per attempt.
+	PaymentInstructions map[string]string
+	PaymentDisputed     bool
+	GrantToken          string
 
 	// Total is the sum of booking_items.unit_price, computed per request
 	// rather than denormalised onto the row. booking_items is the authority

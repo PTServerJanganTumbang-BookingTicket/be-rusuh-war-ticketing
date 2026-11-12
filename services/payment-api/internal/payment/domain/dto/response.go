@@ -95,16 +95,30 @@ type StatusResponse struct {
 	// from Status above: ours is the booking's lifecycle, this is what
 	// Midtrans last said about the money.
 	PaymentStatus string `json:"payment_status,omitempty"`
+	// Instructions is what the customer needs in order to pay: the same object
+	// §5.2 returns, so one client component renders both. Shape depends on the
+	// method — {bank, va_number} for a transfer, {qr_url, deeplink_url} for an
+	// e-wallet — which is why it is a map and not a struct.
+	//
+	// Returned on every status, not only PENDING: a customer reopening the
+	// page mid-payment is exactly who needs the VA number, and showing a
+	// settled booking what it was paid into costs nothing.
+	Instructions map[string]string `json:"instructions,omitempty"`
 }
 
 // WithPaymentDetail copies the persisted charge detail onto a status response
 // and returns it. Value receiver, so it composes at a single call site without
 // mutating anything the caller still holds.
-func (r StatusResponse) WithPaymentDetail(paymentID, method, gatewayStatus string, amount *int64) StatusResponse {
+func (r StatusResponse) WithPaymentDetail(
+	paymentID, method, gatewayStatus string,
+	amount *int64,
+	instructions map[string]string,
+) StatusResponse {
 	r.PaymentID = paymentID
 	r.Method = method
 	r.PaymentStatus = gatewayStatus
 	r.TotalAmount = amount
+	r.Instructions = instructions
 	return r
 }
 
