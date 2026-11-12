@@ -24,6 +24,23 @@ Parameters:
     Default: prod
     AllowedValues: [dev, prod]
 
+  ApiDomainName:
+    Type: String
+    Default: ""
+    Description: >
+      Custom domain for the API Gateway (e.g. api.rush-my-ticket.my.id).
+      Leave empty to use the default execute-api URL.
+
+  ApiCertificateArn:
+    Type: String
+    Default: ""
+    Description: >
+      ACM certificate ARN for ApiDomainName. Must be in the same region.
+      Leave empty if ApiDomainName is not set.
+
+Conditions:
+  HasCustomDomain: !Not [!Equals [!Ref ApiDomainName, ""]]
+
 Resources:
   # ============================================================================
   # HTTP API    
@@ -417,6 +434,28 @@ Resources:
       Target: !Sub integrations/${BookingIntegration}
 
   # ============================================================================
+  # Custom Domain (optional — set ApiDomainName + ApiCertificateArn to enable)
+  # ============================================================================
+  ApiCustomDomain:
+    Type: AWS::ApiGatewayV2::DomainName
+    Condition: HasCustomDomain
+    Properties:
+      DomainName: !Ref ApiDomainName
+      DomainNameConfigurations:
+        - CertificateArn: !Ref ApiCertificateArn
+          EndpointType: REGIONAL
+          SecurityPolicy: TLS_1_2
+
+  ApiDomainMapping:
+    Type: AWS::ApiGatewayV2::ApiMapping
+    Condition: HasCustomDomain
+    DependsOn: UnifiedApiStage
+    Properties:
+      ApiId: !Ref UnifiedApi
+      DomainName: !Ref ApiCustomDomain
+      Stage: $default
+
+  # ============================================================================
   # SSM Parameter — so frontend can discover the URL
   # ============================================================================
   SsmApiUrl:
@@ -424,7 +463,10 @@ Resources:
     Properties:
       Name: !Sub /rusuh/${Environment}/api/url
       Type: String
-      Value: !Sub https://${UnifiedApi}.execute-api.${AWS::Region}.amazonaws.com
+      Value: !If
+        - HasCustomDomain
+        - !Sub https://${ApiDomainName}
+        - !Sub https://${UnifiedApi}.execute-api.${AWS::Region}.amazonaws.com
       Description: Unified API Gateway URL — use this for frontend
 
 Outputs:
@@ -458,10 +500,17 @@ Outputs:
         GET  /payments/{booking_id}/status
         POST /payments/webhook
         GET  /sys/ping
-    Value: !Sub https://${UnifiedApi}.execute-api.${AWS::Region}.amazonaws.com
-    Export:
-      Name: !Sub rusuh-${Environment}-api-url
+    Value: !If
+      - HasCustomDomain
+      - !Sub https://${ApiDomainName}
+      - !Sub https://${UnifiedApi}.execute-api.${AWS::Region}.amazonaws.com
 
   ApiId:
     Description: API Gateway ID
     Value: !Ref UnifiedApi
+
+  RegionalDomainName:
+    Condition: HasCustomDomain
+    Description: >
+      Point your api.rusuh.id CNAME (or Route 53 ALIAS) at this value.
+    Value: !GetAtt ApiCustomDomain.RegionalDomainName
