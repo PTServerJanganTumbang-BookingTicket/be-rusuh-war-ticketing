@@ -217,7 +217,7 @@ Resources:
 
   # ============================================================================
   # Routes — Queue Service (/events/{event_id}/queue/*)
-  # The stream (/queue/stream) and /queue/serving are not here: the SSE server runs on ECS behind its own ALB.
+  # The stream (/queue/stream) is not here: the SSE server runs on ECS behind its own ALB. /queue/serving is (queue Lambda, Redis only).
   # ============================================================================
   RouteQueueJoin:
     Type: AWS::ApiGatewayV2::Route
@@ -231,6 +231,13 @@ Resources:
     Properties:
       ApiId: !Ref UnifiedApi
       RouteKey: GET /events/{event_id}/queue/me
+      Target: !Sub integrations/${QueueIntegration}
+
+  RouteQueueServing:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref UnifiedApi
+      RouteKey: GET /events/{event_id}/queue/serving
       Target: !Sub integrations/${QueueIntegration}
 
   # ============================================================================
@@ -479,6 +486,7 @@ Outputs:
         GET  /events/{event_id}/tickets
         POST /events/{event_id}/queue/join
         GET  /events/{event_id}/queue/me
+        GET  /events/{event_id}/queue/serving
         POST /bookings
         GET  /bookings/{booking_id}
         POST /nik/validate

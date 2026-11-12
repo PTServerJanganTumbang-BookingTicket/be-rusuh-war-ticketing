@@ -293,6 +293,36 @@ func (s *Store) NowServing(ctx context.Context, ev rediskeys.Event) (int64, erro
 	return n, err
 }
 
+// Serving reads state, now_serving and rate_per_min with one HMGET of queue:{ev}. A missing state means the event is
+// not seeded (found false); a missing counter is 0; a counter that is not an integer is an error, so the client never
+// computes a position from an invented number.
+func (s *Store) Serving(ctx context.Context, ev rediskeys.Event) (domain.Serving, bool, error) {
+	vals, err := s.rdb.HMGet(ctx, ev.QueueHash(), FieldState, FieldNowServing, rediskeys.FieldRatePerMin).Result()
+	if err != nil {
+		return domain.Serving{}, false, err
+	}
+	str := func(i int) string {
+		if v, ok := vals[i].(string); ok {
+			return v
+		}
+		return ""
+	}
+	if str(0) == "" {
+		return domain.Serving{}, false, nil
+	}
+	out := domain.Serving{State: domain.SaleState(str(0))}
+	if out.NowServing, err = optionalInt(str(1)); err != nil {
+		return domain.Serving{}, false, fmt.Errorf("%s now_serving: %w", ev.QueueHash(), err)
+	}
+	if out.RatePerMin, err = optionalInt(str(2)); err != nil {
+		return domain.Serving{}, false, fmt.Errorf("%s rate_per_min: %w", ev.QueueHash(), err)
+	}
+	if out.NowServing < 0 || out.RatePerMin < 0 {
+		return domain.Serving{}, false, fmt.Errorf("%s: negative counter now_serving=%d rate_per_min=%d", ev.QueueHash(), out.NowServing, out.RatePerMin)
+	}
+	return out, true, nil
+}
+
 // InLine says whether queueToken is still in by_ticket (ZSCORE).
 func (s *Store) InLine(ctx context.Context, ev rediskeys.Event, queueToken string) (bool, error) {
 	_, err := s.rdb.ZScore(ctx, ev.ByTicket(), queueToken).Result()

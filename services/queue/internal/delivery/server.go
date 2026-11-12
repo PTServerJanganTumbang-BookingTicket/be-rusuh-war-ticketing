@@ -133,6 +133,7 @@ func Wire(cfg config.Config, c Clients) (*Server, error) {
 	if details != nil { // /queue/me needs Aurora for customers who already have a grant
 		h.WithMe(me)
 	}
+	h.WithServing(usecase.NewGetServing(queueredis.NewStore(c.Redis), c.Clock)) // /queue/serving: Redis only, no DB
 
 	mux := http.NewServeMux()
 	apinizer.RegisterHealthCheck(mux, "/sys/ping")
