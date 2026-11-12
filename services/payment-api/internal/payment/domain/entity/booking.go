@@ -43,6 +43,14 @@ type Booking struct {
 	PaidAt          *time.Time
 	PaymentAttempts int
 	PaymentMethod   string
+	// PaymentAmount is the gross_amount actually sent to Midtrans (0017).
+	// nil before any charge. Distinct from Total, which is a sum recomputed
+	// from booking_items and is not populated on the GetOwned path.
+	PaymentAmount *int64
+	// PaymentStatus is the gateway's transaction_status, NOT Status. It
+	// answers "what did Midtrans last say about the money", where Status
+	// answers "where is this booking". Empty before any charge.
+	PaymentStatus   string
 	PaymentDisputed bool
 	GrantToken      string
 

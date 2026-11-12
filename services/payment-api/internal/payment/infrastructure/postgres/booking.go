@@ -18,7 +18,7 @@ const bookingColumns = `
     id, event_id, COALESCE(account_id, ''), COALESCE(contact_email, ''), status,
     held_at, payment_expires_at, COALESCE(payment_ref, ''), paid_at, payment_attempts,
     COALESCE(payment_method, ''), payment_disputed, COALESCE(grant_token, ''),
-    COALESCE(queue_token, '')`
+    COALESCE(queue_token, ''), payment_amount, COALESCE(payment_status, '')`
 
 type bookingRow struct {
 	b          entity.Booking
@@ -31,6 +31,7 @@ func scanBooking(row pgx.Row) (bookingRow, error) {
 		&out.b.ID, &out.b.EventID, &out.b.AccountID, &out.b.ContactEmail, &out.b.Status,
 		&out.b.HeldAt, &out.b.PaymentExpiresAt, &out.b.PaymentRef, &out.b.PaidAt, &out.b.PaymentAttempts,
 		&out.b.PaymentMethod, &out.b.PaymentDisputed, &out.b.GrantToken, &out.queueToken,
+		&out.b.PaymentAmount, &out.b.PaymentStatus,
 	)
 	return out, err
 }
@@ -172,9 +173,15 @@ func (r *BookingRepository) Initiate(ctx context.Context, in portout.InitiateInp
 	// were set at HELD. Writing held_at again would re-anchor custom_expiry
 	// and hand a fresh 10 minutes to every charge, so BR-05 would never bind.
 	if _, err := tx.Exec(ctx,
+		// payment_amount and payment_status are written here rather than left
+		// to the webhook: the charge succeeded, so this IS the record of what
+		// was charged. A notification may never arrive, and the receipt must
+		// not depend on one.
 		`UPDATE bookings
-            SET status = 'AWAITING_PAYMENT', payment_ref = $2, payment_method = $3
-          WHERE id = $1 AND status = 'HELD'`, b.ID, orderID, in.Method); err != nil {
+            SET status = 'AWAITING_PAYMENT', payment_ref = $2, payment_method = $3,
+                payment_amount = $4, payment_status = $5
+          WHERE id = $1 AND status = 'HELD'`,
+		b.ID, orderID, in.Method, total, res.TransactionStatus); err != nil {
 		return portout.InitiateOutcome{}, wrapDB(err, "could not record charge")
 	}
 	if err := r.insertChargeEvent(ctx, tx, b.ID, orderID, res); err != nil {
@@ -474,6 +481,20 @@ func (r *BookingRepository) ApplyNotification(ctx context.Context, in portout.No
 	case valueobject.ActionIgnoreUnfunded, valueobject.ActionRecordOnly:
 		// Recorded above; nothing else to do.
 	}
+
+	// The gateway's own view of the money, kept current on EVERY notification
+	// including the ones that change no booking status (0017). A booking can
+	// sit in AWAITING_PAYMENT with a gateway status of deny, and support
+	// should be able to see that without opening payment_events.
+	//
+	// Deliberately outside the switch: a notification that was recorded but
+	// not applied still told us something true about the payment.
+	if _, err := tx.Exec(ctx,
+		`UPDATE bookings SET payment_status = $2 WHERE id = $1`,
+		b.ID, in.TransactionStatus); err != nil {
+		return out, wrapDB(err, "could not record gateway payment status")
+	}
+	out.Booking.PaymentStatus = in.TransactionStatus
 
 	if err := tx.Commit(ctx); err != nil {
 		return out, wrapDB(err, "could not commit")

@@ -20,6 +20,25 @@ func (u *PaymentUsecase) GetStatus(ctx context.Context, bookingID, grantToken st
 		return dto.StatusResponse{}, mapBookingErr(err)
 	}
 
+	resp, err := u.statusFor(b)
+	if err != nil {
+		return dto.StatusResponse{}, err
+	}
+
+	// Attached once, at the single seam, rather than in each of the seven
+	// branches below: a status added later would otherwise silently come back
+	// without the payment detail, and nothing would fail.
+	//
+	// It is attached to EVERY status, terminal ones included. A customer
+	// reading a receipt and support reading a decline both need to know what
+	// was charged and by which method; that it already failed does not make
+	// the amount less interesting.
+	return resp.WithPaymentDetail(b.PaymentRef, b.PaymentMethod, b.PaymentStatus, b.PaymentAmount), nil
+}
+
+// statusFor maps a booking onto its §5.4 status. It deliberately knows nothing
+// about the payment detail, which GetStatus attaches to whatever it returns.
+func (u *PaymentUsecase) statusFor(b entity.Booking) (dto.StatusResponse, error) {
 	now := u.now()
 	iso := func(t *time.Time) string {
 		if t == nil {

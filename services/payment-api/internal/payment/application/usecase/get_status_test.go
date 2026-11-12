@@ -197,3 +197,70 @@ func TestGetStatus_ServerTimeOnPollingAnswers(t *testing.T) {
 		assert.Equal(t, fixedNow.Format(time.RFC3339), out.ServerTime, string(st))
 	}
 }
+
+// ---- payment detail (migration 0017) ----
+
+// The detail is attached at a single seam in GetStatus rather than in each of
+// the seven branches, so this walks every status: a branch added later that
+// forgot it would fail here rather than silently answer without it.
+func TestGetStatus_PaymentDetailIsPresentOnEveryStatus(t *testing.T) {
+	amount := int64(3000000)
+	for _, st := range []entity.BookingStatus{
+		entity.StatusConfirmed, entity.StatusExpired, entity.StatusLapsed,
+		entity.StatusHeld, entity.StatusAwaitingPayment, entity.StatusPendingCancellation,
+	} {
+		t.Run(string(st), func(t *testing.T) {
+			h := newHarness(t)
+			b := heldBooking(st)
+			b.PaymentRef = "RB-00912:1"
+			b.PaymentMethod = "bank_transfer"
+			b.PaymentStatus = "settlement"
+			b.PaymentAmount = &amount
+			if st == entity.StatusConfirmed {
+				paid := b.HeldAt.Add(2 * time.Minute)
+				b.PaidAt = &paid
+			}
+
+			out := statusOf(t, h, b)
+
+			assert.Equal(t, "RB-00912:1", out.PaymentID)
+			assert.Equal(t, "bank_transfer", out.Method)
+			assert.Equal(t, "settlement", out.PaymentStatus)
+			require.NotNil(t, out.TotalAmount)
+			assert.Equal(t, amount, *out.TotalAmount)
+		})
+	}
+}
+
+// A booking that never reached a charge must not report zeroes: "charged 0"
+// and "not charged" are different claims, and omitempty is what separates them.
+func TestGetStatus_NoChargeYet_OmitsThePaymentDetail(t *testing.T) {
+	h := newHarness(t)
+	b := heldBooking(entity.StatusHeld)
+	b.PaymentAttempts = 0
+	b.PaymentRef, b.PaymentMethod, b.PaymentStatus = "", "", ""
+	b.PaymentAmount = nil
+
+	out := statusOf(t, h, b)
+
+	assert.Empty(t, out.PaymentID)
+	assert.Empty(t, out.Method)
+	assert.Empty(t, out.PaymentStatus)
+	assert.Nil(t, out.TotalAmount, "a nil amount must stay nil, not become 0")
+}
+
+// payment_status is the GATEWAY's view and bookings.status is ours. They are
+// reported side by side precisely because they can disagree: a booking still
+// AWAITING_PAYMENT whose last notification said deny is the case support
+// needs to see without opening payment_events.
+func TestGetStatus_GatewayStatusIsReportedSeparatelyFromOurs(t *testing.T) {
+	h := newHarness(t)
+	b := heldBooking(entity.StatusAwaitingPayment)
+	b.PaymentRef = "RB-00912:1"
+	b.PaymentStatus = "deny"
+
+	out := statusOf(t, h, b)
+
+	assert.Equal(t, dto.StatusPending, out.Status, "our lifecycle status")
+	assert.Equal(t, "deny", out.PaymentStatus, "the gateway's, unchanged")
+}
