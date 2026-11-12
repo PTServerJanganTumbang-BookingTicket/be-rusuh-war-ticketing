@@ -125,7 +125,23 @@ runs:
           exit 1
         fi
 
-        S3_KEY="${SERVICE}/bootstrap.zip"
+        # The key the UPLOAD step actually wrote, exported through GITHUB_ENV.
+        #
+        # Recomputing it here is what broke every Lambda code update: the upload
+        # moved to a SHA-scoped key while this line kept naming the old
+        # unversioned one. CloudFormation was handed a key whose object nothing
+        # writes to any more, so Code.S3Key never changed, no code update was
+        # triggered, and every function kept running the binary that happened to
+        # be at <service>/bootstrap.zip when the upload moved away from it.
+        #
+        # It is invisible from the outside: the stack updates, LastModified
+        # moves, and DEPLOY_REVISION reports the new commit, because those come
+        # from the env var rather than the code.
+        #
+        # Fail loudly rather than fall back to a literal: a missing value means
+        # the upload step did not run, and deploying the previous binary under a
+        # new revision label is the failure this whole mechanism exists to stop.
+        S3_KEY="${s3_key:?upload step did not export s3_key}"
 
         args=(
           --template-file "$TEMPLATE"
