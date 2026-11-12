@@ -1083,7 +1083,10 @@ jobs:
             --template-file infra/api-gateway/template.yaml \
             --stack-name "rusuh-${ENV}-api" \
             --no-fail-on-empty-changeset \
-            --parameter-overrides "Environment=${ENV}" \
+            --parameter-overrides \
+              "Environment=${ENV}" \
+              "ApiDomainName=${{ vars.API_DOMAIN_NAME || '' }}" \
+              "ApiCertificateArn=${{ vars.API_CERTIFICATE_ARN || '' }}" \
             --tags Project=rusuh ManagedBy=github-actions
 
   # ══════════════════════════════════════════════════════════════════════════
@@ -1174,6 +1177,7 @@ jobs:
               "AdmissionTickIntervalMs=${{ vars.ADMISSION_TICK_INTERVAL_MS || '1000' }}" \
               "LogLevel=${{ vars.ECS_LOG_LEVEL || 'info' }}" \
               "LogRetentionDays=${{ vars.LOG_RETENTION_DAYS || '14' }}" \
+              "CertificateArn=${{ vars.SSE_CERTIFICATE_ARN || '' }}" \
             --tags Project=rusuh ManagedBy=github-actions
       - name: Smoke - the stream server answers on the load balancer
         env:
