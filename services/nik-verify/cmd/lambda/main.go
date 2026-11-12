@@ -30,12 +30,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Two kinds of event: API Gateway requests (the public routes) and the internal {"op":"validate"} invocation booking
-	// makes directly. The handler tells them apart before the HTTP adapter sees the payload.
-	// StartHandlerFunc is generic-based and does not special-case []byte — it
-	// tries json.Unmarshal(event, &[]byte{}) which fails with
-	// "cannot unmarshal object into Go value of type []uint8" on every
-	// API Gateway event. lambda.Start uses reflection and special-cases
-	// []byte, passing the raw JSON bytes as-is.
-	lambda.Start(server.Events().Invoke)
+	// EventHandler implements lambda.Handler (Invoke(context.Context, []byte) ([]byte, error)).
+	// lambda.StartHandler calls Invoke directly via the interface without any
+	// reflection-based JSON dispatch, which avoids the
+	// "cannot unmarshal object into Go value of type []uint8" error that
+	// lambda.Start triggers in aws-lambda-go ≥ v1.55 when the handler takes
+	// a []byte parameter (the generic dispatch no longer special-cases it).
+	lambda.StartHandler(server.Events())
 }
