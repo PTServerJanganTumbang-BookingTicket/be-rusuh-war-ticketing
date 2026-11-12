@@ -48,7 +48,7 @@ type RefreshSessionRequest struct {
 // that is merely formatted.
 type AddSavedNIKRequest struct {
 	NIK   string `json:"nik" validate:"required"`
-	Label string `json:"label" validate:"required,max=60"`
+	Label string `json:"label" validate:"required,max=50"`
 }
 
 // GetMyTicketsRequest carries the query parameters for GET /users/me/tickets.

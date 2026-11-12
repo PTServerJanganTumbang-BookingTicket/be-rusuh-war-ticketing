@@ -67,14 +67,14 @@ If you did not request this, ignore this email.`,
 			subject: "Konfirmasi alamat email Anda",
 			html: wrap(
 				`<h2 style="margin:0 0 16px;font-size:20px">Konfirmasi email Anda</h2>
-<p>Akun Anda sudah dibuat. Konfirmasi alamat ini untuk membuka riwayat pesanan.</p>
+<p>Konfirmasi alamat ini untuk melanjutkan registrasi.</p>
 <p style="margin:24px 0"><a href="{{.Link}}" style="background:#1a1a1a;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;display:inline-block">Konfirmasi email</a></p>
 <p>Anda tetap dapat membeli tiket tanpa konfirmasi ini. Tautan berlaku {{.TTLMinutes}} menit.</p>`,
 				"Email ini dikirim otomatis."),
 			text: `Konfirmasi email Anda
 
-Akun Anda sudah dibuat. Buka tautan ini untuk mengonfirmasi alamat email
-(berlaku {{.TTLMinutes}} menit):
+Konfirmasi alamat ini untuk melanjutkan registrasi.
+Buka tautan ini (berlaku {{.TTLMinutes}} menit):
 {{.Link}}
 
 Anda tetap dapat membeli tiket tanpa konfirmasi ini.`,

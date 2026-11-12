@@ -20,6 +20,10 @@ type App struct {
 	Env     string // "local", "preprod", "production"
 	Port    int
 	BaseURL string // public base URL, used to build emailed links
+
+	// MaxSavedNIKs is the per-account cap on saved friend-NIK entries (BR-12).
+	// Configurable via MAX_SAVED_NIKS; defaults to 5 when unset.
+	MaxSavedNIKs int
 }
 
 // Log holds configuration for structured logging.

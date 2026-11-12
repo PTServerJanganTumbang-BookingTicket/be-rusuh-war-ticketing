@@ -22,11 +22,12 @@ const (
 // service never talks to SES and an email provider outage cannot fail a
 // registration (NFR-10).
 type UserUsecase struct {
-	repo       portout.IUserRepository
-	engagement portout.IEngagementRepository
-	verifier   portout.INikVerifier
-	limiter    portout.IRateLimiter
-	tokens     *token.Issuer
+	repo         portout.IUserRepository
+	engagement   portout.IEngagementRepository
+	verifier     portout.INikVerifier
+	limiter      portout.IRateLimiter
+	tokens       *token.Issuer
+	maxSavedNIKs int
 }
 
 // NewUser wires the use case and returns the inbound port.
@@ -36,12 +37,14 @@ func NewUser(
 	verifier portout.INikVerifier,
 	limiter portout.IRateLimiter,
 	tokens *token.Issuer,
+	maxSavedNIKs int,
 ) portin.IUserUsecase {
 	return &UserUsecase{
-		repo:       repo,
-		engagement: engagement,
-		verifier:   verifier,
-		limiter:    limiter,
-		tokens:     tokens,
+		repo:         repo,
+		engagement:   engagement,
+		verifier:     verifier,
+		limiter:      limiter,
+		tokens:       tokens,
+		maxSavedNIKs: maxSavedNIKs,
 	}
 }
