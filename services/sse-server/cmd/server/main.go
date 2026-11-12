@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -54,7 +55,11 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 
 	// No WriteTimeout: a stream stays open for hours.
-	httpSrv := &http.Server{Addr: ":" + strconv.Itoa(cfg.Port), Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	handler := srv.Handler()
+	if cfg.CORSOrigin != "" {
+		handler = corsMiddleware(cfg.CORSOrigin, handler)
+	}
+	httpSrv := &http.Server{Addr: ":" + strconv.Itoa(cfg.Port), Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		slog.Info("SSE server starting", slog.Int("port", cfg.Port))
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -77,4 +82,34 @@ func main() {
 		slog.Error("Shutdown failed", slog.Any("err", err))
 		os.Exit(1)
 	}
+}
+
+// corsMiddleware adds Access-Control-Allow-Origin headers and handles OPTIONS preflight.
+// SSE streams require CORS when the stream host differs from the page host.
+// CORS_ALLOW_ORIGIN accepts a comma-separated list of origins, e.g.:
+//
+//	https://rush-my-ticket.my.id,http://localhost:3000
+func corsMiddleware(allowOrigins string, next http.Handler) http.Handler {
+	allowed := map[string]bool{}
+	for _, o := range strings.Split(allowOrigins, ",") {
+		o = strings.TrimSpace(o)
+		if o != "" {
+			allowed[o] = true
+		}
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" && allowed[origin] {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "X-Queue-Token, Cookie")
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Set("Vary", "Origin")
+		}
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
