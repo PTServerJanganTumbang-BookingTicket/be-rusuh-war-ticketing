@@ -61,6 +61,36 @@ Parameters:
     Type: Number
     Default: 14
 
+  # ── Application configuration (set via GitHub vars) ─────────────────────────
+  SseDesiredCount:
+    Type: Number
+    Default: 1
+    MinValue: 0
+    Description: Number of sse-server tasks to run.
+  AdmissionDesiredCount:
+    Type: Number
+    Default: 1
+    MinValue: 0
+    MaxValue: 1
+    Description: Number of admission-ctl tasks (0 or 1 only - single writer).
+  SseKeepaliveSeconds:
+    Type: Number
+    Default: 15
+    MinValue: 5
+    MaxValue: 60
+    Description: Interval between SSE keepalive comments (seconds).
+  AdmissionTickIntervalMs:
+    Type: Number
+    Default: 1000
+    MinValue: 100
+    MaxValue: 10000
+    Description: Admission controller tick interval (milliseconds).
+  LogLevel:
+    Type: String
+    Default: info
+    AllowedValues: [debug, info, warn, error]
+    Description: Log level for both services.
+
 Resources:
   # ── Cluster, logs, execution role ───────────────────────────────────────────
   Cluster:
@@ -123,6 +153,10 @@ Resources:
               Value: !Sub "{{resolve:secretsmanager:rusuh-${Environment}/database-url:SecretString:url}}"
             - Name: MAX_CONCURRENT_SLOTS
               Value: !Ref MaxConcurrentSlots
+            - Name: TICK_INTERVAL_MS
+              Value: !Ref AdmissionTickIntervalMs
+            - Name: LOG_LEVEL
+              Value: !Ref LogLevel
             - Name: LOG_FORMAT
               Value: json
           LogConfiguration:
@@ -140,7 +174,7 @@ Resources:
       ServiceName: admission-ctl
       Cluster: !Ref Cluster
       LaunchType: FARGATE
-      DesiredCount: 1
+      DesiredCount: !Ref AdmissionDesiredCount
       TaskDefinition: !Ref AdmissionCtlTask
       DeploymentConfiguration:
         MinimumHealthyPercent: 0
@@ -253,6 +287,10 @@ Resources:
               Value: !Ref RedisAddr
             - Name: REDIS_CLUSTER
               Value: "false"
+            - Name: KEEPALIVE_SECONDS
+              Value: !Ref SseKeepaliveSeconds
+            - Name: LOG_LEVEL
+              Value: !Ref LogLevel
             - Name: LOG_FORMAT
               Value: json
           LogConfiguration:
@@ -269,7 +307,7 @@ Resources:
       ServiceName: sse-server
       Cluster: !Ref Cluster
       LaunchType: FARGATE
-      DesiredCount: 1
+      DesiredCount: !Ref SseDesiredCount
       TaskDefinition: !Ref SseServerTask
       HealthCheckGracePeriodSeconds: 60
       DeploymentConfiguration:

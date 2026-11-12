@@ -1164,6 +1164,16 @@ jobs:
               "Environment=${ENV}" \
               "ImageTag=${GITHUB_SHA}" \
               "MaxConcurrentSlots=${{ vars.MAX_CONCURRENT_SLOTS || '100' }}" \
+              "AdmissionCpu=${{ vars.ADMISSION_CPU || '256' }}" \
+              "AdmissionMemory=${{ vars.ADMISSION_MEMORY || '512' }}" \
+              "SseCpu=${{ vars.SSE_CPU || '512' }}" \
+              "SseMemory=${{ vars.SSE_MEMORY || '1024' }}" \
+              "SseDesiredCount=${{ vars.SSE_DESIRED_COUNT || '1' }}" \
+              "AdmissionDesiredCount=${{ vars.ADMISSION_DESIRED_COUNT || '1' }}" \
+              "SseKeepaliveSeconds=${{ vars.SSE_KEEPALIVE_SECONDS || '15' }}" \
+              "AdmissionTickIntervalMs=${{ vars.ADMISSION_TICK_INTERVAL_MS || '1000' }}" \
+              "LogLevel=${{ vars.ECS_LOG_LEVEL || 'info' }}" \
+              "LogRetentionDays=${{ vars.LOG_RETENTION_DAYS || '14' }}" \
             --tags Project=rusuh ManagedBy=github-actions
       - name: Smoke - the stream server answers on the load balancer
         env:

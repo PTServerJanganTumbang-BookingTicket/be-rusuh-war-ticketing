@@ -181,8 +181,10 @@ func (m *Me) granted(ctx context.Context, ev rediskeys.Event, e domain.Engagemen
 	switch d.Status {
 	case "GRANTED":
 		res.State, res.GrantToken, res.BookingExpiresAt = domain.MeGranted, grant, d.BookingExpiresAt
-	case "SELECTING", "HELD":
+	case "SELECTING":
 		res.State, res.GrantToken, res.BookingID, res.BookingExpiresAt = domain.MeSelecting, grant, d.ID, d.BookingExpiresAt
+	case "HELD": // the 5-minute deadline no longer counts once Pay was pressed: the 10-minute payment one does
+		res.State, res.GrantToken, res.BookingID, res.PaymentExpiresAt = domain.MeHeld, grant, d.ID, d.PaymentExpiresAt
 	case "AWAITING_PAYMENT", "PENDING_CANCELLATION":
 		res.State, res.GrantToken, res.BookingID = domain.MeAwaitingPayment, grant, d.ID
 		res.PaymentExpiresAt, res.PaymentRef = d.PaymentExpiresAt, d.PaymentRef
