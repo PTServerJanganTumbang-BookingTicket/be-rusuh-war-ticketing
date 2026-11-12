@@ -20,6 +20,10 @@ type Config struct {
 	RedisPass    string
 	RedisCluster bool // true in AWS (ElastiCache cluster mode)
 
+	// CORSOrigin is the value of Access-Control-Allow-Origin. Empty = no CORS headers (same-origin only).
+	// Set to the frontend origin e.g. https://rush-my-ticket.my.id in production.
+	CORSOrigin string
+
 	// ShutdownGrace is how long the process waits for the drain, above the stream's own
 	// deadline (ECS stopTimeout is 30 s).
 	ShutdownGrace time.Duration
@@ -46,6 +50,7 @@ func Load() (Config, error) {
 		RedisPass:     envutil.Env("REDIS_PASSWORD", ""),
 		RedisCluster:  envutil.EnvBool("REDIS_CLUSTER", true),
 		ShutdownGrace: envutil.EnvDuration("SHUTDOWN_GRACE_SECONDS", 5*time.Second),
+		CORSOrigin:    envutil.Env("CORS_ALLOW_ORIGIN", ""),
 		Stream:        sc,
 	}
 	return cfg, cfg.Validate()

@@ -1215,6 +1215,7 @@ jobs:
               "LogLevel=${{ vars.ECS_LOG_LEVEL || 'info' }}" \
               "LogRetentionDays=${{ vars.LOG_RETENTION_DAYS || '14' }}" \
               "CertificateArn=${{ vars.SSE_CERTIFICATE_ARN || '' }}" \
+              "CorsAllowOrigin=${{ vars.SSE_CORS_ALLOW_ORIGIN || '' }}" \
             --tags Project=rusuh ManagedBy=github-actions
       - name: Smoke - stream server answers on the load balancer
         env:
@@ -1282,6 +1283,7 @@ jobs:
               "LogLevel=${{ vars.ECS_LOG_LEVEL || 'info' }}" \
               "LogRetentionDays=${{ vars.LOG_RETENTION_DAYS || '14' }}" \
               "CertificateArn=${{ vars.SSE_CERTIFICATE_ARN || '' }}" \
+              "CorsAllowOrigin=${{ vars.SSE_CORS_ALLOW_ORIGIN || '' }}" \
             --tags Project=rusuh ManagedBy=github-actions
 
   # ══════════════════════════════════════════════════════════════════════════

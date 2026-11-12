@@ -54,7 +54,11 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 
 	// No WriteTimeout: a stream stays open for hours.
-	httpSrv := &http.Server{Addr: ":" + strconv.Itoa(cfg.Port), Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	handler := srv.Handler()
+	if cfg.CORSOrigin != "" {
+		handler = corsMiddleware(cfg.CORSOrigin, handler)
+	}
+	httpSrv := &http.Server{Addr: ":" + strconv.Itoa(cfg.Port), Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		slog.Info("SSE server starting", slog.Int("port", cfg.Port))
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -77,4 +81,20 @@ func main() {
 		slog.Error("Shutdown failed", slog.Any("err", err))
 		os.Exit(1)
 	}
+}
+
+// corsMiddleware adds Access-Control-Allow-Origin headers and handles OPTIONS preflight.
+// SSE streams require CORS when the stream host differs from the page host.
+func corsMiddleware(origin string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "X-Queue-Token, Cookie")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }

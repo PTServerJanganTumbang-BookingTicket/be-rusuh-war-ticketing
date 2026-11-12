@@ -69,6 +69,14 @@ Parameters:
       ARN of an ACM certificate for HTTPS. If empty, only the HTTP listener is created.
       Example: arn:aws:acm:ap-southeast-1:123456789012:certificate/abc-123
 
+  CorsAllowOrigin:
+    Type: String
+    Default: ""
+    Description: >
+      Value of Access-Control-Allow-Origin for the SSE server.
+      Set to the frontend origin e.g. https://rush-my-ticket.my.id.
+      Empty = no CORS headers.
+
   # ── Application configuration (set via GitHub vars) ─────────────────────────
   SseDesiredCount:
     Type: Number
@@ -332,6 +340,8 @@ Resources:
               Value: !Ref LogLevel
             - Name: LOG_FORMAT
               Value: json
+            - Name: CORS_ALLOW_ORIGIN
+              Value: !Ref CorsAllowOrigin
           LogConfiguration:
             LogDriver: awslogs
             Options:
