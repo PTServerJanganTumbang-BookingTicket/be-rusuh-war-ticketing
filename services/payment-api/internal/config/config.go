@@ -36,7 +36,25 @@ type App struct {
 	// would answer 503 rather than skip the check, and skipping it is the hole
 	// §8.17 closes.
 	JWTSecret string
+
+	// AppBase is the public web frontend origin (APP_BASE_URL), the same
+	// variable notification builds emailed links on. The WebView payment page
+	// lives there (ADR-007): payment_url = AppBase + PaymentWebPath + #code=.
+	// No trailing slash.
+	AppBase string
+
+	// PaymentWebPath is the web payment route, with BookingIDPlaceholder where
+	// the booking id goes. A variable so a web route change needs neither an
+	// app release nor a backend release.
+	PaymentWebPath string
 }
+
+// BookingIDPlaceholder marks where PaymentWebPath takes the booking id.
+const BookingIDPlaceholder = "{booking_id}"
+
+// PaymentPage is the WebView payment URL template: AppBase + PaymentWebPath,
+// still holding BookingIDPlaceholder.
+func (a App) PaymentPage() string { return a.AppBase + a.PaymentWebPath }
 
 // Log holds configuration for structured logging.
 type Log struct {

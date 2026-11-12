@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"testing"
 	"time"
 
@@ -21,7 +22,25 @@ func setRequired(t *testing.T) {
 	t.Setenv("JWT_SECRET", "jwt-secret")
 }
 
+// defaulted lists every variable Load reads with a default. TestLoad_Defaults clears them, so a value from the
+// developer's shell or .env (REDIS_ADDR pointing at a local Redis, say) cannot leak into the defaults it checks.
+var defaulted = []string{
+	"APP_BASE_URL", "APP_ENV", "APP_PORT", "DATABASE_CONN_LIFETIME", "DATABASE_MAX_CONNS", "LOG_FORMAT", "LOG_LEVEL",
+	"MAX_PAYMENT_ATTEMPTS", "MIDTRANS_BASE_URL", "MIDTRANS_TIMEOUT_MS", "MIN_RETRY_REMAINING_SECONDS",
+	"PAYMENT_BREAKER_FAILURE_THRESHOLD", "PAYMENT_BREAKER_OPEN_SECONDS", "PAYMENT_ICON_BASE", "PAYMENT_WEB_PATH",
+	"PAYMENT_SWITCH_CACHE_SECONDS", "PAYMENT_TTL_SECONDS", "REDIS_ADDR", "REDIS_DB", "SETTLED_TOMBSTONE_SECONDS",
+}
+
+func clearDefaulted(t *testing.T) {
+	t.Helper()
+	for _, k := range defaulted {
+		t.Setenv(k, "") // restores the original value when the test ends
+		require.NoError(t, os.Unsetenv(k))
+	}
+}
+
 func TestLoad_Defaults(t *testing.T) {
+	clearDefaulted(t)
 	setRequired(t)
 
 	cfg, err := Load()
@@ -48,6 +67,8 @@ func TestLoad_Defaults(t *testing.T) {
 	assert.Equal(t, 5, cfg.Payment.MaxAttempts)
 	assert.Equal(t, time.Hour, cfg.Payment.SettledTombstoneTTL)
 	assert.NotEmpty(t, cfg.Payment.IconBase)
+
+	assert.Equal(t, "http://localhost:3000/m/orders/{booking_id}/pay", cfg.App.PaymentPage())
 }
 
 // Without the server key no charge can be authenticated, so no customer ever
@@ -218,6 +239,7 @@ func TestLoad_OverridesAreRead(t *testing.T) {
 	t.Setenv("REDIS_DB", "3")
 	t.Setenv("DATABASE_MAX_CONNS", "8")
 	t.Setenv("PAYMENT_ICON_BASE", "https://cdn.example/i")
+	t.Setenv("APP_BASE_URL", "https://rush-my-ticket.my.id")
 
 	cfg, err := Load()
 	require.NoError(t, err)
@@ -229,4 +251,64 @@ func TestLoad_OverridesAreRead(t *testing.T) {
 	assert.Equal(t, 3, cfg.Redis.DB)
 	assert.Equal(t, int32(8), cfg.DB.MaxConns)
 	assert.Equal(t, "https://cdn.example/i", cfg.Payment.IconBase)
+	assert.Equal(t, "https://rush-my-ticket.my.id", cfg.App.AppBase)
+}
+
+func TestLoad_PaymentPageIsTheAppBaseURLPlusTheConfiguredPath(t *testing.T) {
+	setRequired(t)
+	t.Setenv("APP_ENV", "production")
+	t.Setenv("APP_BASE_URL", "https://rush-my-ticket.my.id/")
+	t.Setenv("PAYMENT_WEB_PATH", "/pay/{booking_id}")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	// One trailing slash is dropped, so the URL has no "//".
+	assert.Equal(t, "https://rush-my-ticket.my.id/pay/{booking_id}", cfg.App.PaymentPage())
+}
+
+// payment_url carries a handoff code; outside local it must not travel over plain HTTP.
+func TestLoad_AppBaseURLMustBeHTTPSOutsideLocal(t *testing.T) {
+	setRequired(t)
+	t.Setenv("APP_ENV", "production")
+	t.Setenv("APP_BASE_URL", "http://rush-my-ticket.my.id")
+	_, err := Load()
+	require.ErrorContains(t, err, "APP_BASE_URL must be https")
+}
+
+// Unset in production falls back to the localhost default, which is http and so refused: a forgotten variable
+// fails the deploy instead of sending every app to localhost.
+func TestLoad_AnUnsetAppBaseURLIsRefusedOutsideLocal(t *testing.T) {
+	clearDefaulted(t)
+	setRequired(t)
+	t.Setenv("APP_ENV", "production")
+	_, err := Load()
+	require.ErrorContains(t, err, "APP_BASE_URL must be https")
+}
+
+func TestLoad_AppBaseURLMustBeAnAbsoluteURLWithoutQueryOrFragment(t *testing.T) {
+	for _, v := range []string{"rush-my-ticket.my.id", "ftp://rush-my-ticket.my.id", "https://x.id?a=1", "https://x.id#f"} {
+		t.Run(v, func(t *testing.T) {
+			setRequired(t)
+			t.Setenv("APP_BASE_URL", v)
+			_, err := Load()
+			require.ErrorContains(t, err, "APP_BASE_URL")
+		})
+	}
+}
+
+func TestLoad_PaymentWebPathMustHoldTheBookingIDOnceAndNothingAfterThePath(t *testing.T) {
+	for _, v := range []string{
+		"m/orders/{booking_id}/pay",               // no leading slash
+		"/m/orders/pay",                           // no placeholder
+		"/m/{booking_id}/orders/{booking_id}/pay", // twice
+		"/m/orders/{booking_id}/pay?x=1",          // query
+		"/m/orders/{booking_id}/pay#x",            // fragment: the code goes there
+	} {
+		t.Run(v, func(t *testing.T) {
+			setRequired(t)
+			t.Setenv("PAYMENT_WEB_PATH", v)
+			_, err := Load()
+			require.ErrorContains(t, err, "PAYMENT_WEB_PATH")
+		})
+	}
 }

@@ -37,12 +37,16 @@ const (
 	CodeUnauthorized      = "UNAUTHORIZED"
 	CodeTokenExpired      = "TOKEN_EXPIRED"
 	CodeTokenInvalid      = "TOKEN_INVALID"
+	// CodePaymentSessionInvalid is the 401 for an X-Payment-Session that is unknown, expired, or whose grant is gone.
+	CodePaymentSessionInvalid = "PAYMENT_SESSION_INVALID"
 )
 
 // Request headers.
 const (
 	HeaderGrantToken = "X-Grant-Token"
 	HeaderDeviceID   = "X-Device-Id"
+	// HeaderPaymentSession carries the WebView payment page's session (ADR-007), sent instead of the grant headers.
+	HeaderPaymentSession = "X-Payment-Session"
 )
 
 // Grant is the content of grant:<token>. Exactly one of AccountID (logged-in) and DeviceHash (guest) is set.
@@ -53,6 +57,9 @@ type Grant struct {
 	QueueToken string
 	AccountID  string
 	DeviceHash string
+	// ViaSession is true when the request came with X-Payment-Session instead of X-Grant-Token. For logs and metrics
+	// only: nothing may branch on it, the grant is the same either way.
+	ViaSession bool
 }
 
 // TokenVerifier checks an access token; *token.Issuer is one. It errors with token.ErrExpired or token.ErrInvalid.
@@ -89,13 +96,47 @@ func ErrInvalid() error {
 //
 // cfg.Tokens is required: it panics at construction without it, so a missing JWT_SECRET fails at start, not on the
 // first account request.
+//
+// X-Payment-Session is refused here with 400 VALIDATION_ERROR, before Redis is read: the routes behind this middleware
+// (create a booking, the ticket page, mint a handoff code) are the ones a WebView session must never reach. The
+// routes that accept it use MiddlewareWithSession.
 func Middleware(rdb goredis.UniversalClient, cfg Config) func(http.Handler) http.Handler {
+	return build(cfg, func(r *http.Request) (Grant, error) {
+		if r.Header.Get(HeaderPaymentSession) != "" {
+			return Grant{}, apperror.ErrBadRequest("X-Payment-Session tidak diterima di endpoint ini").WithCode(apperror.CodeValidationError)
+		}
+		return verify(r, rdb, cfg)
+	})
+}
+
+// MiddlewareWithSession is Middleware that also accepts X-Payment-Session instead of the grant headers (ADR-007,
+// docs/07-payment/06-grant-guard.md §12). It is mounted on GET /bookings/{booking_id} and §5.1–§5.4 only.
+//
+// The session resolves to its grant, which is read on every request: a deleted grant ends the session at once. The
+// device binding and the account session are not checked on this path; they were checked when the app asked for the
+// handoff code, and a stray X-Device-Id or Authorization next to a session is ignored. A session together with
+// X-Grant-Token is 400 VALIDATION_ERROR (one credential per request). An unknown session and a session whose grant is
+// gone or malformed are the same 401 PAYMENT_SESSION_INVALID. Redis unreachable → 503.
+func MiddlewareWithSession(rdb goredis.UniversalClient, cfg Config) func(http.Handler) http.Handler {
+	return build(cfg, func(r *http.Request) (Grant, error) {
+		session := r.Header.Get(HeaderPaymentSession)
+		if session == "" {
+			return verify(r, rdb, cfg)
+		}
+		if r.Header.Get(HeaderGrantToken) != "" {
+			return Grant{}, apperror.ErrBadRequest("Kirim X-Payment-Session atau X-Grant-Token, tidak keduanya").WithCode(apperror.CodeValidationError)
+		}
+		return verifySession(r, rdb, session)
+	})
+}
+
+func build(cfg Config, check func(*http.Request) (Grant, error)) func(http.Handler) http.Handler {
 	if cfg.Tokens == nil {
 		panic("grantauth: Config.Tokens is required (account grants need their access token checked)")
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			g, err := verify(r, rdb, cfg)
+			g, err := check(r)
 			if err != nil {
 				apinizer.WriteError(w, err)
 				return
@@ -110,27 +151,12 @@ func verify(r *http.Request, rdb goredis.UniversalClient, cfg Config) (Grant, er
 	if token == "" {
 		return Grant{}, ErrMissing()
 	}
-	h, err := rdb.HGetAll(r.Context(), rediskeys.Grant(token)).Result()
+	g, ok, err := readGrant(r.Context(), rdb, token)
 	if err != nil {
-		slog.Warn("grantauth: cannot read the grant", slog.Any("err", err))
-		return Grant{}, apperror.ErrServiceUnavailable("Layanan sedang sibuk, coba lagi").WithCode(apinizer.ErrorCodeInternal)
+		return Grant{}, err
 	}
-	invalid := ErrInvalid()
-	if len(h) == 0 {
-		return Grant{}, invalid
-	}
-	g := Grant{
-		Token:      token,
-		EventID:    h[rediskeys.FieldEventID],
-		BookingID:  h[rediskeys.FieldBookingID],
-		QueueToken: h[rediskeys.FieldQueueToken],
-		AccountID:  h[rediskeys.FieldAccountID],
-		DeviceHash: h[rediskeys.FieldDeviceHash],
-	}
-	if g.EventID == "" || g.BookingID == "" || g.QueueToken == "" || (g.AccountID == "") == (g.DeviceHash == "") {
-		// admission-ctl writes all three ids and exactly one identity; anything else is a bug or tampering.
-		slog.Error("grantauth: malformed grant hash", slog.Bool("account", g.AccountID != ""), slog.Bool("device", g.DeviceHash != ""))
-		return Grant{}, invalid
+	if !ok {
+		return Grant{}, ErrInvalid()
 	}
 	if g.DeviceHash != "" {
 		device := r.Header.Get(HeaderDeviceID)
@@ -143,6 +169,57 @@ func verify(r *http.Request, rdb goredis.UniversalClient, cfg Config) (Grant, er
 		return g, nil
 	}
 	return g, checkSession(r, g, cfg.Tokens)
+}
+
+// verifySession resolves a payment session to its grant. The grant must still exist and be well formed.
+func verifySession(r *http.Request, rdb goredis.UniversalClient, session string) (Grant, error) {
+	invalid := apperror.ErrUnauthorized("Sesi pembayaran tidak berlaku").WithCode(CodePaymentSessionInvalid)
+	token, err := rdb.Get(r.Context(), rediskeys.PaymentSession(session)).Result()
+	if errors.Is(err, goredis.Nil) || (err == nil && token == "") {
+		return Grant{}, invalid
+	}
+	if err != nil {
+		return Grant{}, unavailable(err)
+	}
+	g, ok, err := readGrant(r.Context(), rdb, token)
+	if err != nil {
+		return Grant{}, err
+	}
+	if !ok {
+		return Grant{}, invalid
+	}
+	g.ViaSession = true
+	return g, nil
+}
+
+// readGrant reads grant:<token>. ok is false for a missing hash and for a malformed one (admission-ctl writes all three
+// ids and exactly one identity; anything else is a bug or tampering, logged).
+func readGrant(ctx context.Context, rdb goredis.UniversalClient, token string) (Grant, bool, error) {
+	h, err := rdb.HGetAll(ctx, rediskeys.Grant(token)).Result()
+	if err != nil {
+		return Grant{}, false, unavailable(err)
+	}
+	if len(h) == 0 {
+		return Grant{}, false, nil
+	}
+	g := Grant{
+		Token:      token,
+		EventID:    h[rediskeys.FieldEventID],
+		BookingID:  h[rediskeys.FieldBookingID],
+		QueueToken: h[rediskeys.FieldQueueToken],
+		AccountID:  h[rediskeys.FieldAccountID],
+		DeviceHash: h[rediskeys.FieldDeviceHash],
+	}
+	if g.EventID == "" || g.BookingID == "" || g.QueueToken == "" || (g.AccountID == "") == (g.DeviceHash == "") {
+		slog.Error("grantauth: malformed grant hash", slog.Bool("account", g.AccountID != ""), slog.Bool("device", g.DeviceHash != ""))
+		return Grant{}, false, nil
+	}
+	return g, true, nil
+}
+
+func unavailable(err error) error {
+	slog.Warn("grantauth: cannot read Redis", slog.Any("err", err))
+	return apperror.ErrServiceUnavailable("Layanan sedang sibuk, coba lagi").WithCode(apinizer.ErrorCodeInternal)
 }
 
 // checkSession is the second condition of an account grant: the access token must belong to the account the grant was

@@ -177,3 +177,34 @@ func TestNewQRNonce_CarriesNoIdentity(t *testing.T) {
 		assert.NotContains(t, got, identity)
 	}
 }
+
+// The guard wiring of ADR-007 without a database: §5.1–§5.4 take X-Payment-Session (an unknown one is 401
+// PAYMENT_SESSION_INVALID, so the session guard is mounted), and minting a code refuses it (400).
+func TestNewMux_MountsTheSessionGuardOnPaymentRoutesAndRefusesItOnHandoff(t *testing.T) {
+	srv, err := newMux(lazyPool(t), miniredisRDB(t), paymentcfg.Config{
+		App: paymentcfg.App{JWTSecret: "test-jwt-secret-must-be-nonempty", DevicePepper: "test-device-pepper"},
+	})
+	require.NoError(t, err)
+	t.Cleanup(srv.Close)
+	cases := []struct {
+		method, path string
+		status       int
+		code         string
+	}{
+		{http.MethodGet, "/payments/RB-1/methods", http.StatusUnauthorized, "PAYMENT_SESSION_INVALID"},
+		{http.MethodPost, "/payments/RB-1", http.StatusUnauthorized, "PAYMENT_SESSION_INVALID"},
+		{http.MethodPost, "/payments/RB-1/retry", http.StatusUnauthorized, "PAYMENT_SESSION_INVALID"},
+		{http.MethodGet, "/payments/RB-1/status", http.StatusUnauthorized, "PAYMENT_SESSION_INVALID"},
+		{http.MethodPost, "/payments/RB-1/handoff", http.StatusBadRequest, "VALIDATION_ERROR"},
+	}
+	for _, c := range cases {
+		t.Run(c.method+" "+c.path, func(t *testing.T) {
+			req := httptest.NewRequest(c.method, c.path, nil)
+			req.Header.Set("X-Payment-Session", "ps_unknown")
+			rec := httptest.NewRecorder()
+			srv.Handler.ServeHTTP(rec, req)
+			assert.Equal(t, c.status, rec.Code, rec.Body.String())
+			assert.Contains(t, rec.Body.String(), c.code)
+		})
+	}
+}

@@ -609,6 +609,10 @@ jobs:
             echo "::error::APP_BASE_URL is empty and notification is being deployed."
             fail=1
           fi
+          if [ "$NEEDS_PAYMENT_API" = "true" ] && [ -z "$APP_BASE_URL" ]; then
+            echo "::error::APP_BASE_URL is empty and payment-api is being deployed (payment_url is built on it)."
+            fail=1
+          fi
 
           # Not fatal, and deliberately not a value check: reading the secret
           # here would need GetSecretValue on the deploy role and would put a
@@ -980,6 +984,8 @@ jobs:
             DeployRevision=${{ github.sha }}
             MidtransBaseUrl=${{ vars.MIDTRANS_BASE_URL || 'https://api.sandbox.midtrans.com' }}
             PaymentIconBase=${{ vars.PAYMENT_ICON_BASE || 'https://cdn.rusuh.id/icons' }}
+            AppBaseUrl=${{ vars.APP_BASE_URL }}
+            PaymentWebPath=${{ vars.PAYMENT_WEB_PATH || '/m/orders/{booking_id}/pay' }}
 
   # ══════════════════════════════════════════════════════════════════════════
   #  WAVE 2 — Depends on Wave 1's SSM parameters

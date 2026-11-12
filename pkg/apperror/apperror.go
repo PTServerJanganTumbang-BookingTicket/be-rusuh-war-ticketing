@@ -124,4 +124,6 @@ const (
 	CodePaymentGatewayUnavailable = "PAYMENT_GATEWAY_UNAVAILABLE"
 	CodeMaxAttemptsExceeded       = "MAX_ATTEMPTS_EXCEEDED"
 	CodeBankNotSupported          = "BANK_NOT_SUPPORTED"
+	// CodeHandoffCodeInvalid is the 401 of POST /payments/handoff/exchange (§5.7, ADR-007).
+	CodeHandoffCodeInvalid = "HANDOFF_CODE_INVALID"
 )

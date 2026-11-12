@@ -92,19 +92,26 @@ func newMux(pool *pgxpool.Pool, rdb *goredis.Client, cfg paymentcfg.Config) (*Se
 	// The shared guard, the same one booking mounts: X-Grant-Token, then the
 	// guest device binding, then the account session (ADR-006 §8.9, §8.13,
 	// §8.17). It reads grant:{token} itself through pkg/rediskeys.
-	guard := grantauth.Middleware(rdb, grantauth.Config{
+	guardCfg := grantauth.Config{
 		DevicePepper: []byte(cfg.App.DevicePepper),
 		// main's grantauth takes a TokenVerifier interface; *token.Issuer
 		// satisfies it with Verify(string) (token.Claims, error).
 		Tokens: sessions,
-	})
+	}
+	// §5.1–§5.4 also accept the WebView's X-Payment-Session (ADR-007); minting
+	// a handoff code does not, so only the app can start a WebView payment.
+	sessionGuard := grantauth.MiddlewareWithSession(rdb, guardCfg)
+	grantGuard := grantauth.Middleware(rdb, guardCfg)
+	handoff := usecase.NewHandoff(repo, paymentredis.NewHandoffStore(rdb), paymentredis.NewHandoffLimiter(rdb),
+		cfg.App.PaymentPage())
 
 	mux := http.NewServeMux()
 	// /sys/ping, matching every other service and this stack's HttpApi route.
 	// The CI smoke test curls it after a deploy, so a different path here would
 	// report a healthy release as a failed one.
 	apinizer.RegisterHealthCheck(mux, "/sys/ping")
-	paymenthttp.RegisterRoutes(mux, paymenthttp.NewPayment(uc), guard)
+	paymenthttp.RegisterRoutes(mux, paymenthttp.NewPayment(uc), sessionGuard)
+	paymenthttp.RegisterHandoffRoutes(mux, paymenthttp.NewHandoff(handoff), grantGuard)
 
 	return &Server{Handler: mux, close: func() {
 		if pool != nil {

@@ -8,7 +8,9 @@ import (
 
 // RegisterRoutes mounts the payment routes.
 //
-// The four customer-facing routes are wrapped in the grant guard; the webhook
+// The four customer-facing routes are wrapped in guard, which in production is
+// grantauth.MiddlewareWithSession: the WebView payment page reaches them with
+// X-Payment-Session instead of the grant headers (ADR-007). The webhook
 // is NOT. That asymmetry is the design: the webhook is called by Midtrans,
 // which holds no grant, and is protected instead by an API Gateway resource
 // policy (IP allowlist) plus the signature_key inside the body
