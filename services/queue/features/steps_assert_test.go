@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"reflect"
 	"regexp"
 	"sort"
@@ -62,16 +61,6 @@ func (r *response) queueToken() string {
 	d, _ := r.data()
 	s, _ := d["queue_token"].(string)
 	return s
-}
-
-func (r *response) cookie(name string) (*http.Cookie, error) {
-	for _, line := range r.header.Values("Set-Cookie") {
-		c, err := http.ParseSetCookie(line)
-		if err == nil && c.Name == name {
-			return c, nil
-		}
-	}
-	return nil, fmt.Errorf("no Set-Cookie %q in %v", name, r.header.Values("Set-Cookie"))
 }
 
 func truncate(s string) string {
@@ -309,45 +298,10 @@ func registerAssertSteps(sc *godog.ScenarioContext, W func() *world) {
 	})
 
 	// ---- cookie
-	cookieIs := func(want func(r *response) string) func(string) error {
-		return func(name string) error {
-			return lastDo(func(r *response) error {
-				c, err := r.cookie(name)
-				if err != nil {
-					return err
-				}
-				if c.Value != want(r) || c.Value == "" {
-					return fmt.Errorf("cookie %s = %q, want %q", name, c.Value, want(r))
-				}
-				return nil
-			})
-		}
-	}
-	sc.Step(`^the response sets cookie "([^"]*)" to the same value as data\.queue_token$`, cookieIs((*response).queueToken))
-	sc.Step(`^the response sets cookie "([^"]*)" to data\.queue_token$`, cookieIs((*response).queueToken))
-	sc.Step(`^the response sets cookie "([^"]*)" to "([^"]*)"$`, func(name, v string) error {
-		return cookieIs(func(*response) string { return v })(name)
-	})
-	sc.Step(`^the cookie is HttpOnly, Secure, SameSite=Strict, Path=(\S+) and Max-Age=(\d+)$`, func(path string, age int) error {
+	sc.Step(`^the response sets no cookie$`, func() error {
 		return lastDo(func(r *response) error {
-			c, err := r.cookie(queuehttp.CookieName)
-			if err != nil {
-				return err
-			}
-			if !c.HttpOnly || !c.Secure || c.SameSite != http.SameSiteStrictMode || c.Path != path || c.MaxAge != age {
-				return fmt.Errorf("cookie attributes: %s", c.String())
-			}
-			return nil
-		})
-	})
-	sc.Step(`^the cookie Domain is "([^"]*)"(?: \(configurable via env COOKIE_DOMAIN\))?$`, func(d string) error {
-		return lastDo(func(r *response) error {
-			c, err := r.cookie(queuehttp.CookieName)
-			if err != nil {
-				return err
-			}
-			if c.Domain != d {
-				return fmt.Errorf("cookie Domain = %q, want %q", c.Domain, d)
+			if c := r.header.Values("Set-Cookie"); len(c) != 0 {
+				return fmt.Errorf("Set-Cookie = %v, want none", c)
 			}
 			return nil
 		})
@@ -623,7 +577,7 @@ func registerAssertSteps(sc *godog.ScenarioContext, W func() *world) {
 	sc.Step(`^no gate after "([^"]*)" was called$`, func(g string) error { return W().noGateAfter(g) })
 
 	// ---- misc
-	sc.Step(`^both return the same status, body shape and Set-Cookie header$`, func() error { return W().sameShape() })
+	sc.Step(`^both return the same status and body shape, and neither sets a cookie$`, func() error { return W().sameShape() })
 	sc.Step(`^no log line contains "([^"]*)", the queue_token, "([^"]*)" or the access token$`, func(c, dev string) error {
 		w := W()
 		logs := w.logs.String()
@@ -1004,17 +958,8 @@ func (w *world) sameShape() error {
 	if !reflect.DeepEqual(shape(ja), shape(jb)) {
 		return fmt.Errorf("body shapes differ:\n%s\n%s", a.body, b.body)
 	}
-	ca, err := a.cookie(queuehttp.CookieName)
-	if err != nil {
-		return fmt.Errorf("lambda: %w", err)
-	}
-	cb, err := b.cookie(queuehttp.CookieName)
-	if err != nil {
-		return fmt.Errorf("server: %w", err)
-	}
-	ca.Value, cb.Value = "", ""
-	if ca.String() != cb.String() {
-		return fmt.Errorf("Set-Cookie differs: %q vs %q", ca.String(), cb.String())
+	if ca, cb := a.header.Values("Set-Cookie"), b.header.Values("Set-Cookie"); len(ca)+len(cb) != 0 {
+		return fmt.Errorf("Set-Cookie: lambda %v, server %v; want none", ca, cb)
 	}
 	return nil
 }

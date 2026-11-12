@@ -1,3 +1,4 @@
+# 2026-11-13: queue_token cookie removed (Erma approved editing this frozen file); clients send X-Queue-Token.
 @step-4 @queue-service @join @BR-09 @security
 Feature: Only the owner can use my queue_token
   Guest token: my X-Device-Id must match the device that joined. Logged-in token: my Bearer account must match.
@@ -65,9 +66,10 @@ Feature: Only the owner can use my queue_token
   # ------------------------------------------------------------ rejection details
 
   @unit
-  Scenario: When I am refused, my queue_token cookie is cleared
+  Scenario: When I am refused, no cookie is set
     When a guest with device id "dev-laptop-000000002" joins "E1" sending queue_token "qt_G" with captcha "cap-ok"
-    Then the response clears cookie "queue_token" with Path=/events/E1
+    Then the response status is 401
+    And the response sets no cookie
 
   @unit
   Scenario: Rate limit and CAPTCHA are checked before token ownership

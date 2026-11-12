@@ -36,7 +36,7 @@ func openServing() usecase.ServingResult {
 
 func serveServing(t *testing.T, f *fakeServingGetter, target string, mutate func(*http.Request)) *httptest.ResponseRecorder {
 	t.Helper()
-	h := NewHandler(nil, Options{CookieDomain: "my-rusuh.my.id", CookieMaxAge: time.Hour}).WithServing(f)
+	h := NewHandler(nil, Options{}).WithServing(f)
 	mux := http.NewServeMux()
 	RegisterRoutes(mux, h)
 	req := httptest.NewRequest(http.MethodGet, target, nil)
@@ -88,7 +88,7 @@ func TestServingIgnoresEverythingTheCallerSendsAndSetsNoCookie(t *testing.T) {
 			r.Header.Set("Authorization", "Bearer not-a-token")
 			r.Header.Set("X-Device-Id", "dev-1")
 			r.Header.Set(HeaderQueueToken, "qt_X")
-			r.AddCookie(&http.Cookie{Name: CookieName, Value: "qt_Y"})
+			r.AddCookie(&http.Cookie{Name: "queue_token", Value: "qt_Y"})
 		})
 	if busy.Code != http.StatusOK || plain.Body.String() != busy.Body.String() {
 		t.Errorf("answers differ:\n%s\n%s", plain.Body, busy.Body)

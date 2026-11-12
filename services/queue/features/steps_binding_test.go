@@ -68,20 +68,6 @@ func registerBindingSteps(sc *godog.ScenarioContext, W func() *world) {
 		return nil
 	})
 	sc.Step(`^acct:\{([^}]*)\}:(\S+) holds "([^"]*)"$`, func(id, a, qt string) error { return W().acctIs(id, a, qt) })
-	sc.Step(`^the response clears cookie "([^"]*)" with Path=(\S+)$`, func(name, path string) error {
-		r, err := W().last()
-		if err != nil {
-			return err
-		}
-		c, err := r.cookie(name)
-		if err != nil {
-			return err
-		}
-		if c.Value != "" || c.MaxAge >= 0 || c.Path != path {
-			return fmt.Errorf("cookie %s = %q, Max-Age %d, Path %q; want cleared on %s", name, c.Value, c.MaxAge, c.Path, path)
-		}
-		return nil
-	})
 }
 
 // hashDevice is the expected device_hash, computed here independently of the

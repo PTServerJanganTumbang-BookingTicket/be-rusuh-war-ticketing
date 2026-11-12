@@ -76,10 +76,8 @@ func registerSetupSteps(sc *godog.ScenarioContext, W func() *world) {
 		w := W()
 		w.cfg.Capacity = n
 		w.cfg.SaleWindow = time.Duration(s) * time.Second
-		w.opt.CookieMaxAge = w.cfg.SaleWindow
 		return nil
 	})
-	sc.Step(`^COOKIE_DOMAIN is "([^"]*)"$`, func(d string) error { W().opt.CookieDomain = d; return nil })
 	sc.Step(`^the clock is frozen at "([^"]*)"$`, func(ts string) error {
 		at, err := time.Parse(time.RFC3339, ts)
 		if err != nil {

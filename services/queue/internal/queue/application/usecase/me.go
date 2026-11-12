@@ -16,7 +16,7 @@ type MeInput struct {
 	EventID    string
 	DeviceID   string // X-Device-Id
 	Bearer     string // access token without "Bearer "
-	QueueToken string // cookie or X-Queue-Token
+	QueueToken string // X-Queue-Token
 }
 
 // MeResult is where the customer is (api-contracts §3.3).
@@ -31,8 +31,6 @@ type MeResult struct {
 	PaymentExpiresAt time.Time
 	PaymentRef       string
 	ServerTime       time.Time
-	SetCookie        bool // re-issue the queue_token cookie (Bearer-only recovery)
-	ClearCookie      bool // the tombstone answered: nothing is left to recover
 }
 
 // Me is the GET /queue/me use case. It is a read: a waiting customer is answered from Redis alone, and only a customer
@@ -68,7 +66,7 @@ func (m *Me) Get(ctx context.Context, in MeInput) (MeResult, error) {
 		return MeResult{}, err
 	}
 
-	qt, viaAccount, err := m.which(ctx, ev, in, accountID)
+	qt, err := m.which(ctx, ev, in, accountID)
 	if err != nil {
 		return MeResult{}, err
 	}
@@ -83,33 +81,33 @@ func (m *Me) Get(ctx context.Context, in MeInput) (MeResult, error) {
 		return MeResult{}, err
 	}
 
-	res := MeResult{QueueToken: qt, TicketNo: e.TicketNo, SetCookie: viaAccount, ServerTime: m.d.Clock()}
+	res := MeResult{QueueToken: qt, TicketNo: e.TicketNo, ServerTime: m.d.Clock()}
 	if e.GrantToken == "" {
 		return m.waiting(ctx, ev, e, res)
 	}
 	return m.granted(ctx, ev, e, res)
 }
 
-// which picks the queue token: a Bearer caller gets their own account's place (a guest cookie is ignored, never taken
+// which picks the queue token: a Bearer caller gets their own account's place (a guest token is ignored, never taken
 // over, BR-07); everyone else presents their token.
-func (m *Me) which(ctx context.Context, ev rediskeys.Event, in MeInput, accountID string) (qt string, viaAccount bool, err error) {
+func (m *Me) which(ctx context.Context, ev rediskeys.Event, in MeInput, accountID string) (string, error) {
 	if accountID != "" {
 		qt, found, err := m.d.Store.AccountToken(ctx, ev, accountID)
 		if err != nil {
-			return "", false, m.unavailable(ctx, "acct lookup", err)
+			return "", m.unavailable(ctx, "acct lookup", err)
 		}
 		if !found {
-			return "", false, apperror.ErrUnauthorized("Tidak ada antrian untuk akun ini").WithCode(domain.CodeUnauthorized)
+			return "", apperror.ErrUnauthorized("Tidak ada antrian untuk akun ini").WithCode(domain.CodeUnauthorized)
 		}
-		return qt, true, nil
+		return qt, nil
 	}
 	if in.QueueToken == "" {
-		return "", false, apperror.ErrUnauthorized("Token antrian tidak ada").WithCode(domain.CodeUnauthorized)
+		return "", apperror.ErrUnauthorized("Token antrian tidak ada").WithCode(domain.CodeUnauthorized)
 	}
-	return in.QueueToken, false, nil
+	return in.QueueToken, nil
 }
 
-// gone answers for a token that has no place: a paid booking leaves a tombstone (CONFIRMED, cookie cleared); anything
+// gone answers for a token that has no place: a paid booking leaves a tombstone (CONFIRMED); anything
 // else is EXPIRED. A token of another event is just missing, so it never reads the tombstone.
 func (m *Me) gone(ctx context.Context, qt string, otherEvent bool) (MeResult, error) {
 	res := MeResult{State: domain.MeExpired, ServerTime: m.d.Clock()}
@@ -121,7 +119,7 @@ func (m *Me) gone(ctx context.Context, qt string, otherEvent bool) (MeResult, er
 		return MeResult{}, m.unavailable(ctx, "tombstone lookup", err)
 	}
 	if found {
-		return MeResult{State: domain.MeConfirmed, BookingID: bookingID, ClearCookie: true, ServerTime: m.d.Clock()}, nil
+		return MeResult{State: domain.MeConfirmed, BookingID: bookingID, ServerTime: m.d.Clock()}, nil
 	}
 	return res, nil
 }
