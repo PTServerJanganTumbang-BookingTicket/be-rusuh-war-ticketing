@@ -39,6 +39,11 @@ type MeGetter interface {
 	Get(ctx context.Context, in usecase.MeInput) (usecase.MeResult, error)
 }
 
+// ServingGetter is the GET /queue/serving use case.
+type ServingGetter interface {
+	Get(ctx context.Context, eventID string) (usecase.ServingResult, error)
+}
+
 // Options configures the handler.
 type Options struct {
 	CookieDomain string        // COOKIE_DOMAIN, e.g. my-rusuh.my.id (join on api.*, stream on events.*)
@@ -48,9 +53,10 @@ type Options struct {
 
 // Handler serves POST /events/{event_id}/queue/join.
 type Handler struct {
-	join Joiner
-	me   MeGetter
-	opt  Options
+	join    Joiner
+	me      MeGetter
+	serving ServingGetter
+	opt     Options
 }
 
 // NewHandler builds the handler.
@@ -59,11 +65,17 @@ func NewHandler(j Joiner, opt Options) *Handler { return &Handler{join: j, opt: 
 // WithMe adds GET /queue/me to the handler.
 func (h *Handler) WithMe(m MeGetter) *Handler { h.me = m; return h }
 
+// WithServing adds GET /queue/serving to the handler.
+func (h *Handler) WithServing(s ServingGetter) *Handler { h.serving = s; return h }
+
 // RegisterRoutes mounts the queue routes.
 func RegisterRoutes(mux *http.ServeMux, h *Handler) {
 	mux.HandleFunc("POST /events/{event_id}/queue/join", h.Join)
 	if h.me != nil {
 		mux.HandleFunc("GET /events/{event_id}/queue/me", h.Me)
+	}
+	if h.serving != nil {
+		mux.HandleFunc("GET /events/{event_id}/queue/serving", h.Serving)
 	}
 }
 

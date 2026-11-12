@@ -45,6 +45,13 @@ type QueueStore interface {
 	RepairLine(ctx context.Context, ev rediskeys.Event, queueToken string, ticketNo int64) (added bool, err error)
 }
 
+// ServingReader reads the public queue facts for GET /queue/serving.
+type ServingReader interface {
+	// Serving is one HMGET queue:{ev} state now_serving rate_per_min. found is false when state is missing (the
+	// event is not seeded); a missing counter is 0; a counter that is not an integer is an error.
+	Serving(ctx context.Context, ev rediskeys.Event) (s domain.Serving, found bool, err error)
+}
+
 // BookingReader reads bookings (Aurora writer pool, SELECT only).
 type BookingReader interface {
 	ByQueueToken(ctx context.Context, eventID, queueToken string) (b domain.Booking, found bool, err error)
