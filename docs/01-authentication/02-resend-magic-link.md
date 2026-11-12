@@ -41,11 +41,12 @@ sequenceDiagram
         H-->>C: 429 TOO_MANY_REQUESTS
     end
 
-    H->>H: generate new plain token + hash
-
-    opt account exists
-        H->>DB: FindAccountByEmail → account_id
+    H->>DB: FindAccountByEmail
+    alt no account
+        H-->>C: 404 EMAIL_NOT_REGISTERED
     end
+
+    H->>H: generate new plain token + hash
 
     H->>DB: BEGIN — INSERT magic_tokens (PURPOSE=LOGIN)<br/>INSERT outbox (auth.magic_link)
     H->>DB: COMMIT
@@ -59,6 +60,10 @@ sequenceDiagram
 Identical to `POST /auth/magic-link` (see [01-request-magic-link.md](01-request-magic-link.md)),
 except step 7 uses message `"New login link sent"`.
 
+Both endpoints call the same `RequestMagicLink` usecase, so the registered-address
+requirement added in v2.25 applies here unchanged — including the enumeration
+trade it carries, which §1 of that document sets out.
+
 The rate limit is shared: sending the original link and resending it count against
 the same 5-per-hour bucket for that email address.
 
@@ -70,7 +75,8 @@ Same as `POST /auth/magic-link` — see §4 there.
 
 | HTTP | Code | When |
 |---|---|---|
-| 200 | — | Always on success |
+| 200 | — | Link issued; an account exists for the address |
+| 404 | `EMAIL_NOT_REGISTERED` | No account for this address. Nothing written, no email sent |
 | 400 | `VALIDATION_ERROR` | Missing or malformed `email` |
 | 429 | `TOO_MANY_REQUESTS` | Combined count of `/magic-link` + `/magic-link/resend` for this address exceeds 5/hour |
 
