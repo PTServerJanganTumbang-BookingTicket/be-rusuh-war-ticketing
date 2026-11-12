@@ -1277,7 +1277,6 @@ jobs:
             url=$(aws cloudformation describe-stacks --stack-name "rusuh-${ENV}-ecs" \
               --query "Stacks[0].Outputs[?OutputKey=='StreamUrl'].OutputValue" --output text)
           fi
-          echo "stream server: $url"
           for i in $(seq 1 20); do
             code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${url}/health" || echo 000)
             echo "attempt $i: /health -> $code"
