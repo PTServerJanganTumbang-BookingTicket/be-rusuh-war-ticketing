@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"os"
 
@@ -35,5 +36,17 @@ func main() {
 	// bypassing the reflection-based JSON dispatch that causes
 	// "cannot unmarshal object into Go value of type []uint8" when the
 	// handler is passed as a function value with a []byte parameter.
-	lambda.Start(server.Events())
+	//
+	// json.RawMessage is used as the parameter type rather than []byte because
+	// lambda.Start in aws-lambda-go v1.55+ uses generic dispatch and calls
+	// json.Unmarshal(event, &param). For []byte this fails on a JSON object
+	// ("cannot unmarshal object into []uint8"). For json.RawMessage it succeeds:
+	// the json package treats RawMessage specially and stores the raw bytes as-is.
+	lambda.Start(func(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
+		out, err := server.Events().Invoke(ctx, []byte(raw))
+		if err != nil {
+			return nil, err
+		}
+		return json.RawMessage(out), nil
+	})
 }
