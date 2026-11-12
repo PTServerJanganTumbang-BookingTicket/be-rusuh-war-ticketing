@@ -4,7 +4,7 @@
 |---|---|
 | **Service** | `services/payment-api` (Lambda) |
 | **Auth** | `X-Grant-Token` (+ `X-Device-Id` for a guest, + `Authorization` for an account grant). `X-Payment-Session` is refused |
-| **Contract** | Apidog `POST /payments/{booking_id}/handoff` · api-contracts §5.6 (v2.25) |
+| **Contract** | Apidog `POST /payments/{booking_id}/handoff` · api-contracts §5.6 (v2.26) |
 | **Sources** | ADR-007 · ADR-006 §8.9, §8.13, §8.17 |
 | **Requirements** | FR-21 · NFR-02 · NFR-11 |
 | **Status** | done |
@@ -50,7 +50,7 @@ sequenceDiagram
         H-->>App: 409 PAYMENT_WINDOW_CLOSED {payment_expires_at}
     end
     H->>R: SET paymenthandoff:{code} = grant_token NX EX 60
-    H-->>App: 201 {booking_id, handoff_code, expires_at}
+    H-->>App: 201 {booking_id, handoff_code, payment_url, expires_at}
 ```
 
 ## 3. Steps
@@ -75,7 +75,11 @@ sequenceDiagram
 5. **Code**: `hc_` + 32 bytes from `crypto/rand`, base64url without padding (46 characters). `SET
    paymenthandoff:<code> <grant_token> NX EX 60`. `NX` failing (a collision on 256 random bits) is treated as a Redis
    error: 503.
-6. **Answer** `201 {booking_id, handoff_code, expires_at}`, `expires_at = now + 60 s`.
+6. **Answer** `201 {booking_id, handoff_code, payment_url, expires_at}`, `expires_at = now + 60 s`.
+7. **`payment_url`** = `APP_BASE_URL` + `PAYMENT_WEB_PATH` with `{booking_id}` replaced by `url.PathEscape(booking_id)`,
+   + `#code=` + `handoff_code`. With the defaults: `{APP_BASE_URL}/m/orders/{booking_id}/pay#code={handoff_code}`.
+   The app opens it as is after checking the prefix `https://rush-my-ticket.my.id/m/orders/`, so a change of web
+   route needs no app release (ADR-007 rule 3).
 
 The value is the **grant token only**. The booking id is in the grant hash, so storing it twice would only create a
 second copy to disagree with.
@@ -89,7 +93,21 @@ second copy to disagree with.
 | Aurora | `bookings` | SELECT | Bound on `id` **and** `grant_token` |
 | Redis | `paymenthandoff:<code>` | SET NX EX 60 | Plain string: the grant token. Read once by 08 (`GET` + `DEL` in one `MULTI`) |
 
-## 5. Responses and errors
+## 5. Configuration
+
+| Variable | Default | Rule |
+|---|---|---|
+| `APP_BASE_URL` | `http://localhost:3000` | The public web frontend origin, the **same variable** notification uses for emailed links (GitHub repo variable `APP_BASE_URL`, template parameter `AppBaseUrl`, no template default). Required; `https://` outside local; one trailing `/` is dropped |
+| `PAYMENT_WEB_PATH` | `/m/orders/{booking_id}/pay` | The web payment route. Starts with `/`, contains `{booking_id}` exactly once, no `#` or `?`. Template parameter `PaymentWebPath` (same default), GitHub repo variable `PAYMENT_WEB_PATH` optional |
+
+The contract and ADR-007 call this setting `PAYMENT_WEB_URL`; it is `APP_BASE_URL` because the payment page lives on
+the same web frontend as the email links. For the app's prefix check to pass, the deployed value must be
+`https://rush-my-ticket.my.id`.
+
+The bootstrap script `infra/bootstrap/configure-github.sh` still sets `APP_BASE_URL="https://ticket.sjt.com"`; it is
+not changed here. Check the repo variable on GitHub before a deploy.
+
+## 6. Responses and errors
 
 | HTTP | Code | When |
 |---|---|---|
@@ -107,7 +125,7 @@ second copy to disagree with.
 Errors are written with `apinizer.WriteError`, **not** payment-api's own `WriteError`: that one passes `nil` as `data`,
 which would drop `data.status`, `data.payment_expires_at` and `data.retry_after`.
 
-## 6. Edge cases and decisions
+## 7. Edge cases and decisions
 
 - **A new code does not cancel an older one.** Each is single use and dies in 60 s; tracking "the latest code per
   grant" would need a second key for no gain.
@@ -120,7 +138,7 @@ which would drop `data.status`, `data.payment_expires_at` and `data.retry_after`
   `BOOKING_STATUS_INVALID {status: EXPIRED}` (the app already routes on it); `PAYMENT_WINDOW_CLOSED` covers only a
   `HELD` / `AWAITING_PAYMENT` booking past its deadline before the sweep runs.
 
-## 7. Tests
+## 8. Tests
 
 `services/payment-api`: `application/usecase/handoff_test.go`, `infrastructure/http/handoff_test.go`,
 `infrastructure/redis/handoff_test.go` (miniredis and, with `REDIS_ADDR`, the real Redis), `delivery/handoff_e2e_test.go`
@@ -136,11 +154,22 @@ which would drop `data.status`, `data.payment_expires_at` and `data.retry_after`
       writer); without the guard → 500, not 401
 - [x] integration (Redis): the 11th call in a minute is refused; a limiter error is reported to the use case
 - [x] e2e (Postgres): a guest code needs the grant's device; a session cannot mint another code (400)
+- [x] unit (usecase): `payment_url` is `{base}/m/orders/{booking_id}/pay#code={handoff_code}`, with the same code as
+      `handoff_code`; the booking id is path-escaped
+- [x] unit (config): `APP_BASE_URL` empty → refused; `http://` outside local → refused; trailing `/` dropped;
+      `PAYMENT_WEB_PATH` without `/`, without `{booking_id}`, with it twice, or with `#` / `?` → refused
+- [x] unit (handler) + e2e: the 201 body carries `payment_url`
 
-## 8. Tasks
+## 9. Tasks
 
 - [x] `pkg/rediskeys`: `PaymentHandoff(code)`, `HandoffRateLimit(grantToken)` + rows in `docs/redis-keys.md`
 - [x] port `IHandoffStore` / `IHandoffLimiter` (outbound) + Redis adapter `infrastructure/redis/handoff.go`
 - [x] usecase `CreateHandoff` (`application/usecase/handoff.go`, its own `IHandoffUsecase` port) + handler + route
 - [x] templates: route in `services/payment-api/template.yaml` **and** `template-cfn.yaml`, and in
       `infra/api-gateway/template.yaml`
+- [x] config `App.AppBase` (`APP_BASE_URL`), `App.PaymentWebPath` (`PAYMENT_WEB_PATH`) + validation; `example.env`
+- [x] `dto.HandoffResponse.PaymentURL`; `NewHandoff` takes base + path; built in `CreateHandoff`
+- [x] templates: `AppBaseUrl` (no default) and `PaymentWebPath` (default) parameters + env in `template.yaml` **and**
+      `template-cfn.yaml`
+- [x] `cicd.yml`: pass `AppBaseUrl=${{ vars.APP_BASE_URL }}` and `PaymentWebPath=${{ vars.PAYMENT_WEB_PATH || '/m/orders/{booking_id}/pay' }}` to payment-api; preflight fails when `APP_BASE_URL` is
+      empty and payment-api is deployed (as it does for notification)

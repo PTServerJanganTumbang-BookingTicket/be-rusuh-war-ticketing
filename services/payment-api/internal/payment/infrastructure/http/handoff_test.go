@@ -30,7 +30,8 @@ func (f *fakeHandoff) CreateHandoff(_ context.Context, bookingID, grant string) 
 	if f.createErr != nil {
 		return dto.HandoffResponse{}, f.createErr
 	}
-	return dto.HandoffResponse{BookingID: bookingID, HandoffCode: "hc_x", ExpiresAt: "2026-10-25T10:16:30Z"}, nil
+	return dto.HandoffResponse{BookingID: bookingID, HandoffCode: "hc_x",
+		PaymentURL: "https://rush-my-ticket.my.id/m/orders/" + bookingID + "/pay#code=hc_x", ExpiresAt: "2026-10-25T10:16:30Z"}, nil
 }
 
 func (f *fakeHandoff) ExchangeHandoff(_ context.Context, req dto.ExchangeRequest) (dto.ExchangeResponse, error) {
@@ -71,6 +72,7 @@ func TestCreateHandoffAnswers201WithTheCodeForTheGrantsBooking(t *testing.T) {
 	e := decodeHandoff(t, w.Body.Bytes())
 	assert.Equal(t, "hc_x", e.Data["handoff_code"])
 	assert.Equal(t, "RB-00912", e.Data["booking_id"])
+	assert.Equal(t, "https://rush-my-ticket.my.id/m/orders/RB-00912/pay#code=hc_x", e.Data["payment_url"])
 }
 
 func TestCreateHandoffKeepsTheErrorDataTheAppRoutesOn(t *testing.T) {

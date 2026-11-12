@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"log/slog"
 	"math"
+	"net/url"
 	"strings"
 	"time"
 
@@ -35,20 +36,34 @@ type HandoffUsecase struct {
 	bookings portout.IBookingRepository
 	store    portout.IHandoffStore
 	limiter  portout.IHandoffLimiter
+	// paymentPage is the WebView URL template from config.App.PaymentPage, holding BookingIDPlaceholder.
+	paymentPage string
 
 	now    func() time.Time
 	random func() (string, error)
 }
 
-// NewHandoff wires the handoff use case.
-func NewHandoff(bookings portout.IBookingRepository, store portout.IHandoffStore, limiter portout.IHandoffLimiter) portin.IHandoffUsecase {
+// BookingIDPlaceholder is where the payment page template takes the booking id (same literal as
+// config.BookingIDPlaceholder, which validates the template at start-up).
+const BookingIDPlaceholder = "{booking_id}"
+
+// NewHandoff wires the handoff use case. paymentPage is the WebView URL template, e.g.
+// "https://rush-my-ticket.my.id/m/orders/{booking_id}/pay".
+func NewHandoff(bookings portout.IBookingRepository, store portout.IHandoffStore, limiter portout.IHandoffLimiter,
+	paymentPage string) portin.IHandoffUsecase {
 	return &HandoffUsecase{
-		bookings: bookings,
-		store:    store,
-		limiter:  limiter,
-		now:      func() time.Time { return time.Now().UTC() },
-		random:   random256,
+		bookings:    bookings,
+		store:       store,
+		limiter:     limiter,
+		paymentPage: paymentPage,
+		now:         func() time.Time { return time.Now().UTC() },
+		random:      random256,
 	}
+}
+
+// paymentURL is §5.6 payment_url: the page for this booking, the code in the fragment so it never reaches a server log.
+func (u *HandoffUsecase) paymentURL(bookingID, code string) string {
+	return strings.Replace(u.paymentPage, BookingIDPlaceholder, url.PathEscape(bookingID), 1) + "#code=" + code
 }
 
 func random256() (string, error) {
@@ -96,6 +111,7 @@ func (u *HandoffUsecase) CreateHandoff(ctx context.Context, bookingID, grantToke
 	return dto.HandoffResponse{
 		BookingID:   b.ID,
 		HandoffCode: code,
+		PaymentURL:  u.paymentURL(b.ID, code),
 		ExpiresAt:   now.Add(HandoffCodeTTL).Format(time.RFC3339),
 	}, nil
 }

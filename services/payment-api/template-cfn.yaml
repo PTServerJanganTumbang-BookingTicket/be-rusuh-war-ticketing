@@ -148,6 +148,23 @@ Parameters:
       Origin the method catalogue's icon_url values are built on. Cosmetic -
       a wrong value shows broken images, it does not fail a payment.
 
+  AppBaseUrl:
+    Type: String
+    AllowedPattern: '^https://[^/?#]+/?$'
+    ConstraintDescription: an https origin without a path, e.g. https://rush-my-ticket.my.id
+    Description: >
+      Public web FRONTEND origin, the same value notification gets. The
+      handoff answer's payment_url (api-contracts 5.6) is built on it, and the
+      mobile app opens only https://rush-my-ticket.my.id/m/orders/... - a
+      different origin makes the pay button do nothing on mobile.
+
+  PaymentWebPath:
+    Type: String
+    Default: /m/orders/{booking_id}/pay
+    Description: >
+      Web payment route appended to AppBaseUrl; {booking_id} is replaced by
+      the booking id and #code=<handoff code> is added after it.
+
 # Catches at deploy time part of what would otherwise be a start-up failure on
 # the first invocation - which reads as a 502 with the reason buried in
 # CloudWatch.
@@ -241,6 +258,8 @@ Resources:
           MAX_PAYMENT_ATTEMPTS: !Ref MaxPaymentAttempts
           SETTLED_TOMBSTONE_SECONDS: !Ref SettledTombstoneSeconds
           PAYMENT_ICON_BASE: !Ref PaymentIconBase
+          APP_BASE_URL: !Ref AppBaseUrl
+          PAYMENT_WEB_PATH: !Ref PaymentWebPath
           PAYMENT_SWITCH_CACHE_SECONDS: !Ref PaymentSwitchCacheSeconds
           REDIS_ADDR: !Ref RedisAddr
           # Keep small: every warm container holds its own pool, and a few

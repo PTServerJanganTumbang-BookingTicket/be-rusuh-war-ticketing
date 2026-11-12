@@ -41,7 +41,8 @@ func newHandoffE2E(t *testing.T) *handoffE2E {
 	mr := miniredis.RunT(t)
 	rdb := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	srv, err := newMux(pool, rdb, paymentcfg.Config{
-		App:      paymentcfg.App{JWTSecret: "e2e-jwt", DevicePepper: e2ePepper},
+		App: paymentcfg.App{JWTSecret: "e2e-jwt", DevicePepper: e2ePepper,
+			AppBase: "https://rush-my-ticket.my.id", PaymentWebPath: "/m/orders/{booking_id}/pay"},
 		Midtrans: paymentcfg.Midtrans{BaseURL: "http://127.0.0.1:1", Timeout: time.Second},
 		Payment:  paymentcfg.Payment{TTL: 10 * time.Minute, MinRetryRemaining: time.Minute, MaxAttempts: 3},
 	})
@@ -171,4 +172,14 @@ func TestTheSessionLivesNoLongerThanTheGrant(t *testing.T) {
 	e.mr.SetTTL(rediskeys.Grant("gt_RB-A"), 90*time.Second)
 	ps := e.session("RB-A")
 	assert.Equal(t, 90*time.Second, e.mr.TTL(rediskeys.PaymentSession(ps)))
+}
+
+func TestTheHandoffAnswerCarriesThePaymentURLTheAppOpens(t *testing.T) {
+	e := newHandoffE2E(t)
+	e.held("RB-A")
+	code, body := e.do(http.MethodPost, "/payments/RB-A/handoff", "",
+		map[string]string{"X-Grant-Token": "gt_RB-A", "X-Device-Id": e2eDevice})
+	require.Equal(t, http.StatusCreated, code, body)
+	d := dataOf(body)
+	assert.Equal(t, "https://rush-my-ticket.my.id/m/orders/RB-A/pay#code="+d["handoff_code"].(string), d["payment_url"])
 }

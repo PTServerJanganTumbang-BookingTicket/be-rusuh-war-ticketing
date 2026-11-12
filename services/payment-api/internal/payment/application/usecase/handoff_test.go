@@ -87,6 +87,9 @@ func (l *fakeLimiter) Allow(context.Context, string) (bool, time.Duration, error
 	return l.allowed, l.retryAfter, l.err
 }
 
+// testPaymentPage is the config default on the production origin.
+const testPaymentPage = "https://rush-my-ticket.my.id/m/orders/{booking_id}/pay"
+
 type handoffRig struct {
 	uc      *HandoffUsecase
 	repo    *fakeRepo
@@ -104,7 +107,7 @@ func newHandoffRig(t *testing.T, b entity.Booking) *handoffRig {
 		return b, nil
 	}
 	n := 0
-	r.uc = NewHandoff(r.repo, r.store, r.limiter).(*HandoffUsecase)
+	r.uc = NewHandoff(r.repo, r.store, r.limiter, testPaymentPage).(*HandoffUsecase)
 	r.uc.now = func() time.Time { return fixedNow }
 	r.uc.random = func() (string, error) { n++; return fmt.Sprintf("secret-%02d", n), nil }
 	return r
@@ -334,4 +337,30 @@ func TestCreateHandoff_AnUnmappedStatusIsAServerErrorNeverARawValue(t *testing.T
 	require.True(t, errors.As(err, &appErr))
 	assert.Equal(t, http.StatusInternalServerError, appErr.HTTPStatus)
 	assert.Nil(t, appErr.Data, "no data.status outside the four §4.4 values")
+}
+
+func TestCreateHandoff_PaymentURLIsThePageForTheBookingWithTheSameCodeInTheFragment(t *testing.T) {
+	b := heldBooking(entity.StatusHeld)
+	r := newHandoffRig(t, b)
+	out, err := r.uc.CreateHandoff(context.Background(), b.ID, b.GrantToken)
+	require.NoError(t, err)
+	assert.Equal(t, "https://rush-my-ticket.my.id/m/orders/"+b.ID+"/pay#code="+out.HandoffCode, out.PaymentURL)
+}
+
+func TestCreateHandoff_PaymentURLPathEscapesTheBookingID(t *testing.T) {
+	b := heldBooking(entity.StatusHeld)
+	b.ID = "RB 1/2"
+	r := newHandoffRig(t, b)
+	out, err := r.uc.CreateHandoff(context.Background(), b.ID, b.GrantToken)
+	require.NoError(t, err)
+	assert.Equal(t, "https://rush-my-ticket.my.id/m/orders/RB%201%2F2/pay#code=hc_secret-01", out.PaymentURL)
+}
+
+func TestCreateHandoff_PaymentURLFollowsAConfiguredRoute(t *testing.T) {
+	b := heldBooking(entity.StatusHeld)
+	r := newHandoffRig(t, b)
+	r.uc.paymentPage = "http://localhost:3000/pay/{booking_id}"
+	out, err := r.uc.CreateHandoff(context.Background(), b.ID, b.GrantToken)
+	require.NoError(t, err)
+	assert.Equal(t, "http://localhost:3000/pay/"+b.ID+"#code=hc_secret-01", out.PaymentURL)
 }

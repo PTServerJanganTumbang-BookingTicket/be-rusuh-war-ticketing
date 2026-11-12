@@ -102,7 +102,8 @@ func newMux(pool *pgxpool.Pool, rdb *goredis.Client, cfg paymentcfg.Config) (*Se
 	// a handoff code does not, so only the app can start a WebView payment.
 	sessionGuard := grantauth.MiddlewareWithSession(rdb, guardCfg)
 	grantGuard := grantauth.Middleware(rdb, guardCfg)
-	handoff := usecase.NewHandoff(repo, paymentredis.NewHandoffStore(rdb), paymentredis.NewHandoffLimiter(rdb))
+	handoff := usecase.NewHandoff(repo, paymentredis.NewHandoffStore(rdb), paymentredis.NewHandoffLimiter(rdb),
+		cfg.App.PaymentPage())
 
 	mux := http.NewServeMux()
 	// /sys/ping, matching every other service and this stack's HttpApi route.
