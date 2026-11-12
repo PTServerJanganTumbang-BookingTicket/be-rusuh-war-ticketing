@@ -1,6 +1,6 @@
 module github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/nik-verify
 
-go 1.26.10
+go 1.26.11
 
 require (
 	github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg v0.0.0

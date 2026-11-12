@@ -101,7 +101,7 @@ both inside the workspace **and** standalone (`GOWORK=off`) without a module pro
 
 ## Prerequisites
 
-- Go 1.26.x (the CI floats to the latest 1.26 patch via `check-latest: true`)
+- Go 1.26.11+ (the CI floats to the latest 1.26 patch via `check-latest: true`)
 - Docker (optional, for container builds)
 - AWS SAM CLI (for Lambda deploy)
 - `go.uber.org/mock` `mockgen` (for regenerating mocks)
