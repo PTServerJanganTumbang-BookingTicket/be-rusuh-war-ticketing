@@ -83,6 +83,23 @@ func assignAny(dst, src any) error {
 			*d = entity.BookingStatus(v)
 			return nil
 		}
+	case **int64:
+		switch v := src.(type) {
+		case *int64:
+			*d = v
+			return nil
+		case int64:
+			n := v
+			*d = &n
+			return nil
+		case int:
+			n := int64(v)
+			*d = &n
+			return nil
+		case nil:
+			*d = nil
+			return nil
+		}
 	case **time.Time:
 		switch v := src.(type) {
 		case *time.Time:
@@ -289,6 +306,9 @@ func bookingValues(status entity.BookingStatus, mutate ...func([]any)) []any {
 		false,           // payment_disputed
 		"grant-abc",     // grant_token
 		"qt-1",          // queue_token
+		nil,             // payment_amount — NULL until a charge (0017)
+		"",              // payment_status — empty until a charge (0017)
+		nil,             // payment_instructions — NULL until a charge (0018)
 	}
 	for _, m := range mutate {
 		m(vals)
@@ -298,6 +318,19 @@ func bookingValues(status entity.BookingStatus, mutate ...func([]any)) []any {
 
 func withPaymentRef(ref string) func([]any) {
 	return func(v []any) { v[7] = ref }
+}
+
+func withPaymentAmount(n int64) func([]any) {
+	return func(v []any) { v[14] = n }
+}
+
+func withPaymentStatus(s string) func([]any) {
+	return func(v []any) { v[15] = s }
+}
+
+// withInstructions supplies the JSONB column as the driver would: raw bytes.
+func withInstructions(j string) func([]any) {
+	return func(v []any) { v[16] = []byte(j) }
 }
 
 func withAttempts(n int) func([]any) {

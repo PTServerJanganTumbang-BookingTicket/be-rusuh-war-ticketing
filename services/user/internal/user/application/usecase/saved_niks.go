@@ -29,7 +29,7 @@ func (u *UserUsecase) GetSavedNIKs(ctx context.Context, accountID string) (dto.S
 		items = append(items, mapper.ToSavedNIKItem(n))
 	}
 
-	return dto.SavedNIKsResponse{MaxEntries: entity.MaxSavedNIKs, SavedNIKs: items}, nil
+	return dto.SavedNIKsResponse{MaxEntries: u.maxSavedNIKs, SavedNIKs: items}, nil
 }
 
 // AddSavedNIK verifies a NIK and, only then, stores it.
@@ -83,7 +83,7 @@ func (u *UserUsecase) AddSavedNIK(ctx context.Context, accountID string, req dto
 
 	// The cap and the insert happen under one row lock on the account, so two
 	// concurrent adds cannot both see four entries and both insert (BR-12).
-	saved, err := u.repo.CreateSavedNIKWithinCap(ctx, nik, entity.MaxSavedNIKs)
+	saved, err := u.repo.CreateSavedNIKWithinCap(ctx, nik, u.maxSavedNIKs)
 	if err != nil {
 		var appErr *apperror.AppError
 		if errors.As(err, &appErr) {

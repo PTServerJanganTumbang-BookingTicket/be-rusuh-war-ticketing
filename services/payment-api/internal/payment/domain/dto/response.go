@@ -77,6 +77,49 @@ type StatusResponse struct {
 	CanRetry         *bool  `json:"can_retry,omitempty"`
 	Attempt          *int   `json:"attempt,omitempty"`
 	PaymentExpiresAt string `json:"payment_expires_at,omitempty"`
+
+	// Payment detail (0017). Present once a charge exists, on every status
+	// including the terminal ones: a customer reading a receipt, or support
+	// reading a failure, needs to know what was charged and how.
+	//
+	// All omitempty: a booking that never reached a charge has none of them,
+	// and sending zeroes would read as "charged nothing" rather than "not
+	// charged".
+	PaymentID string `json:"payment_id,omitempty"`
+	Method    string `json:"method,omitempty"`
+	// TotalAmount is what was SENT to the gateway, read from the column
+	// written at charge time — not a sum of booking_items, which GetOwned does
+	// not compute and which would drift from the charged amount.
+	TotalAmount *int64 `json:"total_amount,omitempty"`
+	// PaymentStatus is the GATEWAY's transaction_status, deliberately distinct
+	// from Status above: ours is the booking's lifecycle, this is what
+	// Midtrans last said about the money.
+	PaymentStatus string `json:"payment_status,omitempty"`
+	// Instructions is what the customer needs in order to pay: the same object
+	// §5.2 returns, so one client component renders both. Shape depends on the
+	// method — {bank, va_number} for a transfer, {qr_url, deeplink_url} for an
+	// e-wallet — which is why it is a map and not a struct.
+	//
+	// Returned on every status, not only PENDING: a customer reopening the
+	// page mid-payment is exactly who needs the VA number, and showing a
+	// settled booking what it was paid into costs nothing.
+	Instructions map[string]string `json:"instructions,omitempty"`
+}
+
+// WithPaymentDetail copies the persisted charge detail onto a status response
+// and returns it. Value receiver, so it composes at a single call site without
+// mutating anything the caller still holds.
+func (r StatusResponse) WithPaymentDetail(
+	paymentID, method, gatewayStatus string,
+	amount *int64,
+	instructions map[string]string,
+) StatusResponse {
+	r.PaymentID = paymentID
+	r.Method = method
+	r.PaymentStatus = gatewayStatus
+	r.TotalAmount = amount
+	r.Instructions = instructions
+	return r
 }
 
 // API status values returned by §5.4, distinct from bookings.status.

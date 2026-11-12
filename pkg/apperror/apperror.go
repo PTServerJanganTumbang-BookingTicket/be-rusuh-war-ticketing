@@ -102,10 +102,14 @@ const (
 	CodeMaxSavedNIKsReached  = "MAX_SAVED_NIKS_REACHED"
 	CodeConsentRequired      = "CONSENT_REQUIRED"
 	CodeEmailAlreadyUsed     = "EMAIL_ALREADY_REGISTERED"
-	CodeTooManyRequests      = "TOO_MANY_REQUESTS"
-	CodeTokenExpired         = "TOKEN_EXPIRED"
-	CodeTokenInvalid         = "TOKEN_INVALID"
-	CodeAdmissionPaused      = "ADMISSION_PAUSED"
+	// CodeEmailNotRegistered is §1.1/§1.2 refusing a magic link for an address
+	// with no account. It makes the endpoint an enumeration oracle, which the
+	// rate limiter in front of it is the only thing throttling.
+	CodeEmailNotRegistered = "EMAIL_NOT_REGISTERED"
+	CodeTooManyRequests    = "TOO_MANY_REQUESTS"
+	CodeTokenExpired       = "TOKEN_EXPIRED"
+	CodeTokenInvalid       = "TOKEN_INVALID"
+	CodeAdmissionPaused    = "ADMISSION_PAUSED"
 
 	// Grant and device binding codes live in pkg/grantauth, next to the
 	// middleware that is the only thing allowed to emit them.

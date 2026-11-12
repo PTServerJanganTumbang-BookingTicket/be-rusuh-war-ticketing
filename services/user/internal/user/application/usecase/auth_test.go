@@ -78,14 +78,63 @@ func TestRequestMagicLink_NormalisesEmail(t *testing.T) {
 	require.NoError(t, uc.RequestMagicLink(context.Background(), dto.RequestMagicLinkRequest{Email: "  User@Example.COM "}))
 }
 
-func TestRequestMagicLink_UnknownAddressStillSucceeds(t *testing.T) {
-	// Behaving differently for unknown addresses enumerates who is registered.
+func TestRequestMagicLink_UnknownAddressIsRefused(t *testing.T) {
+	// v2.25 reversed the earlier non-enumeration behaviour: an address with no
+	// account is now refused outright rather than answered identically. The
+	// trade is deliberate and recorded in docs/01-authentication/01: this makes
+	// the endpoint an email enumeration oracle, throttled only by the limiter
+	// that runs before it.
 	uc, d := newTestUsecase(t)
 	d.allowRateLimit()
 	d.repo.EXPECT().FindAccountByEmail(gomock.Any(), gomock.Any()).Return(entity.Account{}, apperror.ErrNotFound("nope"))
-	d.repo.EXPECT().SaveMagicTokenWithEvent(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil)
 
-	assert.NoError(t, uc.RequestMagicLink(context.Background(), dto.RequestMagicLinkRequest{Email: "ghost@example.com"}))
+	err := uc.RequestMagicLink(context.Background(), dto.RequestMagicLinkRequest{Email: "ghost@example.com"})
+	var appErr *apperror.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, 404, appErr.HTTPStatus)
+	assert.Equal(t, apperror.CodeEmailNotRegistered, appErr.ErrorCode)
+}
+
+func TestRequestMagicLink_UnknownAddressWritesNothing(t *testing.T) {
+	// No token row and no outbox event, so an unknown address cannot be used
+	// to send mail to someone who never signed up. gomock fails the test if
+	// SaveMagicTokenWithEvent is called, because it is not EXPECTed.
+	uc, d := newTestUsecase(t)
+	d.allowRateLimit()
+	d.repo.EXPECT().FindAccountByEmail(gomock.Any(), gomock.Any()).Return(entity.Account{}, apperror.ErrNotFound("nope"))
+
+	assert.Error(t, uc.RequestMagicLink(context.Background(), dto.RequestMagicLinkRequest{Email: "ghost@example.com"}))
+}
+
+func TestRequestMagicLink_RateLimitIsCheckedBeforeTheAccount(t *testing.T) {
+	// Ordering is the only throttle on the enumeration oracle: if the account
+	// lookup ran first, a limited caller could still probe addresses.
+	uc, d := newTestUsecase(t)
+	d.limiter.EXPECT().Allow(gomock.Any(), gomock.Any(), MagicLinkLimit, MagicLinkWindow).
+		Return(false, 90*time.Second, nil)
+	// No FindAccountByEmail EXPECT: reaching it would fail the test.
+
+	err := uc.RequestMagicLink(context.Background(), dto.RequestMagicLinkRequest{Email: "ghost@example.com"})
+	var appErr *apperror.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, 429, appErr.HTTPStatus, "a limited caller must not learn whether the address exists")
+}
+
+func TestRequestMagicLink_TokenCarriesTheAccountID(t *testing.T) {
+	uc, d := newTestUsecase(t)
+	d.allowRateLimit()
+	acct := verifiedAccount()
+	d.repo.EXPECT().FindAccountByEmail(gomock.Any(), gomock.Any()).Return(acct, nil)
+
+	var stored entity.MagicToken
+	d.repo.EXPECT().SaveMagicTokenWithEvent(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, mt entity.MagicToken, _ entity.OutboxEvent) error {
+			stored = mt
+			return nil
+		})
+
+	require.NoError(t, uc.RequestMagicLink(context.Background(), dto.RequestMagicLinkRequest{Email: "user@example.com"}))
+	assert.Equal(t, acct.ID, stored.AccountID, "the account is known now, so the token must carry it")
 }
 
 func TestRequestMagicLink_RateLimited(t *testing.T) {
@@ -634,6 +683,7 @@ func TestValidateAccessToken_ExpiredIsDistinguishable(t *testing.T) {
 		mock_outbound.NewMockINikVerifier(ctrl),
 		mock_outbound.NewMockIRateLimiter(ctrl),
 		issuer,
+		testMaxSavedNIKs,
 	)
 
 	signed, _, err := issuer.Issue(testAccountID, "user@example.com", true)

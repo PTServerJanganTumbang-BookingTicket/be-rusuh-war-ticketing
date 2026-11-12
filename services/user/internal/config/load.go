@@ -36,9 +36,10 @@ func Load() (Config, error) {
 	saleWindow := envutil.EnvDuration("SALE_WINDOW_SECONDS", defaultSaleWindow)
 	cfg := Config{
 		App: App{
-			Env:     env,
-			Port:    envutil.EnvInt("APP_PORT", 8081),
-			BaseURL: envutil.Env("APP_BASE_URL", "http://localhost:8081"),
+			Env:          env,
+			Port:         envutil.EnvInt("APP_PORT", 8081),
+			BaseURL:      envutil.Env("APP_BASE_URL", "http://localhost:8081"),
+			MaxSavedNIKs: envutil.EnvInt("MAX_SAVED_NIKS", 5),
 		},
 		Log: Log{
 			Level:  envutil.Env("LOG_LEVEL", "info"),
@@ -83,6 +84,9 @@ func Load() (Config, error) {
 func (c Config) validate() error {
 	if c.App.Port < 1 || c.App.Port > 65535 {
 		return fmt.Errorf("APP_PORT out of range: %d", c.App.Port)
+	}
+	if c.App.MaxSavedNIKs < 1 {
+		return fmt.Errorf("MAX_SAVED_NIKS must be at least 1")
 	}
 	if c.DB.DSN == "" {
 		return fmt.Errorf("DATABASE_URL is required")

@@ -71,6 +71,18 @@ func (u *UserUsecase) RequestMagicLink(ctx context.Context, req dto.RequestMagic
 			WithRetryAfter(retryAfter)
 	}
 
+	// A link is only ever issued to a registered address (v2.25). Checked
+	// AFTER the rate limiter on purpose: this makes the endpoint an email
+	// enumeration oracle, and the limiter is the only thing throttling it.
+	// Checked BEFORE the token is minted so an unknown address costs no
+	// crypto, no row and no outbox event.
+	account, err := u.repo.FindAccountByEmail(ctx, email)
+	if err != nil {
+		return apperror.
+			ErrNotFound("no account is registered for this email").
+			WithCode(apperror.CodeEmailNotRegistered)
+	}
+
 	plain, hashed, err := newSecret()
 	if err != nil {
 		return apperror.ErrInternal("failed to generate login link")
@@ -79,14 +91,12 @@ func (u *UserUsecase) RequestMagicLink(ctx context.Context, req dto.RequestMagic
 	now := time.Now().UTC()
 	mt := entity.MagicToken{
 		ID:        idgen.New(),
+		AccountID: account.ID,
 		Email:     email,
 		TokenHash: hashed,
 		Purpose:   entity.PurposeLogin,
 		CreatedAt: now,
 		ExpiresAt: now.Add(entity.MagicTokenTTL),
-	}
-	if account, err := u.repo.FindAccountByEmail(ctx, email); err == nil {
-		mt.AccountID = account.ID
 	}
 
 	event, err := entity.NewOutboxEvent(idgen.New(), email, events.TypeAuthMagicLink,

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
+
 	"github.com/jackc/pgx/v5"
 
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/events"
@@ -18,11 +20,17 @@ const bookingColumns = `
     id, event_id, COALESCE(account_id, ''), COALESCE(contact_email, ''), status,
     held_at, payment_expires_at, COALESCE(payment_ref, ''), paid_at, payment_attempts,
     COALESCE(payment_method, ''), payment_disputed, COALESCE(grant_token, ''),
-    COALESCE(queue_token, '')`
+    COALESCE(queue_token, ''), payment_amount, COALESCE(payment_status, ''),
+    payment_instructions`
 
 type bookingRow struct {
 	b          entity.Booking
 	queueToken string
+	// instructions is scanned raw because the column is nullable JSONB.
+	// Scanning straight into a map would have to tell SQL NULL from an empty
+	// object, and those mean different things here: "never charged" versus
+	// "charged, but the gateway returned nothing to act on".
+	instructions []byte
 }
 
 func scanBooking(row pgx.Row) (bookingRow, error) {
@@ -31,8 +39,22 @@ func scanBooking(row pgx.Row) (bookingRow, error) {
 		&out.b.ID, &out.b.EventID, &out.b.AccountID, &out.b.ContactEmail, &out.b.Status,
 		&out.b.HeldAt, &out.b.PaymentExpiresAt, &out.b.PaymentRef, &out.b.PaidAt, &out.b.PaymentAttempts,
 		&out.b.PaymentMethod, &out.b.PaymentDisputed, &out.b.GrantToken, &out.queueToken,
+		&out.b.PaymentAmount, &out.b.PaymentStatus, &out.instructions,
 	)
-	return out, err
+	if err != nil {
+		return out, err
+	}
+	if len(out.instructions) > 0 {
+		// Unreadable instructions must not take the whole read down with
+		// them: the customer then sees no VA number, which is bad, rather
+		// than no booking at all, which is worse.
+		if uerr := json.Unmarshal(out.instructions, &out.b.PaymentInstructions); uerr != nil {
+			slog.Warn("booking has unreadable payment_instructions, omitting them",
+				slog.String("booking_id", out.b.ID), slog.Any("err", uerr))
+			out.b.PaymentInstructions = nil
+		}
+	}
+	return out, nil
 }
 
 // GetOwned resolves a booking by id AND grant token.
@@ -171,10 +193,36 @@ func (r *BookingRepository) Initiate(ctx context.Context, in portout.InitiateInp
 	// held_at is NOT written here, and neither is payment_expires_at: both
 	// were set at HELD. Writing held_at again would re-anchor custom_expiry
 	// and hand a fresh 10 minutes to every charge, so BR-05 would never bind.
+	// nil rather than an empty object when the gateway returned nothing to act
+	// on, so the column keeps "never charged" and "charged, nothing to do"
+	// distinguishable. json.Marshal of a nil map gives "null", which pgx
+	// writes as SQL NULL for a JSONB parameter - the intent, but spelled out
+	// because it is easy to read the wrong way.
+	var instructions []byte
+	if len(res.Instructions) > 0 {
+		var merr error
+		if instructions, merr = json.Marshal(res.Instructions); merr != nil {
+			// The charge SUCCEEDED. Failing here would roll back a payment the
+			// customer has already been committed to at the gateway, over a
+			// field that only affects what we can show them afterwards.
+			slog.ErrorContext(ctx, "could not encode payment instructions, storing none",
+				slog.String("booking_id", b.ID), slog.Any("err", merr))
+			instructions = nil
+		}
+	}
+
 	if _, err := tx.Exec(ctx,
+		// payment_amount, payment_status and payment_instructions are written
+		// here rather than left to the webhook: the charge succeeded, so this
+		// IS the record of what was charged and of what the customer must do
+		// to pay it. A notification may never arrive, and neither the receipt
+		// nor the VA number may depend on one.
 		`UPDATE bookings
-            SET status = 'AWAITING_PAYMENT', payment_ref = $2, payment_method = $3
-          WHERE id = $1 AND status = 'HELD'`, b.ID, orderID, in.Method); err != nil {
+            SET status = 'AWAITING_PAYMENT', payment_ref = $2, payment_method = $3,
+                payment_amount = $4, payment_status = $5,
+                payment_instructions = $6
+          WHERE id = $1 AND status = 'HELD'`,
+		b.ID, orderID, in.Method, total, res.TransactionStatus, instructions); err != nil {
 		return portout.InitiateOutcome{}, wrapDB(err, "could not record charge")
 	}
 	if err := r.insertChargeEvent(ctx, tx, b.ID, orderID, res); err != nil {
@@ -473,6 +521,37 @@ func (r *BookingRepository) ApplyNotification(ctx context.Context, in portout.No
 
 	case valueobject.ActionIgnoreUnfunded, valueobject.ActionRecordOnly:
 		// Recorded above; nothing else to do.
+	}
+
+	// The gateway's view of the money (0017), recorded only for a notification
+	// we ACTED on.
+	//
+	// This was originally written for every notification, on the reasoning
+	// that one recorded but not applied still said something true. It does
+	// not. ActionIgnoreUnfunded is `capture` whose fraud_status is not
+	// `accept` — authorised but NOT funded — and storing payment_status
+	// 'capture' for it would read as money received, which is the exact
+	// misreading that action exists to prevent. ActionRecordOnly has the same
+	// problem from the other end: a late notification on a booking that is
+	// already settled or terminal would overwrite the status we acted on with
+	// one we deliberately ignored.
+	//
+	// out.Applied is the right condition rather than the action itself,
+	// because a branch whose UPDATE matched no row downgrades itself to
+	// ActionRecordOnly without setting it. The field therefore means "the
+	// gateway status behind the booking's current state", which is what makes
+	// an AWAITING_PAYMENT booking showing 'deny' worth seeing: the decline was
+	// applied, and the customer may retry.
+	//
+	// Every other case still reaches payment_events in full, which is where
+	// the complete sequence belongs.
+	if out.Applied {
+		if _, err := tx.Exec(ctx,
+			`UPDATE bookings SET payment_status = $2 WHERE id = $1`,
+			b.ID, in.TransactionStatus); err != nil {
+			return out, wrapDB(err, "could not record gateway payment status")
+		}
+		out.Booking.PaymentStatus = in.TransactionStatus
 	}
 
 	if err := tx.Commit(ctx); err != nil {

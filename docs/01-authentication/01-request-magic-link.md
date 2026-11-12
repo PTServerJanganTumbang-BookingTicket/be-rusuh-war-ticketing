@@ -10,10 +10,26 @@
 
 ## 1. Purpose
 
-Issues a one-time login link sent to the supplied email address. The response is
-always 200 whether or not an account exists for that address — anything else lets
-a caller enumerate which addresses are registered, which is also a privacy leak
-given that an address implies a ticket holder.
+Issues a one-time login link to the supplied email address, **only if an account
+exists for it**. An unknown address is answered `404 EMAIL_NOT_REGISTERED` and
+nothing is written.
+
+> **This endpoint is an email-enumeration oracle, deliberately.** Until v2.25 the
+> response, timing and status were identical whether or not the account existed,
+> precisely so that a caller could not discover which addresses are registered —
+> a privacy leak in its own right, since an address here implies a ticket holder.
+> That was reversed knowingly. Anyone can now walk a list of addresses and read
+> the status code to learn which have accounts.
+>
+> The **rate limiter is the only thing throttling it**, which makes
+> `MagicLinkLimit` and `MagicLinkWindow` security parameters rather than
+> politeness ones. It runs *before* the account lookup for exactly that reason,
+> and a test pins the ordering.
+>
+> What the change bought: previously an unregistered address received a real
+> email carrying a working-looking link, which then failed at redemption with
+> "no account exists for this address". That made the endpoint a way to send
+> mail to people who never signed up.
 
 A token row and its outbox event commit together in a single transaction. A token
 with no queued email is a link nobody receives; an email with no token is a link
@@ -87,15 +103,21 @@ sequenceDiagram
 
 | HTTP | Code | When |
 |---|---|---|
-| 200 | — | Always on success (account may or may not exist) |
+| 200 | — | Link issued; an account exists for the address |
+| 404 | `EMAIL_NOT_REGISTERED` | No account for this address. Nothing written, no email sent |
 | 400 | `VALIDATION_ERROR` | Missing or malformed `email` |
 | 429 | `TOO_MANY_REQUESTS` | 5 requests in the last hour for this address |
 
 ## 6. Edge cases and decisions
 
-- **Non-enumeration**: the response, timing and HTTP status are identical whether or
-  not an account exists. The `FindAccountByEmail` call is a best-effort attachment,
-  not a gate.
+- **Enumeration is now possible, and accepted** (v2.25). `FindAccountByEmail` is a
+  gate, not a best-effort attachment. See §1 for the trade and what limits it.
+- **Order matters**: the rate limiter runs before the account lookup, so a limited
+  caller is refused with 429 before learning whether the address exists. Reversing
+  those two lines would let a throttled attacker keep probing.
+- **Checked before the token is minted**: an unknown address costs no crypto, no
+  `magic_tokens` row and no outbox event. The previous behaviour spent all three
+  on addresses that could never redeem.
 - **Fail-open rate limiter**: a Redis outage cannot take down login. The downside is
   a brief rate-limit bypass; acceptable given the 15-minute token TTL.
 - **Token hash only in DB**: a database read is not enough to authenticate as anyone
@@ -110,7 +132,10 @@ sequenceDiagram
 - [x] unit: invalid email format → 400
 - [x] unit: 5th request within window → 200 (allowed), 6th → 429
 - [x] unit: limiter error → fail-open, request proceeds
-- [x] unit: unknown email → same 200, no account_id in token row
+- [x] unit: unknown email → 404 `EMAIL_NOT_REGISTERED`
+- [x] unit: unknown email writes nothing — no token row, no outbox event
+- [x] unit: rate limit is evaluated before the account lookup (429, not 404)
+- [x] unit: the stored token carries `account_id`, now that it is always known
 
 ## 8. Tasks
 

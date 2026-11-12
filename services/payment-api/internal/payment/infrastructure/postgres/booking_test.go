@@ -941,3 +941,91 @@ func TestApplyNotification_GuestBooking_ReportsNoAccount(t *testing.T) {
 	assert.Empty(t, out.AccountID)
 	assert.Equal(t, "qt-1", out.QueueToken)
 }
+
+// ---- payment detail columns (0017, 0018) ----
+
+// The read path is where these columns earn their keep: §5.4 answers from
+// GetOwned alone, so a column that scans wrong is a wrong receipt.
+func TestGetOwned_ReadsThePaymentDetailColumns(t *testing.T) {
+	db := &mockDB{queryRowFn: func(context.Context, string, ...any) pgx.Row {
+		return rowValues(bookingValues(entity.StatusAwaitingPayment,
+			withPaymentRef("RB-00912:1"),
+			withPaymentAmount(3000000),
+			withPaymentStatus("pending"),
+			withInstructions(`{"bank":"bca","va_number":"8801234567890"}`),
+		)...)
+	}}
+	b, err := newRepo(db).GetOwned(context.Background(), "RB-00912", "grant-abc")
+	require.NoError(t, err)
+
+	assert.Equal(t, "RB-00912:1", b.PaymentRef)
+	require.NotNil(t, b.PaymentAmount)
+	assert.Equal(t, int64(3000000), *b.PaymentAmount)
+	assert.Equal(t, "pending", b.PaymentStatus)
+	assert.Equal(t, "bca", b.PaymentInstructions["bank"])
+	assert.Equal(t, "8801234567890", b.PaymentInstructions["va_number"])
+}
+
+// NULL columns on a booking that was never charged must read as absent, not as
+// a zero amount or an empty instruction set.
+func TestGetOwned_NeverCharged_LeavesThePaymentDetailUnset(t *testing.T) {
+	db := &mockDB{queryRowFn: func(context.Context, string, ...any) pgx.Row {
+		return rowValues(bookingValues(entity.StatusHeld)...)
+	}}
+	b, err := newRepo(db).GetOwned(context.Background(), "RB-00912", "grant-abc")
+	require.NoError(t, err)
+
+	assert.Nil(t, b.PaymentAmount)
+	assert.Empty(t, b.PaymentStatus)
+	assert.Nil(t, b.PaymentInstructions)
+}
+
+// Malformed JSON in the column must cost the instructions, not the booking: a
+// customer with no VA number is in a bad way, one with no booking page is worse.
+func TestGetOwned_UnreadableInstructions_StillReturnsTheBooking(t *testing.T) {
+	db := &mockDB{queryRowFn: func(context.Context, string, ...any) pgx.Row {
+		return rowValues(bookingValues(entity.StatusAwaitingPayment,
+			withInstructions(`{"bank": NOT JSON`),
+		)...)
+	}}
+	b, err := newRepo(db).GetOwned(context.Background(), "RB-00912", "grant-abc")
+	require.NoError(t, err, "a bad instructions blob must not fail the read")
+	assert.Equal(t, "RB-00912", b.ID)
+	assert.Nil(t, b.PaymentInstructions)
+}
+
+// ---- payment_status is recorded only for a notification we acted on (0017) ----
+
+// A decline IS applied, so the gateway's word is recorded. This is the case
+// the column exists for: a booking back in HELD, retryable, showing exactly
+// why the last attempt failed without anyone opening payment_events.
+func TestApplyNotification_AppliedAction_RecordsTheGatewayStatus(t *testing.T) {
+	tx := notifyTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912:1")))
+
+	out, err := newRepo(&mockDB{tx: tx}).ApplyNotification(context.Background(),
+		notification("deny", "", "RB-00912:1"))
+	require.NoError(t, err)
+
+	require.True(t, out.Applied)
+	assert.Equal(t, "deny", out.Booking.PaymentStatus)
+	require.Len(t, tx.execMatching("SET payment_status"), 1)
+}
+
+// The inverse, pinned deliberately rather than left to the two ChangesNothing
+// tests above: an unfunded capture must NOT record 'capture'. It is authorised
+// and not funded, and a payment_status of 'capture' reads as money received —
+// the exact misreading ActionIgnoreUnfunded exists to prevent.
+func TestApplyNotification_UnfundedCapture_DoesNotRecordCapture(t *testing.T) {
+	tx := notifyTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912:1")))
+
+	out, err := newRepo(&mockDB{tx: tx}).ApplyNotification(context.Background(),
+		notification("capture", "challenge", "RB-00912:1"))
+	require.NoError(t, err)
+
+	assert.False(t, out.Applied)
+	assert.Empty(t, out.Booking.PaymentStatus,
+		"an unfunded capture must not leave the booking looking captured")
+	assert.Empty(t, tx.execMatching("SET payment_status"))
+	// The event itself is still in the log, where the full sequence belongs.
+	require.Len(t, tx.execMatching("INSERT INTO payment_events"), 1)
+}

@@ -60,6 +60,7 @@ func New(ctx context.Context, cfg config.Config) (*Server, error) {
 		nikverify.NewClient(cfg.NikVerify.BaseURL, cfg.NikVerify.Timeout),
 		userredis.NewRateLimiter(redisClient),
 		issuer,
+		cfg.App.MaxSavedNIKs,
 	)
 
 	handler := userhttp.NewUser(uc, userhttp.Options{
