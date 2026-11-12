@@ -43,9 +43,16 @@ func newTestUsecase(t *testing.T) (*UserUsecase, deps) {
 		limiter:    mock_outbound.NewMockIRateLimiter(ctrl),
 		tokens:     issuer,
 	}
-	uc := NewUser(d.repo, d.engagement, d.verifier, d.limiter, d.tokens).(*UserUsecase)
+	// testMaxSavedNIKs, not the production default read from MAX_SAVED_NIKS:
+	// a test that silently tracked a config change would stop testing the cap.
+	uc := NewUser(d.repo, d.engagement, d.verifier, d.limiter, d.tokens, testMaxSavedNIKs).(*UserUsecase)
 	return uc, d
 }
+
+// testMaxSavedNIKs is BR-12's cap as the tests assume it. Pinned here rather
+// than read from config so that changing MAX_SAVED_NIKS cannot quietly change
+// what the saved-NIK tests assert.
+const testMaxSavedNIKs = 5
 
 // allowRateLimit sets the common expectation that the limiter permits a call.
 func (d deps) allowRateLimit() {

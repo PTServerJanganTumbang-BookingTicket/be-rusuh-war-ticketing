@@ -683,6 +683,7 @@ func TestValidateAccessToken_ExpiredIsDistinguishable(t *testing.T) {
 		mock_outbound.NewMockINikVerifier(ctrl),
 		mock_outbound.NewMockIRateLimiter(ctrl),
 		issuer,
+		testMaxSavedNIKs,
 	)
 
 	signed, _, err := issuer.Issue(testAccountID, "user@example.com", true)

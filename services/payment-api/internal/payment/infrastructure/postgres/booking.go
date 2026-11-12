@@ -523,19 +523,36 @@ func (r *BookingRepository) ApplyNotification(ctx context.Context, in portout.No
 		// Recorded above; nothing else to do.
 	}
 
-	// The gateway's own view of the money, kept current on EVERY notification
-	// including the ones that change no booking status (0017). A booking can
-	// sit in AWAITING_PAYMENT with a gateway status of deny, and support
-	// should be able to see that without opening payment_events.
+	// The gateway's view of the money (0017), recorded only for a notification
+	// we ACTED on.
 	//
-	// Deliberately outside the switch: a notification that was recorded but
-	// not applied still told us something true about the payment.
-	if _, err := tx.Exec(ctx,
-		`UPDATE bookings SET payment_status = $2 WHERE id = $1`,
-		b.ID, in.TransactionStatus); err != nil {
-		return out, wrapDB(err, "could not record gateway payment status")
+	// This was originally written for every notification, on the reasoning
+	// that one recorded but not applied still said something true. It does
+	// not. ActionIgnoreUnfunded is `capture` whose fraud_status is not
+	// `accept` — authorised but NOT funded — and storing payment_status
+	// 'capture' for it would read as money received, which is the exact
+	// misreading that action exists to prevent. ActionRecordOnly has the same
+	// problem from the other end: a late notification on a booking that is
+	// already settled or terminal would overwrite the status we acted on with
+	// one we deliberately ignored.
+	//
+	// out.Applied is the right condition rather than the action itself,
+	// because a branch whose UPDATE matched no row downgrades itself to
+	// ActionRecordOnly without setting it. The field therefore means "the
+	// gateway status behind the booking's current state", which is what makes
+	// an AWAITING_PAYMENT booking showing 'deny' worth seeing: the decline was
+	// applied, and the customer may retry.
+	//
+	// Every other case still reaches payment_events in full, which is where
+	// the complete sequence belongs.
+	if out.Applied {
+		if _, err := tx.Exec(ctx,
+			`UPDATE bookings SET payment_status = $2 WHERE id = $1`,
+			b.ID, in.TransactionStatus); err != nil {
+			return out, wrapDB(err, "could not record gateway payment status")
+		}
+		out.Booking.PaymentStatus = in.TransactionStatus
 	}
-	out.Booking.PaymentStatus = in.TransactionStatus
 
 	if err := tx.Commit(ctx); err != nil {
 		return out, wrapDB(err, "could not commit")

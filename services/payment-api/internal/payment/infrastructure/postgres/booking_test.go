@@ -993,3 +993,39 @@ func TestGetOwned_UnreadableInstructions_StillReturnsTheBooking(t *testing.T) {
 	assert.Equal(t, "RB-00912", b.ID)
 	assert.Nil(t, b.PaymentInstructions)
 }
+
+// ---- payment_status is recorded only for a notification we acted on (0017) ----
+
+// A decline IS applied, so the gateway's word is recorded. This is the case
+// the column exists for: a booking back in HELD, retryable, showing exactly
+// why the last attempt failed without anyone opening payment_events.
+func TestApplyNotification_AppliedAction_RecordsTheGatewayStatus(t *testing.T) {
+	tx := notifyTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912:1")))
+
+	out, err := newRepo(&mockDB{tx: tx}).ApplyNotification(context.Background(),
+		notification("deny", "", "RB-00912:1"))
+	require.NoError(t, err)
+
+	require.True(t, out.Applied)
+	assert.Equal(t, "deny", out.Booking.PaymentStatus)
+	require.Len(t, tx.execMatching("SET payment_status"), 1)
+}
+
+// The inverse, pinned deliberately rather than left to the two ChangesNothing
+// tests above: an unfunded capture must NOT record 'capture'. It is authorised
+// and not funded, and a payment_status of 'capture' reads as money received —
+// the exact misreading ActionIgnoreUnfunded exists to prevent.
+func TestApplyNotification_UnfundedCapture_DoesNotRecordCapture(t *testing.T) {
+	tx := notifyTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912:1")))
+
+	out, err := newRepo(&mockDB{tx: tx}).ApplyNotification(context.Background(),
+		notification("capture", "challenge", "RB-00912:1"))
+	require.NoError(t, err)
+
+	assert.False(t, out.Applied)
+	assert.Empty(t, out.Booking.PaymentStatus,
+		"an unfunded capture must not leave the booking looking captured")
+	assert.Empty(t, tx.execMatching("SET payment_status"))
+	// The event itself is still in the log, where the full sequence belongs.
+	require.Len(t, tx.execMatching("INSERT INTO payment_events"), 1)
+}
