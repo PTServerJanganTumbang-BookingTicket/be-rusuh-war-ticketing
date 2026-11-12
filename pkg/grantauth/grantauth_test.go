@@ -346,3 +346,129 @@ func TestBearerTokenReadsTheSchemeCaseInsensitivelyAndTrimsTheToken(t *testing.T
 		}
 	}
 }
+
+// --- Payment session (ADR-007, docs/07-payment/06-grant-guard.md §12) ---
+
+func newSessionRig(t *testing.T) *rig {
+	t.Helper()
+	mr := miniredis.RunT(t)
+	rdb := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
+	r := &rig{mr: mr}
+	next := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		g, ok := grantauth.FromContext(req.Context())
+		if ok {
+			r.got = &g
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	r.handler = grantauth.MiddlewareWithSession(rdb, grantauth.Config{DevicePepper: pepper, Tokens: verifier{}})(next)
+	return r
+}
+
+func (r *rig) session(session, grantToken string) {
+	if err := r.mr.Set(rediskeys.PaymentSession(session), grantToken); err != nil {
+		panic(err)
+	}
+}
+
+func TestAPaymentSessionStandsInForItsGrantWithoutDeviceOrBearer(t *testing.T) {
+	for name, setup := range map[string]func(*rig){
+		"guest":   func(r *rig) { r.guestGrant("gt_guest"); r.session("ps_1", "gt_guest") },
+		"account": func(r *rig) { r.accountGrant("gt_guest"); r.session("ps_1", "gt_guest") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newSessionRig(t)
+			setup(r)
+			rec := r.call(t, map[string]string{grantauth.HeaderPaymentSession: "ps_1"})
+			if rec.Code != http.StatusNoContent || r.got == nil {
+				t.Fatalf("status = %d, reached handler = %v; want a pass", rec.Code, r.got != nil)
+			}
+			if r.got.Token != "gt_guest" || !r.got.ViaSession {
+				t.Fatalf("grant = %+v; want the session's grant, marked ViaSession", *r.got)
+			}
+		})
+	}
+}
+
+func TestAnUnknownPaymentSessionIsRejectedAsInvalid(t *testing.T) {
+	r := newSessionRig(t)
+	assertError(t, r.call(t, map[string]string{grantauth.HeaderPaymentSession: "ps_nope"}),
+		http.StatusUnauthorized, grantauth.CodePaymentSessionInvalid)
+}
+
+func TestAPaymentSessionDiesTheMomentItsGrantIsDeleted(t *testing.T) {
+	r := newSessionRig(t)
+	r.guestGrant("gt_guest")
+	r.session("ps_1", "gt_guest")
+	r.mr.Del(rediskeys.Grant("gt_guest"))
+	assertError(t, r.call(t, map[string]string{grantauth.HeaderPaymentSession: "ps_1"}),
+		http.StatusUnauthorized, grantauth.CodePaymentSessionInvalid)
+	if r.got != nil {
+		t.Fatal("a session without its grant must never reach the handler")
+	}
+}
+
+func TestAPaymentSessionPointingAtAMalformedGrantIsRejectedAsInvalid(t *testing.T) {
+	r := newSessionRig(t)
+	r.mr.HSet(rediskeys.Grant("gt_none"), rediskeys.FieldEventID, "evt_a", rediskeys.FieldBookingID, "RB-4",
+		rediskeys.FieldQueueToken, "qt_4")
+	r.session("ps_1", "gt_none")
+	assertError(t, r.call(t, map[string]string{grantauth.HeaderPaymentSession: "ps_1"}),
+		http.StatusUnauthorized, grantauth.CodePaymentSessionInvalid)
+}
+
+func TestAPaymentSessionTogetherWithAGrantTokenIsABadRequest(t *testing.T) {
+	r := newSessionRig(t)
+	r.guestGrant("gt_guest")
+	r.session("ps_1", "gt_guest")
+	assertError(t, r.call(t, map[string]string{grantauth.HeaderPaymentSession: "ps_1", grantauth.HeaderGrantToken: "gt_guest"}),
+		http.StatusBadRequest, "VALIDATION_ERROR")
+}
+
+func TestAStrayDeviceIDOrAuthorizationNextToAPaymentSessionIsIgnored(t *testing.T) {
+	r := newSessionRig(t)
+	r.accountGrant("gt_acc")
+	r.session("ps_1", "gt_acc")
+	rec := r.call(t, with(bearer(t, other, "someone_else"),
+		grantauth.HeaderPaymentSession, "ps_1", grantauth.HeaderDeviceID, "another-device-0001"))
+	if rec.Code != http.StatusNoContent || r.got == nil || r.got.AccountID != "acc_1" {
+		t.Fatalf("status = %d, grant = %+v; want a pass as acc_1", rec.Code, r.got)
+	}
+}
+
+func TestTheSessionMiddlewareStillAcceptsAPlainGrant(t *testing.T) {
+	r := newSessionRig(t)
+	r.guestGrant("gt_guest")
+	rec := r.call(t, map[string]string{grantauth.HeaderGrantToken: "gt_guest", grantauth.HeaderDeviceID: device})
+	if rec.Code != http.StatusNoContent || r.got == nil || r.got.ViaSession {
+		t.Fatalf("status = %d, grant = %+v; want a plain grant pass", rec.Code, r.got)
+	}
+	assertError(t, r.call(t, map[string]string{grantauth.HeaderGrantToken: "gt_guest"}), http.StatusBadRequest, grantauth.CodeDeviceIDRequired)
+}
+
+func TestRedisBeingDownOnTheSessionPathIsA503(t *testing.T) {
+	r := newSessionRig(t)
+	r.guestGrant("gt_guest")
+	r.session("ps_1", "gt_guest")
+	r.mr.SetError("connection refused")
+	rec := r.call(t, map[string]string{grantauth.HeaderPaymentSession: "ps_1"})
+	if rec.Code != http.StatusServiceUnavailable || r.got != nil {
+		t.Fatalf("status = %d, reached handler = %v; want 503 and no pass", rec.Code, r.got != nil)
+	}
+}
+
+func TestThePlainMiddlewareRefusesAPaymentSessionBeforeReadingRedis(t *testing.T) {
+	r := newRig(t)
+	r.guestGrant("gt_guest")
+	r.session("ps_1", "gt_guest")
+	r.mr.SetError("must not be called")
+	for name, h := range map[string]map[string]string{
+		"session only":      {grantauth.HeaderPaymentSession: "ps_1"},
+		"session and grant": {grantauth.HeaderPaymentSession: "ps_1", grantauth.HeaderGrantToken: "gt_guest", grantauth.HeaderDeviceID: device},
+	} {
+		t.Run(name, func(t *testing.T) {
+			assertError(t, r.call(t, h), http.StatusBadRequest, "VALIDATION_ERROR")
+		})
+	}
+}

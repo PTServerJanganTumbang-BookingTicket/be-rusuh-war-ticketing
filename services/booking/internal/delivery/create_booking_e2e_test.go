@@ -231,3 +231,25 @@ func TestAnOrderWithAMissingStockKeyIsUninitializedNotSoldOut(t *testing.T) {
 		t.Fatalf("missing key = %d %v, want 503 STOCK_UNINITIALIZED", code, out)
 	}
 }
+
+func TestTheWebViewReadsItsBookingWithOnlyAPaymentSession(t *testing.T) {
+	e := newE2E(t)
+	e.booking("RB-WV")
+	_ = e.mr.Set(rediskeys.PaymentSession("ps_wv"), "gt_RB-WV")
+
+	req := httptest.NewRequest(http.MethodGet, "/bookings/RB-WV", nil)
+	req.Header.Set("X-Payment-Session", "ps_wv")
+	rec := httptest.NewRecorder()
+	e.h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"RB-WV"`) {
+		t.Fatalf("GET /bookings/RB-WV with a session = %d %s, want 200 with the booking", rec.Code, rec.Body.String())
+	}
+
+	other := httptest.NewRequest(http.MethodGet, "/bookings/RB-OTHER", nil)
+	other.Header.Set("X-Payment-Session", "ps_wv")
+	rec = httptest.NewRecorder()
+	e.h.ServeHTTP(rec, other)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("another booking with this session = %d %s, want 404", rec.Code, rec.Body.String())
+	}
+}

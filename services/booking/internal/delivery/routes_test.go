@@ -98,7 +98,8 @@ func TestNewConnectsToTheConfiguredRedisAndDatabase(t *testing.T) {
 	if addr == "" || dsn == "" || testing.Short() {
 		t.Skip("set REDIS_ADDR and DATABASE_URL (make verify does)")
 	}
-	cfg := config.Config{App: config.App{Env: "local"}, DB: config.DB{URL: dsn, MaxConns: 1}, Redis: config.Redis{Addr: addr, Cluster: true}}
+	cfg := config.Config{App: config.App{Env: "local"}, DB: config.DB{URL: dsn, MaxConns: 1}, Redis: config.Redis{Addr: addr, Cluster: true},
+		Grant: config.Grant{JWTSecret: sessionSecret}}
 	h, deps, err := delivery.New(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -204,5 +205,30 @@ func TestTheHandlerRefusesAnEmptyJWTSecret(t *testing.T) {
 	cfg := config.Config{App: config.App{Env: "local"}}
 	if _, err := delivery.NewHandler(cfg, delivery.Deps{}); err == nil {
 		t.Fatal("without JWT_SECRET the handler must not start: account grants could not be checked")
+	}
+}
+
+// ADR-007: the WebView payment page reads GET /bookings/{id} with X-Payment-Session; no other booking route accepts it.
+func TestTheBookingDetailAcceptsAPaymentSessionAndNoOtherBookingRouteDoes(t *testing.T) {
+	h := handler(t)
+	cases := []struct {
+		method, path string
+		status       int
+		code         string
+	}{
+		{http.MethodGet, "/bookings/RB-1", http.StatusUnauthorized, "PAYMENT_SESSION_INVALID"},
+		{http.MethodPost, "/bookings", http.StatusBadRequest, "VALIDATION_ERROR"},
+		{http.MethodGet, "/events/evt_a/tickets", http.StatusBadRequest, "VALIDATION_ERROR"},
+	}
+	for _, c := range cases {
+		t.Run(c.method+" "+c.path, func(t *testing.T) {
+			req := httptest.NewRequest(c.method, c.path, strings.NewReader("{}"))
+			req.Header.Set("X-Payment-Session", "ps_unknown")
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != c.status || !strings.Contains(rec.Body.String(), c.code) {
+				t.Fatalf("%s %s with a session = %d %s, want %d %s", c.method, c.path, rec.Code, rec.Body.String(), c.status, c.code)
+			}
+		})
 	}
 }

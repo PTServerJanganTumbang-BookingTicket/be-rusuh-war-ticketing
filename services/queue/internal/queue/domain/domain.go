@@ -73,6 +73,7 @@ const (
 	MeQueued          = "QUEUED"
 	MeGranted         = "GRANTED"
 	MeSelecting       = "SELECTING"
+	MeHeld            = "HELD" // Pay pressed, seats held, no payment started: the deadline is payment_expires_at
 	MeAwaitingPayment = "AWAITING_PAYMENT"
 	MeConfirmed       = "CONFIRMED"
 	MeExpired         = "EXPIRED"

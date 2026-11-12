@@ -90,7 +90,10 @@ func NewHandler(cfg config.Config, d Deps) (http.Handler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("access token verifier (JWT_SECRET): %w", err)
 	}
-	grant := grantauth.Middleware(d.Redis, grantauth.Config{DevicePepper: cfg.Grant.DevicePepper, Tokens: sessions})
+	guardCfg := grantauth.Config{DevicePepper: cfg.Grant.DevicePepper, Tokens: sessions}
+	grant := grantauth.Middleware(d.Redis, guardCfg)
+	// The WebView payment page reads its booking with X-Payment-Session (ADR-007); this route alone accepts it here.
+	grantOrSession := grantauth.MiddlewareWithSession(d.Redis, guardCfg)
 	metrics := emf.New("Rusuh/Booking", os.Stdout)
 	store := bookingpg.NewStore(d.DB)
 	ticketPage := usecase.NewTicketPage(usecase.TicketPageDeps{
@@ -103,7 +106,7 @@ func NewHandler(cfg config.Config, d Deps) (http.Handler, error) {
 	mux.Handle("GET /events/{event_id}/tickets", grant(bookinghttp.NewTicketPage(ticketPage)))
 
 	detail := usecase.NewBookingDetail(usecase.BookingDetailDeps{Details: store, Links: links, Metrics: metrics, Clock: time.Now})
-	mux.Handle("GET /bookings/{booking_id}", grant(bookinghttp.NewBookingDetail(detail)))
+	mux.Handle("GET /bookings/{booking_id}", grantOrSession(bookinghttp.NewBookingDetail(detail)))
 
 	niks, err := nikverify.New(context.Background(), cfg)
 	if err != nil {

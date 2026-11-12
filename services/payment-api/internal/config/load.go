@@ -2,7 +2,9 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/envutil"
@@ -17,6 +19,9 @@ func Load() (Config, error) {
 			Port:         envutil.EnvInt("APP_PORT", 8085),
 			DevicePepper: os.Getenv("DEVICE_PEPPER"),
 			JWTSecret:    os.Getenv("JWT_SECRET"),
+			// One trailing slash dropped, so "https://x/" + "/m/..." is not "//m/...".
+			AppBase:        strings.TrimSuffix(envutil.Env("APP_BASE_URL", "http://localhost:3000"), "/"),
+			PaymentWebPath: envutil.Env("PAYMENT_WEB_PATH", "/m/orders/"+BookingIDPlaceholder+"/pay"),
 		},
 		Log: Log{
 			Level:  envutil.Env("LOG_LEVEL", "info"),
@@ -85,6 +90,9 @@ func (c Config) validate() error {
 	if c.App.DevicePepper == "" {
 		return fmt.Errorf("DEVICE_PEPPER is required and has no default: without it every guest grant fails the device check")
 	}
+	if err := c.App.validatePaymentPage(); err != nil {
+		return err
+	}
 	if c.Payment.TTL <= 0 {
 		return fmt.Errorf("PAYMENT_TTL_SECONDS must be positive")
 	}
@@ -99,6 +107,30 @@ func (c Config) validate() error {
 		// looks like a broken endpoint rather than a policy.
 		return fmt.Errorf("MIN_RETRY_REMAINING_SECONDS (%s) must be below PAYMENT_TTL_SECONDS (%s)",
 			c.Payment.MinRetryRemaining, c.Payment.TTL)
+	}
+	return nil
+}
+
+// validatePaymentPage checks the two halves of payment_url (§5.6). The app
+// refuses any URL outside its allowed prefix, so a wrong value here shows as
+// "the pay button does nothing" on mobile, not as an error anywhere.
+func (a App) validatePaymentPage() error {
+	u, err := url.Parse(a.AppBase)
+	if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
+		return fmt.Errorf("APP_BASE_URL must be an absolute http(s) URL, got %q", a.AppBase)
+	}
+	// The URL carries a single-use payment code in its fragment.
+	if !a.IsLocal() && u.Scheme != "https" {
+		return fmt.Errorf("APP_BASE_URL must be https outside local: payment_url carries a handoff code")
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("APP_BASE_URL must not carry a query or fragment, got %q", a.AppBase)
+	}
+	p := a.PaymentWebPath
+	if !strings.HasPrefix(p, "/") || strings.ContainsAny(p, "?#") ||
+		strings.Count(p, BookingIDPlaceholder) != 1 {
+		return fmt.Errorf("PAYMENT_WEB_PATH must start with /, contain %s once and no ? or #, got %q",
+			BookingIDPlaceholder, p)
 	}
 	return nil
 }

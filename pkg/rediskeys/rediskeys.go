@@ -82,3 +82,14 @@ func JoinAcctLimit(accountID string) string { return "rl:joinacct:" + accountID 
 
 // SSERateLimit is rl:sse:<ip> (5 stream connections / s).
 func SSERateLimit(ip string) string { return "rl:sse:" + ip }
+
+// PaymentHandoff is paymenthandoff:<code>, a one-time code the mobile app trades for a payment session in the WebView
+// (ADR-007). A plain string holding the grant token; 60 s, read once (GET + DEL in one MULTI).
+func PaymentHandoff(code string) string { return "paymenthandoff:" + code }
+
+// PaymentSession is paymentsession:<session>, the WebView page's stand-in for a grant (X-Payment-Session, ADR-007). A
+// plain string holding the grant token; its TTL is the grant's remaining TTL.
+func PaymentSession(session string) string { return "paymentsession:" + session }
+
+// HandoffRateLimit is rl:handoff:<grant_token> (10 handoff codes / min per grant).
+func HandoffRateLimit(grantToken string) string { return "rl:handoff:" + grantToken }

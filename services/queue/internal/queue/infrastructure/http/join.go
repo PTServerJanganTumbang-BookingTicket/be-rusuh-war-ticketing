@@ -255,6 +255,9 @@ func meData(res usecase.MeResult) map[string]any {
 	case domain.MeSelecting:
 		d["grant_token"], d["booking_id"], d["server_time"] = res.GrantToken, res.BookingID, serverTime
 		set("booking_expires_at", res.BookingExpiresAt)
+	case domain.MeHeld:
+		d["grant_token"], d["booking_id"], d["server_time"] = res.GrantToken, res.BookingID, serverTime
+		set("payment_expires_at", res.PaymentExpiresAt)
 	case domain.MeAwaitingPayment:
 		d["grant_token"], d["booking_id"] = res.GrantToken, res.BookingID
 		d["payment_ref"], d["server_time"] = res.PaymentRef, serverTime
