@@ -30,11 +30,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	// EventHandler implements lambda.Handler (Invoke(context.Context, []byte) ([]byte, error)).
-	// lambda.StartHandler calls Invoke directly via the interface without any
-	// reflection-based JSON dispatch, which avoids the
-	// "cannot unmarshal object into Go value of type []uint8" error that
-	// lambda.Start triggers in aws-lambda-go ≥ v1.55 when the handler takes
-	// a []byte parameter (the generic dispatch no longer special-cases it).
-	lambda.StartHandler(server.Events())
+	// server.Events() implements lambda.Handler (Invoke(context.Context, []byte) ([]byte, error)).
+	// lambda.Start detects the Handler interface and calls Invoke directly,
+	// bypassing the reflection-based JSON dispatch that causes
+	// "cannot unmarshal object into Go value of type []uint8" when the
+	// handler is passed as a function value with a []byte parameter.
+	lambda.Start(server.Events())
 }
