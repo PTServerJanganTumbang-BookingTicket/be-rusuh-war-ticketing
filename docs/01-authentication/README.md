@@ -6,7 +6,7 @@ session management with rotating refresh tokens, and email confirmation.
 **Service**: `services/user` (Lambda + API Gateway)
 
 **Sources**: ADR-005 §4, §7–§9, §12 · api-contracts §1 · requirements FR-29, FR-30, FR-31,
-BR-09, BR-11, BR-13, NFR-02, NFR-07, NFR-10, NFR-11.
+BR-09 , BR-11, BR-13, NFR-02, NFR-07, NFR-10, NFR-11.
 
 ## Files
 
