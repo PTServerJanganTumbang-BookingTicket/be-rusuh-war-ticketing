@@ -68,7 +68,7 @@ func TestRender_EnglishLocale(t *testing.T) {
 		events.AuthMagicLinkPayload{Email: "a@example.com", Token: "t", Locale: events.LocaleEN}))
 	require.NoError(t, err)
 	assert.Equal(t, events.LocaleEN, rec.Locale)
-	assert.Contains(t, out.Subject, "sign-in")
+	assert.Contains(t, out.Subject, "Sign in")
 }
 
 func TestRender_UnsupportedLocaleFallsBackToIndonesian(t *testing.T) {
@@ -76,7 +76,7 @@ func TestRender_UnsupportedLocaleFallsBackToIndonesian(t *testing.T) {
 		events.AuthMagicLinkPayload{Email: "a@example.com", Token: "t", Locale: events.Locale("fr")}))
 	require.NoError(t, err)
 	assert.Equal(t, events.LocaleID, rec.Locale)
-	assert.Contains(t, out.Subject, "masuk")
+	assert.Contains(t, out.Subject, "Masuk")
 }
 
 func TestRender_HTMLEscapesUserControlledValues(t *testing.T) {
@@ -226,5 +226,5 @@ func TestRenderedBodiesAreNotEmpty(t *testing.T) {
 	assert.NotEmpty(t, strings.TrimSpace(out.Subject))
 	assert.NotEmpty(t, strings.TrimSpace(out.HTMLBody))
 	assert.NotEmpty(t, strings.TrimSpace(out.TextBody))
-	assert.Contains(t, out.HTMLBody, "<!doctype html>")
+	assert.Contains(t, out.HTMLBody, "<!DOCTYPE html>")
 }

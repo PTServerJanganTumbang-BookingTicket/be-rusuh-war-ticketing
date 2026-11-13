@@ -18,6 +18,8 @@ type Links struct {
 	// MagicTokenTTLMinutes is quoted in the body so the customer knows how
 	// long they have.
 	MagicTokenTTLMinutes int
+	// SupportEmail is the email address shown in the footer for customer support.
+	SupportEmail string
 }
 
 // Recipient is who an email goes to, resolved from the payload.
@@ -35,6 +37,9 @@ type Renderer struct {
 func NewRenderer(links Links) *Renderer {
 	if links.MagicTokenTTLMinutes <= 0 {
 		links.MagicTokenTTLMinutes = 15
+	}
+	if links.SupportEmail == "" {
+		links.SupportEmail = "support@rusuhbookingtiket.com"
 	}
 	return &Renderer{links: links}
 }
@@ -55,8 +60,9 @@ func (r *Renderer) Render(envelope events.Envelope) (Recipient, Rendered, error)
 		}
 		rec := Recipient{Email: p.Email, Locale: p.Locale.Normalize()}
 		out, err := r.renderFor(envelope.Type, rec.Locale, map[string]any{
-			"Link":       r.link("/auth/login", p.Token),
-			"TTLMinutes": r.links.MagicTokenTTLMinutes,
+			"Link":         r.link("/auth/login", p.Token),
+			"TTLMinutes":   r.links.MagicTokenTTLMinutes,
+			"SupportEmail": r.links.SupportEmail,
 		})
 		return rec, out, err
 
@@ -67,8 +73,9 @@ func (r *Renderer) Render(envelope events.Envelope) (Recipient, Rendered, error)
 		}
 		rec := Recipient{Email: p.Email, Locale: p.Locale.Normalize()}
 		out, err := r.renderFor(envelope.Type, rec.Locale, map[string]any{
-			"Link":       r.link("/auth/verify-email", p.Token),
-			"TTLMinutes": r.links.MagicTokenTTLMinutes,
+			"Link":         r.link("/auth/verify-email", p.Token),
+			"TTLMinutes":   r.links.MagicTokenTTLMinutes,
+			"SupportEmail": r.links.SupportEmail,
 		})
 		return rec, out, err
 
@@ -87,13 +94,15 @@ func (r *Renderer) Render(envelope events.Envelope) (Recipient, Rendered, error)
 		}
 		rec := Recipient{Email: to, Locale: p.Locale.Normalize()}
 		out, err := r.renderFor(envelope.Type, rec.Locale, map[string]any{
-			"TicketID":    p.TicketID,
-			"EventName":   p.EventName,
-			"EventDate":   p.EventDate,
-			"EventVenue":  p.EventVenue,
-			"Category":    p.Category,
-			"NIKMasked":   p.NIKMasked,
-			"ETicketLink": r.links.AppBase + "/tickets/" + p.TicketID + "/eticket",
+			"TicketID":     p.TicketID,
+			"BookingID":    p.BookingID,
+			"EventName":    p.EventName,
+			"EventDate":    p.EventDate,
+			"EventVenue":   p.EventVenue,
+			"Category":     p.Category,
+			"NIKMasked":    p.NIKMasked,
+			"ETicketLink":  r.links.AppBase + "/tickets/" + p.TicketID + "/eticket",
+			"SupportEmail": r.links.SupportEmail,
 		})
 		return rec, out, err
 
@@ -104,8 +113,10 @@ func (r *Renderer) Render(envelope events.Envelope) (Recipient, Rendered, error)
 		}
 		rec := Recipient{Email: p.ContactEmail, Locale: p.Locale.Normalize()}
 		out, err := r.renderFor(envelope.Type, rec.Locale, map[string]any{
-			"BookingID": p.BookingID,
-			"EventName": p.EventName,
+			"BookingID":    p.BookingID,
+			"EventName":    p.EventName,
+			"EventLink":    r.links.AppBase + "/events/" + p.EventID,
+			"SupportEmail": r.links.SupportEmail,
 		})
 		return rec, out, err
 
@@ -125,6 +136,7 @@ func (r *Renderer) Render(envelope events.Envelope) (Recipient, Rendered, error)
 			"IsDisputed":   p.Reason == events.FailureDisputed,
 			"IsTTLElapsed": p.Reason == events.FailureTTLElapsed,
 			"AmountText":   formatIDR(p.GrossAmount),
+			"SupportEmail": r.links.SupportEmail,
 		})
 		return rec, out, err
 

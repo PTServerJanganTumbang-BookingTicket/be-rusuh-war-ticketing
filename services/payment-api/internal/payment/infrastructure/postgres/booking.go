@@ -265,11 +265,11 @@ func (r *BookingRepository) insertChargeEvent(ctx context.Context, tx pgx.Tx, bo
 	}
 	_, err = tx.Exec(ctx,
 		`INSERT INTO payment_events
-            (id, booking_id, gateway_event_id, transaction_status, fraud_status,
+            (id, booking_id, order_id, gateway_event_id, transaction_status, fraud_status,
              payment_type, gross_amount, raw)
-          VALUES ($1, $2, $3, $4, NULLIF($5, ''), NULLIF($6, ''), NULL, $7)
+          VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), NULLIF($7, ''), NULL, $8)
           ON CONFLICT (gateway_event_id) DO NOTHING`,
-		r.newID(), bookingID, chargeEventID(orderID, res.StatusCode),
+		r.newID(), bookingID, orderID, chargeEventID(orderID, res.StatusCode),
 		res.TransactionStatus, res.FraudStatus, "", payload)
 	if err != nil {
 		return wrapDB(err, "could not record charge event")
@@ -378,10 +378,10 @@ func (r *BookingRepository) ApplyNotification(ctx context.Context, in portout.No
 	// rollback is the whole point.
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO payment_events
-            (id, booking_id, gateway_event_id, transaction_status, fraud_status,
+            (id, booking_id, order_id, gateway_event_id, transaction_status, fraud_status,
              payment_type, gross_amount, raw)
-          VALUES ($1, $2, $3, $4, NULLIF($5, ''), NULLIF($6, ''), $7, $8)`,
-		r.newID(), in.BookingID, in.GatewayEventID, in.TransactionStatus,
+          VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), NULLIF($7, ''), $8, $9)`,
+		r.newID(), in.BookingID, in.OrderID, in.GatewayEventID, in.TransactionStatus,
 		in.FraudStatus, in.PaymentType, in.GrossAmount, in.Raw); err != nil {
 		if isUniqueViolation(err) {
 			return portout.NotificationOutcome{}, portout.ErrDuplicateEvent

@@ -177,6 +177,7 @@ type TicketIssuePayload struct {
 // ContactEmail only, since ADR-006 §8.15: the seats never carried an address.
 type BookingExpiredPayload struct {
 	BookingID    string `json:"booking_id"`
+	EventID      string `json:"event_id"`
 	ContactEmail string `json:"contact_email"`
 	EventName    string `json:"event_name"`
 	Locale       Locale `json:"locale,omitempty"`

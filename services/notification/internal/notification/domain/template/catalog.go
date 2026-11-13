@@ -1,27 +1,6 @@
 package template
 
-import (
-	"fmt"
-
-	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/events"
-)
-
-// layout wraps a body fragment in a minimal HTML document.
-//
-// Deliberately plain: inline styles only, no external CSS or images, no
-// tracking pixel. Mail clients strip most of it anyway, and an e-ticket that
-// renders in a text-only client is worth more than one that looks good in Gmail
-// and is unreadable elsewhere.
-const layout = `<!doctype html>
-<html><body style="font-family:system-ui,-apple-system,sans-serif;line-height:1.5;color:#1a1a1a;max-width:560px;margin:0 auto;padding:24px">
-%s
-<hr style="border:0;border-top:1px solid #e5e5e5;margin:32px 0">
-<p style="font-size:12px;color:#6b7280">%s</p>
-</body></html>`
-
-func wrap(body, footer string) string {
-	return fmt.Sprintf(layout, body, footer)
-}
+import "github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/events"
 
 // catalog maps a type and locale to its email.
 //
@@ -31,151 +10,365 @@ func wrap(body, footer string) string {
 var catalog = map[events.Type]map[events.Locale]definition{
 	events.TypeAuthMagicLink: {
 		events.LocaleID: {
-			subject: "Tautan masuk Rusuh Booking Tiket",
-			html: wrap(
-				`<h2 style="margin:0 0 16px;font-size:20px">Masuk ke akun Anda</h2>
-<p>Klik tombol di bawah untuk masuk. Tautan ini berlaku {{.TTLMinutes}} menit dan hanya dapat dipakai satu kali.</p>
-<p style="margin:24px 0"><a href="{{.Link}}" style="background:#1a1a1a;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;display:inline-block">Masuk sekarang</a></p>
-<p>Jika Anda tidak meminta tautan ini, abaikan email ini. Tidak ada perubahan pada akun Anda.</p>`,
-				"Email ini dikirim otomatis. Jangan teruskan tautan di atas kepada siapa pun."),
-			text: `Masuk ke akun Anda
+			subject: "Masuk tanpa kata sandi. Link ini hanya bisa dipakai sekali.",
+			html: `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Masuk ke akun kamu</title>
+</head>
+<body style="font-family:system-ui,-apple-system,sans-serif;line-height:1.6;color:#1a1a1a;max-width:560px;margin:0 auto;padding:24px;background:#f9fafb;">
+<div style="background:#fff;border-radius:8px;padding:32px;margin:16px 0;">
+<h2 style="margin:0 0 16px;font-size:20px;color:#111827;">Masuk ke akun kamu</h2>
+<p>Halo, tekan tombol di bawah untuk masuk.</p>
+<p style="margin:24px 0;"><a href="{{.Link}}" style="background:#1a1a1a;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;display:inline-block;font-weight:500;">Masuk sekarang</a></p>
+<p style="color:#6b7280;font-size:14px;">Link berlaku selama {{.TTLMinutes}} menit dan hanya bisa dipakai sekali. Jangan teruskan email ini ke siapa pun.</p>
+<p style="color:#6b7280;font-size:14px;">Tombol tidak berfungsi? Salin link ini ke browser:<br><span style="word-break:break-all;">{{.Link}}</span></p>
+<p style="color:#6b7280;font-size:14px;">Tidak merasa meminta link ini? Abaikan email ini, akunmu tetap aman.</p>
+</div>
+<hr style="border:0;border-top:1px solid #e5e5e5;margin:24px 0;">
+<p style="font-size:12px;color:#6b7280;text-align:center;">Sampai jumpa di depan panggung.<br>Butuh bantuan? Hubungi {{.SupportEmail}}<br>Email ini dikirim otomatis, mohon tidak membalas. © Rusuh Booking Tiket</p>
+</body>
+</html>`,
+			text: `Masuk ke akun kamu
 
-Buka tautan ini untuk masuk (berlaku {{.TTLMinutes}} menit, sekali pakai):
-{{.Link}}
+Halo, tekan tombol di bawah untuk masuk.
 
-Jika Anda tidak meminta tautan ini, abaikan email ini.`,
+Link: {{.Link}}
+
+Link berlaku selama {{.TTLMinutes}} menit dan hanya bisa dipakai sekali.
+Jangan teruskan email ini ke siapa pun.
+
+Tidak merasa meminta link ini? Abaikan email ini, akunmu tetap aman.
+
+---
+Sampai jumpa di depan panggung.
+Butuh bantuan? Hubungi {{.SupportEmail}}
+Email ini dikirim otomatis, mohon tidak membalas. © Rusuh Booking Tiket`,
 		},
 		events.LocaleEN: {
-			subject: "Your Rusuh Booking Tiket sign-in link",
-			html: wrap(
-				`<h2 style="margin:0 0 16px;font-size:20px">Sign in to your account</h2>
-<p>Use the button below to sign in. The link is valid for {{.TTLMinutes}} minutes and works once.</p>
-<p style="margin:24px 0"><a href="{{.Link}}" style="background:#1a1a1a;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;display:inline-block">Sign in</a></p>
-<p>If you did not request this, ignore this email. Nothing has changed on your account.</p>`,
-				"This is an automated message. Do not forward the link above to anyone."),
+			subject: "Sign in without a password. This link can only be used once.",
+			html: `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sign in to your account</title>
+</head>
+<body style="font-family:system-ui,-apple-system,sans-serif;line-height:1.6;color:#1a1a1a;max-width:560px;margin:0 auto;padding:24px;background:#f9fafb;">
+<div style="background:#fff;border-radius:8px;padding:32px;margin:16px 0;">
+<h2 style="margin:0 0 16px;font-size:20px;color:#111827;">Sign in to your account</h2>
+<p>Hello, tap the button below to sign in.</p>
+<p style="margin:24px 0;"><a href="{{.Link}}" style="background:#1a1a1a;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;display:inline-block;font-weight:500;">Sign in now</a></p>
+<p style="color:#6b7280;font-size:14px;">This link is valid for {{.TTLMinutes}} minutes and can only be used once. Do not forward this email to anyone.</p>
+<p style="color:#6b7280;font-size:14px;">Button not working? Copy this link to your browser:<br><span style="word-break:break-all;">{{.Link}}</span></p>
+<p style="color:#6b7280;font-size:14px;">Didn't request this link? Ignore this email, your account is safe.</p>
+</div>
+<hr style="border:0;border-top:1px solid #e5e5e5;margin:24px 0;">
+<p style="font-size:12px;color:#6b7280;text-align:center;">See you in front of the stage.<br>Need help? Contact {{.SupportEmail}}<br>This email was sent automatically, please do not reply. © Rusuh Booking Tiket</p>
+</body>
+</html>`,
 			text: `Sign in to your account
 
-Open this link to sign in (valid for {{.TTLMinutes}} minutes, single use):
-{{.Link}}
+Hello, tap the link below to sign in.
 
-If you did not request this, ignore this email.`,
+Link: {{.Link}}
+
+This link is valid for {{.TTLMinutes}} minutes and can only be used once.
+Do not forward this email to anyone.
+
+Didn't request this link? Ignore this email, your account is safe.
+
+---
+See you in front of the stage.
+Need help? Contact {{.SupportEmail}}
+This email was sent automatically, please do not reply. © Rusuh Booking Tiket`,
 		},
 	},
 
 	events.TypeAccountVerify: {
 		events.LocaleID: {
-			subject: "Konfirmasi alamat email Anda",
-			html: wrap(
-				`<h2 style="margin:0 0 16px;font-size:20px">Konfirmasi email Anda</h2>
-<p>Konfirmasi alamat ini untuk melanjutkan registrasi.</p>
-<p style="margin:24px 0"><a href="{{.Link}}" style="background:#1a1a1a;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;display:inline-block">Konfirmasi email</a></p>
-<p>Anda tetap dapat membeli tiket tanpa konfirmasi ini. Tautan berlaku {{.TTLMinutes}} menit.</p>`,
-				"Email ini dikirim otomatis."),
-			text: `Konfirmasi email Anda
+			subject: "Satu langkah lagi. Link ini berlaku selama 15 menit.",
+			html: `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Verifikasi email kamu</title>
+</head>
+<body style="font-family:system-ui,-apple-system,sans-serif;line-height:1.6;color:#1a1a1a;max-width:560px;margin:0 auto;padding:24px;background:#f9fafb;">
+<div style="background:#fff;border-radius:8px;padding:32px;margin:16px 0;">
+<h2 style="margin:0 0 16px;font-size:20px;color:#111827;">Satu klik. Akun terverifikasi.</h2>
+<p>Halo,</p>
+<p>Terima kasih sudah mendaftar di Rusuh. Verifikasi email kamu untuk menyelesaikan pendaftaran dan siap memesan momen live berikutnya. Email yang terverifikasi juga membuka riwayat pesananmu.</p>
+<p style="margin:24px 0;"><a href="{{.Link}}" style="background:#1a1a1a;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;display:inline-block;font-weight:500;">Verifikasi email</a></p>
+<p style="color:#6b7280;font-size:14px;">Link hanya bisa dipakai sekali dan berlaku selama {{.TTLMinutes}} menit. Jika sudah kedaluwarsa, minta link login dari halaman login. Masuk lewat link itu juga memverifikasi emailmu.</p>
+<p style="color:#6b7280;font-size:14px;">Tombol tidak berfungsi? Salin link ini ke browser:<br><span style="word-break:break-all;">{{.Link}}</span></p>
+<p style="color:#6b7280;font-size:14px;">Tidak merasa mendaftar? Abaikan email ini, akun tidak akan aktif. Jangan bagikan link ini ke siapa pun.</p>
+</div>
+<hr style="border:0;border-top:1px solid #e5e5e5;margin:24px 0;">
+<p style="font-size:12px;color:#6b7280;text-align:center;">Sampai jumpa di depan panggung.<br>Butuh bantuan? Hubungi {{.SupportEmail}}<br>Email ini dikirim otomatis, mohon tidak membalas. © Rusuh Booking Tiket</p>
+</body>
+</html>`,
+			text: `Satu klik. Akun terverifikasi.
 
-Konfirmasi alamat ini untuk melanjutkan registrasi.
-Buka tautan ini (berlaku {{.TTLMinutes}} menit):
-{{.Link}}
+Halo,
 
-Anda tetap dapat membeli tiket tanpa konfirmasi ini.`,
+Terima kasih sudah mendaftar di Rusuh. Verifikasi email kamu untuk menyelesaikan
+pendaftaran dan siap memesan momen live berikutnya.
+
+Link verifikasi: {{.Link}}
+
+Link hanya bisa dipakai sekali dan berlaku selama {{.TTLMinutes}} menit.
+
+Tidak merasa mendaftar? Abaikan email ini, akun tidak akan aktif.
+
+---
+Sampai jumpa di depan panggung.
+Butuh bantuan? Hubungi {{.SupportEmail}}
+Email ini dikirim otomatis, mohon tidak membalas. © Rusuh Booking Tiket`,
 		},
 		events.LocaleEN: {
-			subject: "Confirm your email address",
-			html: wrap(
-				`<h2 style="margin:0 0 16px;font-size:20px">Confirm your email</h2>
-<p>Your account is ready. Confirm this address to unlock your order history.</p>
-<p style="margin:24px 0"><a href="{{.Link}}" style="background:#1a1a1a;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;display:inline-block">Confirm email</a></p>
-<p>You can still buy tickets without confirming. The link is valid for {{.TTLMinutes}} minutes.</p>`,
-				"This is an automated message."),
-			text: `Confirm your email
+			subject: "One more step. This link is valid for 15 minutes.",
+			html: `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Verify your email</title>
+</head>
+<body style="font-family:system-ui,-apple-system,sans-serif;line-height:1.6;color:#1a1a1a;max-width:560px;margin:0 auto;padding:24px;background:#f9fafb;">
+<div style="background:#fff;border-radius:8px;padding:32px;margin:16px 0;">
+<h2 style="margin:0 0 16px;font-size:20px;color:#111827;">One click. Account verified.</h2>
+<p>Hello,</p>
+<p>Thank you for signing up with Rusuh. Verify your email to complete registration and get ready to book your next live moment. A verified email also unlocks your order history.</p>
+<p style="margin:24px 0;"><a href="{{.Link}}" style="background:#1a1a1a;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;display:inline-block;font-weight:500;">Verify email</a></p>
+<p style="color:#6b7280;font-size:14px;">This link can only be used once and is valid for {{.TTLMinutes}} minutes. If it has expired, request a login link from the login page. Signing in via that link also verifies your email.</p>
+<p style="color:#6b7280;font-size:14px;">Button not working? Copy this link to your browser:<br><span style="word-break:break-all;">{{.Link}}</span></p>
+<p style="color:#6b7280;font-size:14px;">Didn't sign up? Ignore this email, the account won't be activated. Don't share this link with anyone.</p>
+</div>
+<hr style="border:0;border-top:1px solid #e5e5e5;margin:24px 0;">
+<p style="font-size:12px;color:#6b7280;text-align:center;">See you in front of the stage.<br>Need help? Contact {{.SupportEmail}}<br>This email was sent automatically, please do not reply. © Rusuh Booking Tiket</p>
+</body>
+</html>`,
+			text: `One click. Account verified.
 
-Your account is ready. Open this link to confirm your address
-(valid for {{.TTLMinutes}} minutes):
-{{.Link}}
+Hello,
 
-You can still buy tickets without confirming.`,
+Thank you for signing up with Rusuh. Verify your email to complete registration
+and get ready to book your next live moment.
+
+Verification link: {{.Link}}
+
+This link can only be used once and is valid for {{.TTLMinutes}} minutes.
+
+Didn't sign up? Ignore this email, the account won't be activated.
+
+---
+See you in front of the stage.
+Need help? Contact {{.SupportEmail}}
+This email was sent automatically, please do not reply. © Rusuh Booking Tiket`,
 		},
 	},
 
 	events.TypeTicketIssue: {
 		events.LocaleID: {
-			subject: "E-tiket Anda — {{.EventName}}",
-			html: wrap(
-				`<h2 style="margin:0 0 16px;font-size:20px">E-tiket Anda</h2>
-<p><strong>{{.EventName}}</strong><br>{{.EventDate}}{{if .EventVenue}} · {{.EventVenue}}{{end}}</p>
-<table style="border-collapse:collapse;margin:20px 0;font-size:14px">
-<tr><td style="padding:4px 16px 4px 0;color:#6b7280">Kategori</td><td style="padding:4px 0"><strong>{{.Category}}</strong></td></tr>
-<tr><td style="padding:4px 16px 4px 0;color:#6b7280">NIK pemegang</td><td style="padding:4px 0">{{.NIKMasked}}</td></tr>
-<tr><td style="padding:4px 16px 4px 0;color:#6b7280">Kode tiket</td><td style="padding:4px 0">{{.TicketID}}</td></tr>
+			subject: "E-tiket kamu sudah terbit — {{.EventName}}",
+			html: `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>E-tiket kamu sudah terbit</title>
+</head>
+<body style="font-family:system-ui,-apple-system,sans-serif;line-height:1.6;color:#1a1a1a;max-width:560px;margin:0 auto;padding:24px;background:#f9fafb;">
+<div style="background:#fff;border-radius:8px;padding:32px;margin:16px 0;">
+<h2 style="margin:0 0 16px;font-size:20px;color:#111827;">E-tiket kamu sudah terbit</h2>
+<p>Pembayaran berhasil. Setiap tiket punya QR code sendiri yang dipindai saat masuk venue. Teruskan tiket ke masing-masing pemegangnya.</p>
+<table style="width:100%;border-collapse:collapse;margin:20px 0;font-size:14px;">
+<tr><td style="padding:8px 0;color:#6b7280;width:120px;">Event</td><td style="padding:8px 0;"><strong>{{.EventName}}</strong></td></tr>
+<tr><td style="padding:8px 0;color:#6b7280;">Waktu</td><td style="padding:8px 0;">{{.EventDate}}</td></tr>
+{{if .EventVenue}}<tr><td style="padding:8px 0;color:#6b7280;">Lokasi</td><td style="padding:8px 0;">{{.EventVenue}}</td></tr>{{end}}
+<tr><td style="padding:8px 0;color:#6b7280;">Kode booking</td><td style="padding:8px 0;">{{.BookingID}}</td></tr>
 </table>
-<p style="margin:24px 0"><a href="{{.ETicketLink}}" style="background:#1a1a1a;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;display:inline-block">Buka e-tiket</a></p>
-<p>Tunjukkan QR code pada e-tiket beserta identitas pemegang saat masuk venue.</p>`,
-				"Tiket ini terikat pada NIK pemegang dan tidak dapat dipindahtangankan."),
-			text: `E-tiket Anda — {{.EventName}}
+<div style="background:#f3f4f6;border-radius:8px;padding:20px;margin:20px 0;">
+<table style="width:100%;border-collapse:collapse;font-size:14px;">
+<tr><td style="padding:6px 0;color:#6b7280;width:120px;">Kategori</td><td style="padding:6px 0;"><strong>{{.Category}}</strong></td></tr>
+<tr><td style="padding:6px 0;color:#6b7280;">Nomor tiket</td><td style="padding:6px 0;">{{.TicketID}}</td></tr>
+<tr><td style="padding:6px 0;color:#6b7280;">NIK pemegang tiket</td><td style="padding:6px 0;">{{.NIKMasked}}</td></tr>
+</table>
+</div>
+<p style="margin:24px 0;"><a href="{{.ETicketLink}}" style="background:#1a1a1a;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;display:inline-block;font-weight:500;">Buka e-tiket</a></p>
+<p style="color:#6b7280;font-size:14px;">Bawa identitas sesuai NIK pada tiket. Jangan bagikan QR code selain kepada pemegang tiketnya.</p>
+</div>
+<hr style="border:0;border-top:1px solid #e5e5e5;margin:24px 0;">
+<p style="font-size:12px;color:#6b7280;text-align:center;">Sampai jumpa di depan panggung.<br>Butuh bantuan? Hubungi {{.SupportEmail}}<br>Email ini dikirim otomatis, mohon tidak membalas. © Rusuh Booking Tiket</p>
+</body>
+</html>`,
+			text: `E-tiket kamu sudah terbit — {{.EventName}}
 
-{{.EventDate}}{{if .EventVenue}} · {{.EventVenue}}{{end}}
+Pembayaran berhasil. Tunjukkan QR code saat masuk venue.
+
+Event: {{.EventName}}
+Waktu: {{.EventDate}}{{if .EventVenue}}
+Lokasi: {{.EventVenue}}{{end}}
+Kode booking: {{.BookingID}}
+
+---
 Kategori: {{.Category}}
-NIK pemegang: {{.NIKMasked}}
-Kode tiket: {{.TicketID}}
+Nomor tiket: {{.TicketID}}
+NIK pemegang tiket: {{.NIKMasked}}
 
-Buka e-tiket Anda: {{.ETicketLink}}
+Buka e-tiket: {{.ETicketLink}}
 
-Tunjukkan QR code beserta identitas pemegang saat masuk venue.`,
+Bawa identitas sesuai NIK pada tiket. Jangan bagikan QR code selain kepada pemegang tiketnya.
+
+---
+Sampai jumpa di depan panggung.
+Butuh bantuan? Hubungi {{.SupportEmail}}
+Email ini dikirim otomatis, mohon tidak membalas. © Rusuh Booking Tiket`,
 		},
 		events.LocaleEN: {
-			subject: "Your e-ticket — {{.EventName}}",
-			html: wrap(
-				`<h2 style="margin:0 0 16px;font-size:20px">Your e-ticket</h2>
-<p><strong>{{.EventName}}</strong><br>{{.EventDate}}{{if .EventVenue}} · {{.EventVenue}}{{end}}</p>
-<table style="border-collapse:collapse;margin:20px 0;font-size:14px">
-<tr><td style="padding:4px 16px 4px 0;color:#6b7280">Category</td><td style="padding:4px 0"><strong>{{.Category}}</strong></td></tr>
-<tr><td style="padding:4px 16px 4px 0;color:#6b7280">Holder NIK</td><td style="padding:4px 0">{{.NIKMasked}}</td></tr>
-<tr><td style="padding:4px 16px 4px 0;color:#6b7280">Ticket code</td><td style="padding:4px 0">{{.TicketID}}</td></tr>
+			subject: "Your e-ticket has been issued — {{.EventName}}",
+			html: `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Your e-ticket has been issued</title>
+</head>
+<body style="font-family:system-ui,-apple-system,sans-serif;line-height:1.6;color:#1a1a1a;max-width:560px;margin:0 auto;padding:24px;background:#f9fafb;">
+<div style="background:#fff;border-radius:8px;padding:32px;margin:16px 0;">
+<h2 style="margin:0 0 16px;font-size:20px;color:#111827;">Your e-ticket has been issued</h2>
+<p>Payment successful. Each ticket has its own QR code to be scanned at venue entry. Forward the ticket to each holder.</p>
+<table style="width:100%;border-collapse:collapse;margin:20px 0;font-size:14px;">
+<tr><td style="padding:8px 0;color:#6b7280;width:120px;">Event</td><td style="padding:8px 0;"><strong>{{.EventName}}</strong></td></tr>
+<tr><td style="padding:8px 0;color:#6b7280;">Date</td><td style="padding:8px 0;">{{.EventDate}}</td></tr>
+{{if .EventVenue}}<tr><td style="padding:8px 0;color:#6b7280;">Venue</td><td style="padding:8px 0;">{{.EventVenue}}</td></tr>{{end}}
+<tr><td style="padding:8px 0;color:#6b7280;">Booking code</td><td style="padding:8px 0;">{{.BookingID}}</td></tr>
 </table>
-<p style="margin:24px 0"><a href="{{.ETicketLink}}" style="background:#1a1a1a;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;display:inline-block">Open e-ticket</a></p>
-<p>Show the QR code on your e-ticket together with the holder's ID at the venue.</p>`,
-				"This ticket is bound to the holder's NIK and is not transferable."),
-			text: `Your e-ticket — {{.EventName}}
+<div style="background:#f3f4f6;border-radius:8px;padding:20px;margin:20px 0;">
+<table style="width:100%;border-collapse:collapse;font-size:14px;">
+<tr><td style="padding:6px 0;color:#6b7280;width:120px;">Category</td><td style="padding:6px 0;"><strong>{{.Category}}</strong></td></tr>
+<tr><td style="padding:6px 0;color:#6b7280;">Ticket number</td><td style="padding:6px 0;">{{.TicketID}}</td></tr>
+<tr><td style="padding:6px 0;color:#6b7280;">Holder NIK</td><td style="padding:6px 0;">{{.NIKMasked}}</td></tr>
+</table>
+</div>
+<p style="margin:24px 0;"><a href="{{.ETicketLink}}" style="background:#1a1a1a;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;display:inline-block;font-weight:500;">Open e-ticket</a></p>
+<p style="color:#6b7280;font-size:14px;">Bring ID matching the NIK on the ticket. Do not share the QR code with anyone except the ticket holder.</p>
+</div>
+<hr style="border:0;border-top:1px solid #e5e5e5;margin:24px 0;">
+<p style="font-size:12px;color:#6b7280;text-align:center;">See you in front of the stage.<br>Need help? Contact {{.SupportEmail}}<br>This email was sent automatically, please do not reply. © Rusuh Booking Tiket</p>
+</body>
+</html>`,
+			text: `Your e-ticket has been issued — {{.EventName}}
 
-{{.EventDate}}{{if .EventVenue}} · {{.EventVenue}}{{end}}
+Payment successful. Show the QR code at venue entry.
+
+Event: {{.EventName}}
+Date: {{.EventDate}}{{if .EventVenue}}
+Venue: {{.EventVenue}}{{end}}
+Booking code: {{.BookingID}}
+
+---
 Category: {{.Category}}
+Ticket number: {{.TicketID}}
 Holder NIK: {{.NIKMasked}}
-Ticket code: {{.TicketID}}
 
-Open your e-ticket: {{.ETicketLink}}
+Open e-ticket: {{.ETicketLink}}
 
-Show the QR code together with the holder's ID at the venue.`,
+Bring ID matching the NIK on the ticket. Do not share the QR code with anyone except the ticket holder.
+
+---
+See you in front of the stage.
+Need help? Contact {{.SupportEmail}}
+This email was sent automatically, please do not reply. © Rusuh Booking Tiket`,
 		},
 	},
 
 	events.TypeBookingExpired: {
 		events.LocaleID: {
-			subject: "Pesanan Anda kedaluwarsa — {{.EventName}}",
-			html: wrap(
-				`<h2 style="margin:0 0 16px;font-size:20px">Pesanan kedaluwarsa</h2>
-<p>Pembayaran untuk pesanan <strong>{{.BookingID}}</strong> ({{.EventName}}) tidak selesai dalam batas waktu, sehingga pesanan dibatalkan dan kursi dilepas kembali.</p>
-<p>Tidak ada dana yang terpotong. Anda dapat mencoba memesan kembali selama tiket masih tersedia.</p>`,
-				"Email ini dikirim otomatis."),
-			text: `Pesanan kedaluwarsa
+			subject: "Booking kamu kedaluwarsa — {{.EventName}}",
+			html: `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Booking kamu kedaluwarsa</title>
+</head>
+<body style="font-family:system-ui,-apple-system,sans-serif;line-height:1.6;color:#1a1a1a;max-width:560px;margin:0 auto;padding:24px;background:#f9fafb;">
+<div style="background:#fff;border-radius:8px;padding:32px;margin:16px 0;">
+<h2 style="margin:0 0 16px;font-size:20px;color:#111827;">Booking kamu kedaluwarsa</h2>
+<p>Pembayaran belum kami terima sampai batas waktu berakhir, jadi booking ini dibatalkan dan tiketnya dilepas kembali.</p>
+<table style="width:100%;border-collapse:collapse;margin:20px 0;font-size:14px;">
+<tr><td style="padding:8px 0;color:#6b7280;width:120px;">Kode booking</td><td style="padding:8px 0;"><strong>{{.BookingID}}</strong></td></tr>
+<tr><td style="padding:8px 0;color:#6b7280;">Event</td><td style="padding:8px 0;">{{.EventName}}</td></tr>
+</table>
+<p>Masih ingin hadir? Kamu bisa memesan lagi selama tiket masih tersedia.</p>
+<p style="margin:24px 0;"><a href="{{.EventLink}}" style="background:#1a1a1a;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;display:inline-block;font-weight:500;">Lihat event</a></p>
+</div>
+<hr style="border:0;border-top:1px solid #e5e5e5;margin:24px 0;">
+<p style="font-size:12px;color:#6b7280;text-align:center;">Sampai jumpa di depan panggung.<br>Butuh bantuan? Hubungi {{.SupportEmail}}<br>Email ini dikirim otomatis, mohon tidak membalas. © Rusuh Booking Tiket</p>
+</body>
+</html>`,
+			text: `Booking kamu kedaluwarsa — {{.EventName}}
 
-Pembayaran untuk pesanan {{.BookingID}} ({{.EventName}}) tidak selesai dalam
-batas waktu, sehingga pesanan dibatalkan dan kursi dilepas kembali.
+Batas waktu pembayaran untuk {{.EventName}} sudah lewat.
 
-Tidak ada dana yang terpotong.`,
+Pembayaran belum kami terima sampai batas waktu berakhir, jadi booking ini
+dibatalkan dan tiketnya dilepas kembali.
+
+Kode booking: {{.BookingID}}
+Event: {{.EventName}}
+
+Masih ingin hadir? Kamu bisa memesan lagi selama tiket masih tersedia.
+
+---
+Sampai jumpa di depan panggung.
+Butuh bantuan? Hubungi {{.SupportEmail}}
+Email ini dikirim otomatis, mohon tidak membalas. © Rusuh Booking Tiket`,
 		},
 		events.LocaleEN: {
 			subject: "Your booking expired — {{.EventName}}",
-			html: wrap(
-				`<h2 style="margin:0 0 16px;font-size:20px">Booking expired</h2>
-<p>Payment for booking <strong>{{.BookingID}}</strong> ({{.EventName}}) was not completed in time, so the booking was cancelled and the seats released.</p>
-<p>You have not been charged. You can book again while tickets remain.</p>`,
-				"This is an automated message."),
-			text: `Booking expired
+			html: `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Your booking expired</title>
+</head>
+<body style="font-family:system-ui,-apple-system,sans-serif;line-height:1.6;color:#1a1a1a;max-width:560px;margin:0 auto;padding:24px;background:#f9fafb;">
+<div style="background:#fff;border-radius:8px;padding:32px;margin:16px 0;">
+<h2 style="margin:0 0 16px;font-size:20px;color:#111827;">Your booking expired</h2>
+<p>We did not receive payment before the deadline, so this booking was cancelled and the tickets released.</p>
+<table style="width:100%;border-collapse:collapse;margin:20px 0;font-size:14px;">
+<tr><td style="padding:8px 0;color:#6b7280;width:120px;">Booking code</td><td style="padding:8px 0;"><strong>{{.BookingID}}</strong></td></tr>
+<tr><td style="padding:8px 0;color:#6b7280;">Event</td><td style="padding:8px 0;">{{.EventName}}</td></tr>
+</table>
+<p>Still want to attend? You can book again while tickets are available.</p>
+<p style="margin:24px 0;"><a href="{{.EventLink}}" style="background:#1a1a1a;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;display:inline-block;font-weight:500;">View event</a></p>
+</div>
+<hr style="border:0;border-top:1px solid #e5e5e5;margin:24px 0;">
+<p style="font-size:12px;color:#6b7280;text-align:center;">See you in front of the stage.<br>Need help? Contact {{.SupportEmail}}<br>This email was sent automatically, please do not reply. © Rusuh Booking Tiket</p>
+</body>
+</html>`,
+			text: `Your booking expired — {{.EventName}}
 
-Payment for booking {{.BookingID}} ({{.EventName}}) was not completed in time,
-so the booking was cancelled and the seats released.
+Payment deadline for {{.EventName}} has passed.
 
-You have not been charged.`,
+We did not receive payment before the deadline, so this booking was cancelled
+and the tickets released.
+
+Booking code: {{.BookingID}}
+Event: {{.EventName}}
+
+Still want to attend? You can book again while tickets are available.
+
+---
+See you in front of the stage.
+Need help? Contact {{.SupportEmail}}
+This email was sent automatically, please do not reply. © Rusuh Booking Tiket`,
 		},
 	},
 
@@ -186,8 +379,16 @@ You have not been charged.`,
 	events.TypePaymentFailedNotice: {
 		events.LocaleID: {
 			subject: "Pembayaran tidak berhasil — {{.EventName}}",
-			html: wrap(
-				`<h2 style="margin:0 0 16px;font-size:20px">Pembayaran tidak berhasil</h2>
+			html: `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pembayaran tidak berhasil</title>
+</head>
+<body style="font-family:system-ui,-apple-system,sans-serif;line-height:1.6;color:#1a1a1a;max-width:560px;margin:0 auto;padding:24px;background:#f9fafb;">
+<div style="background:#fff;border-radius:8px;padding:32px;margin:16px 0;">
+<h2 style="margin:0 0 16px;font-size:20px;color:#111827;">Pembayaran tidak berhasil</h2>
 {{if .IsDisputed}}
 <p>Kami menerima pembayaran Anda untuk pesanan <strong>{{.BookingID}}</strong> ({{.EventName}}), tetapi pembayaran itu tiba setelah batas waktu dan pesanan sudah dibatalkan.</p>
 <p><strong>Dana Anda{{if .AmountText}} sebesar {{.AmountText}}{{end}} telah diterima dan pengembalian dana sedang diproses.</strong> Tim kami akan menghubungi Anda bila diperlukan informasi tambahan.</p>
@@ -198,8 +399,12 @@ You have not been charged.`,
 <p>Pembayaran untuk pesanan <strong>{{.BookingID}}</strong> ({{.EventName}}) ditolak oleh penyedia pembayaran, sehingga pesanan dibatalkan.</p>
 <p>Tidak ada dana yang terpotong. Anda dapat mencoba lagi dengan metode pembayaran lain selama tiket masih tersedia.</p>
 {{end}}
-{{if .OrderID}}<p style="font-size:13px;color:#6b7280">Nomor referensi: {{.OrderID}}</p>{{end}}`,
-				"Email ini dikirim otomatis."),
+{{if .OrderID}}<p style="font-size:13px;color:#6b7280;margin-top:16px;">Nomor referensi: {{.OrderID}}</p>{{end}}
+</div>
+<hr style="border:0;border-top:1px solid #e5e5e5;margin:24px 0;">
+<p style="font-size:12px;color:#6b7280;text-align:center;">Sampai jumpa di depan panggung.<br>Butuh bantuan? Hubungi {{.SupportEmail}}<br>Email ini dikirim otomatis, mohon tidak membalas. © Rusuh Booking Tiket</p>
+</body>
+</html>`,
 			text: `Pembayaran tidak berhasil — {{.EventName}}
 
 {{if .IsDisputed}}Kami menerima pembayaran Anda untuk pesanan {{.BookingID}}, tetapi
@@ -216,12 +421,25 @@ sehingga pesanan dibatalkan.
 
 Tidak ada dana yang terpotong.
 {{end}}{{if .OrderID}}
-Nomor referensi: {{.OrderID}}{{end}}`,
+Nomor referensi: {{.OrderID}}{{end}}
+
+---
+Sampai jumpa di depan panggung.
+Butuh bantuan? Hubungi {{.SupportEmail}}
+Email ini dikirim otomatis, mohon tidak membalas. © Rusuh Booking Tiket`,
 		},
 		events.LocaleEN: {
 			subject: "Payment unsuccessful — {{.EventName}}",
-			html: wrap(
-				`<h2 style="margin:0 0 16px;font-size:20px">Payment unsuccessful</h2>
+			html: `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Payment unsuccessful</title>
+</head>
+<body style="font-family:system-ui,-apple-system,sans-serif;line-height:1.6;color:#1a1a1a;max-width:560px;margin:0 auto;padding:24px;background:#f9fafb;">
+<div style="background:#fff;border-radius:8px;padding:32px;margin:16px 0;">
+<h2 style="margin:0 0 16px;font-size:20px;color:#111827;">Payment unsuccessful</h2>
 {{if .IsDisputed}}
 <p>We received your payment for booking <strong>{{.BookingID}}</strong> ({{.EventName}}), but it arrived after the deadline and the booking had already been cancelled.</p>
 <p><strong>Your funds{{if .AmountText}} of {{.AmountText}}{{end}} have been received and a refund is being processed.</strong> We will contact you if we need anything further.</p>
@@ -232,8 +450,12 @@ Nomor referensi: {{.OrderID}}{{end}}`,
 <p>Payment for booking <strong>{{.BookingID}}</strong> ({{.EventName}}) was declined by the payment provider, so the booking was cancelled.</p>
 <p>You have not been charged. You can try again with another payment method while tickets remain.</p>
 {{end}}
-{{if .OrderID}}<p style="font-size:13px;color:#6b7280">Reference: {{.OrderID}}</p>{{end}}`,
-				"This is an automated message."),
+{{if .OrderID}}<p style="font-size:13px;color:#6b7280;margin-top:16px;">Reference: {{.OrderID}}</p>{{end}}
+</div>
+<hr style="border:0;border-top:1px solid #e5e5e5;margin:24px 0;">
+<p style="font-size:12px;color:#6b7280;text-align:center;">See you in front of the stage.<br>Need help? Contact {{.SupportEmail}}<br>This email was sent automatically, please do not reply. © Rusuh Booking Tiket</p>
+</body>
+</html>`,
 			text: `Payment unsuccessful — {{.EventName}}
 
 {{if .IsDisputed}}We received your payment for booking {{.BookingID}}, but it arrived after
@@ -250,7 +472,12 @@ so the booking was cancelled.
 
 You have not been charged.
 {{end}}{{if .OrderID}}
-Reference: {{.OrderID}}{{end}}`,
+Reference: {{.OrderID}}{{end}}
+
+---
+See you in front of the stage.
+Need help? Contact {{.SupportEmail}}
+This email was sent automatically, please do not reply. © Rusuh Booking Tiket`,
 		},
 	},
 }

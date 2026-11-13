@@ -179,6 +179,6 @@ func (r *BookingRepository) enqueueFailureNotice(ctx context.Context, tx pgx.Tx,
 func (r *BookingRepository) enqueueExpiredNotice(ctx context.Context, tx pgx.Tx, b entity.Booking) error {
 	f := r.eventFacts(ctx, tx, b.EventID)
 	return r.enqueue(ctx, tx, b.ID, events.TypeBookingExpired, events.BookingExpiredPayload{
-		BookingID: b.ID, ContactEmail: b.ContactEmail, EventName: f.Name,
+		BookingID: b.ID, EventID: b.EventID, ContactEmail: b.ContactEmail, EventName: f.Name,
 	})
 }
