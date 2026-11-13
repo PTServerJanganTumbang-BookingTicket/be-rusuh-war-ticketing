@@ -285,8 +285,9 @@ Resources:
                   - ecr:*
                   - elasticloadbalancing:*
                 Resource: "*"
-              # Sale dashboard and alarms (infra/observability). Scoped by the rusuh- name prefix: dashboards, alarms
-              # and the alarm topic (with its subscriptions) are all named rusuh-{env}-*.
+              # Sale and API dashboards and alarms (infra/observability). Scoped by the rusuh- name prefix: dashboards,
+              # alarms and the alarm topic (with its subscriptions) are all named rusuh-{env}-*. The action list is
+              # what the CloudFormation handlers of these resource types call (aws cloudformation describe-type).
               - Sid: Observability
                 Effect: Allow
                 Action:
@@ -301,6 +302,8 @@ Resources:
                   - cloudwatch:ListTagsForResource
                   - sns:CreateTopic
                   - sns:DeleteTopic
+                  - sns:GetDataProtectionPolicy
+                  - sns:PutDataProtectionPolicy
                   - sns:GetTopicAttributes
                   - sns:SetTopicAttributes
                   - sns:TagResource
@@ -309,11 +312,20 @@ Resources:
                   - sns:Subscribe
                   - sns:Unsubscribe
                   - sns:GetSubscriptionAttributes
+                  - sns:SetSubscriptionAttributes
                   - sns:ListSubscriptionsByTopic
                 Resource:
                   - !Sub arn:${AWS::Partition}:cloudwatch::${AWS::AccountId}:dashboard/rusuh-*
                   - !Sub arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:rusuh-*
                   - !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:rusuh-*
+              # The list calls the CloudFormation handlers make take no resource ARN.
+              - Sid: ObservabilityList
+                Effect: Allow
+                Action:
+                  - cloudwatch:ListDashboards
+                  - sns:ListTopics
+                  - sns:ListSubscriptions
+                Resource: "*"
               - Sid: Foundation
                 Effect: Allow
                 Action:
