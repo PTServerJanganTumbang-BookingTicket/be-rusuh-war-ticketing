@@ -267,7 +267,7 @@ func (r *BookingRepository) insertChargeEvent(ctx context.Context, tx pgx.Tx, bo
 		`INSERT INTO payment_events
             (id, booking_id, order_id, gateway_event_id, transaction_status, fraud_status,
              payment_type, gross_amount, raw)
-          VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), NULLIF($7, ''), NULL, $8)
+          VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), NULLIF($7, ''), 0, $8)
           ON CONFLICT (gateway_event_id) DO NOTHING`,
 		r.newID(), bookingID, orderID, chargeEventID(orderID, res.StatusCode),
 		res.TransactionStatus, res.FraudStatus, "", payload)
