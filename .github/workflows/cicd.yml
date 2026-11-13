@@ -874,7 +874,6 @@ jobs:
             DeployRevision=${{ github.sha }}
             DevicePepperSecretArn=${{ vars.DEVICE_PEPPER_SECRET_ARN }}
             TurnstileSecretArn=${{ vars.TURNSTILE_SECRET_ARN }}
-            CookieDomain=${{ vars.COOKIE_DOMAIN }}
             SseBaseUrl=${{ vars.SSE_BASE_URL }}
             CaptchaProvider=${{ vars.CAPTCHA_PROVIDER || 'mock' }}
             QueueCapacity=${{ vars.QUEUE_CAPACITY || '300000' }}

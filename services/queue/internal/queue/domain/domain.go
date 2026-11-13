@@ -58,6 +58,16 @@ type Booking struct {
 	Status string
 }
 
+// Ended reports a booking that is over: the place behind it is never given back on join, the caller gets a new
+// place at the back of the line instead (ADR-006 §8.21). CONFIRMED is over too: paying may lead to buying again.
+func (b Booking) Ended() bool {
+	switch b.Status {
+	case "LAPSED", "EXPIRED", "ABANDONED", "CONFIRMED":
+		return true
+	}
+	return false
+}
+
 // BookingDetail is the part of a bookings row /queue/me needs to describe where the customer is.
 type BookingDetail struct {
 	ID               string
@@ -126,6 +136,7 @@ const (
 	MetricCaptchaMisconfigured = "CaptchaMisconfigured"
 	MetricBR07Recovered        = "Br07JoinRecovered"
 	MetricJoinRepaired         = "JoinRepaired"
+	MetricJoinAfterEnded       = "JoinAfterEnded"       // a rejoin found an ended booking and got a new place (ADR-006 §8.21)
 	MetricDeviceMismatch       = "DeviceMismatch"       // a guest token presented from another device
 	MetricLostGrant            = "LostGrant"            // a place that was admitted but has no grant or booking
 	MetricTokenAccountMismatch = "TokenAccountMismatch" // an account's token presented by another account or a guest

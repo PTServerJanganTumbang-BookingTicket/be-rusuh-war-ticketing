@@ -1,4 +1,5 @@
 # 2026-11-13: queue_token cookie removed (Erma approved editing this frozen file); clients send X-Queue-Token.
+# 2026-11-13: an ended place gives a new place on join (ADR-006 §8.21, Erma approved editing this frozen file).
 @step-4 @queue-service @join @BR-07 @BR-09
 Feature: If I come back, I get my place back, not a second one
   Two ways back (contract §3.1): BR-09 I bring my queue_token (X-Queue-Token);
@@ -104,9 +105,17 @@ Feature: If I come back, I get my place back, not a second one
     And data has rejoined true, state "QUEUED" and ticket_no 40000
 
   @integration @redis-cluster
-  Scenario: If my booking lapsed, I am told so, not given a new place
-    # LAPSED is final (no second chance).
-    Given account "acc-1" had booking status "LAPSED" for "E1"
+  Scenario Outline: If my booking has ended, I get a new place at the back
+    # ADR-006 §8.21: an ended place is never given back; the old number is not granted again.
+    Given account "acc-1" had booking status "<status>" for "E1"
     When account "acc-1" joins "E1" again with captcha "cap-ok"
-    Then data has rejoined true and state "LAPSED"
-    And queue:{E1} issued is still 40000
+    Then the response is a normal new join for "E1"
+    And queue:{E1} issued is 40001
+    And acct:{E1}:acc-1 now points to the new queue_token
+
+    Examples:
+      | status    |
+      | LAPSED    |
+      | EXPIRED   |
+      | ABANDONED |
+      | CONFIRMED |
