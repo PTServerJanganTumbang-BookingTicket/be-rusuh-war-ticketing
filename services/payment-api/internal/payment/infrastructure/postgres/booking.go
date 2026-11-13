@@ -178,7 +178,7 @@ func (r *BookingRepository) Initiate(ctx context.Context, in portout.InitiateInp
               WHERE id = $1 AND status = 'HELD'`, b.ID); err != nil {
 			return portout.InitiateOutcome{}, wrapDB(err, "could not record decline")
 		}
-		if err := r.insertChargeEvent(ctx, tx, b.ID, orderID, res); err != nil {
+		if err := r.insertChargeEvent(ctx, tx, b.ID, orderID, total, res); err != nil {
 			return portout.InitiateOutcome{}, err
 		}
 		if err := tx.Commit(ctx); err != nil {
@@ -226,7 +226,7 @@ func (r *BookingRepository) Initiate(ctx context.Context, in portout.InitiateInp
 		b.ID, orderID, in.Method, total, res.TransactionStatus, instructions); err != nil {
 		return portout.InitiateOutcome{}, wrapDB(err, "could not record charge")
 	}
-	if err := r.insertChargeEvent(ctx, tx, b.ID, orderID, res); err != nil {
+	if err := r.insertChargeEvent(ctx, tx, b.ID, orderID, total, res); err != nil {
 		return portout.InitiateOutcome{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -258,7 +258,7 @@ func (r *BookingRepository) bookingTotal(ctx context.Context, tx pgx.Tx, booking
 	return total, nil
 }
 
-func (r *BookingRepository) insertChargeEvent(ctx context.Context, tx pgx.Tx, bookingID, orderID string, res portout.ChargeResult) error {
+func (r *BookingRepository) insertChargeEvent(ctx context.Context, tx pgx.Tx, bookingID, orderID string, grossAmount int64, res portout.ChargeResult) error {
 	payload, err := json.Marshal(storedCharge{Instructions: res.Instructions, Gateway: res.Raw})
 	if err != nil {
 		return wrapDB(err, "could not encode charge")
@@ -267,10 +267,10 @@ func (r *BookingRepository) insertChargeEvent(ctx context.Context, tx pgx.Tx, bo
 		`INSERT INTO payment_events
             (id, booking_id, order_id, gateway_event_id, transaction_status, fraud_status,
              payment_type, gross_amount, raw)
-          VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), NULLIF($7, ''), 0, $8)
+          VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), NULLIF($7, ''), $8, $9)
           ON CONFLICT (gateway_event_id) DO NOTHING`,
 		r.newID(), bookingID, orderID, chargeEventID(orderID, res.StatusCode),
-		res.TransactionStatus, res.FraudStatus, "", payload)
+		res.TransactionStatus, res.FraudStatus, "", grossAmount, payload)
 	if err != nil {
 		return wrapDB(err, "could not record charge event")
 	}
