@@ -88,7 +88,7 @@ func (t *Tick) expireHeld(ctx context.Context, now time.Time) int {
 		return 0
 	}
 	for _, h := range ended {
-		t.metrics.Inc(MetricHeldExpired)
+		t.metrics.IncEvent(MetricHeldExpired, h.EventID)
 		if len(h.Seats) == 0 && len(h.NIKs) > 0 {
 			// Claims without seats: the release needs the categories, so these NIK locks would stay until their TTL.
 			// The hold transaction never writes this; count it rather than skip it silently.
@@ -133,7 +133,7 @@ func (t *Tick) end(ctx context.Context, what, metric string, now time.Time,
 		return 0
 	}
 	for _, b := range ended {
-		t.metrics.Inc(metric)
+		t.metrics.IncEvent(metric, b.EventID)
 		t.dropGrant(ctx, what, b)
 	}
 	return len(ended)

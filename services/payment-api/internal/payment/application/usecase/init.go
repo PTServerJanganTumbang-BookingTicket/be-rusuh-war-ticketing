@@ -40,6 +40,7 @@ type PaymentUsecase struct {
 	breaker     portout.ICircuitBreaker
 	credentials portout.ICredentialStore
 	switches    portout.IMethodSwitches
+	metrics     portout.IMetrics
 	cfg         Config
 
 	// holds releases stock and NIK locks on expire. Wired with WithHolds; if
@@ -65,14 +66,19 @@ func New(
 	breaker portout.ICircuitBreaker,
 	credentials portout.ICredentialStore,
 	switches portout.IMethodSwitches,
+	metrics portout.IMetrics,
 	cfg Config,
 ) portin.IPaymentUsecase {
+	if metrics == nil {
+		metrics = noMetrics{}
+	}
 	return &PaymentUsecase{
 		bookings:    bookings,
 		gateway:     gateway,
 		breaker:     breaker,
 		credentials: credentials,
 		switches:    switches,
+		metrics:     metrics,
 		cfg:         cfg,
 		now:         func() time.Time { return time.Now().UTC() },
 	}
@@ -105,3 +111,17 @@ func (u *PaymentUsecase) disabledMethods(ctx context.Context) entity.Disabled {
 	}
 	return off
 }
+
+// Metric names (docs/metrics.md §5). The per-event ones carry the booking's event.
+const (
+	MetricBookingsConfirmed      = "BookingsConfirmed"      // settlement applied: CONFIRMED (FR-34 numerator)
+	MetricBookingsPaymentExpired = "BookingsPaymentExpired" // Midtrans expire applied: EXPIRED (FR-35)
+	MetricLateSettlement         = "LateSettlement"         // money after expiry: disputed, an operator refunds (FR-36)
+	MetricMidtransErrors         = "MidtransErrors"         // a charge or cancel call that failed or timed out
+)
+
+// noMetrics is used when no metrics sink is wired (tests that do not look at metrics).
+type noMetrics struct{}
+
+func (noMetrics) Incr(string)              {}
+func (noMetrics) IncrEvent(string, string) {}

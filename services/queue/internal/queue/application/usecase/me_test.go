@@ -69,6 +69,7 @@ type countMetrics struct{ counts map[string]int }
 
 func (m *countMetrics) Incr(n string)          { m.counts[n]++ }
 func (m *countMetrics) Record(string, float64) {}
+func (m *countMetrics) IncrEvent(n, _ string)  { m.counts[n]++ }
 
 type meTokens struct{ subject string }
 

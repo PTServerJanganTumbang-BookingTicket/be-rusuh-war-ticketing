@@ -60,7 +60,8 @@ func (stubReader) Get(_ context.Context, _ grantauth.Grant, id string) (usecase.
 
 type nilMetrics struct{}
 
-func (nilMetrics) Incr(string) {}
+func (nilMetrics) Incr(string)              {}
+func (nilMetrics) IncrEvent(string, string) {}
 
 func createHandler(o *stubOrders) *CreateBooking {
 	uc := usecase.NewCreateBooking(usecase.CreateBookingDeps{

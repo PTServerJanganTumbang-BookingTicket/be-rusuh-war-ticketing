@@ -131,6 +131,7 @@ const (
 
 // Metric names.
 const (
+	MetricQueueJoined          = "QueueJoined" // a new place in the line (per event; the FR-34 denominator)
 	MetricRateLimitFailOpen    = "RateLimitFailOpen"
 	MetricCaptchaFailOpen      = "CaptchaFailOpenSeconds"
 	MetricCaptchaMisconfigured = "CaptchaMisconfigured"

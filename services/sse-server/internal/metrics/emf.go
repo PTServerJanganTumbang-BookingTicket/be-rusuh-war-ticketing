@@ -44,8 +44,9 @@ func (e *EMF) write(name, event string, value float64, unit string) {
 	dims := [][]string{{}}
 	line := map[string]any{name: value}
 	if event != "" {
-		dims = [][]string{{"Event"}}
-		line["Event"] = event
+		// Per event and in the all-events total (docs/metrics.md §3): the heartbeat alarm watches the total.
+		dims = [][]string{{"EventId"}, {}}
+		line["EventId"] = event
 	}
 	line["_aws"] = map[string]any{
 		"Timestamp": e.now().UnixMilli(),

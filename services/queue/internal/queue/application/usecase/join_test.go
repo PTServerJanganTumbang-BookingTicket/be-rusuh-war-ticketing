@@ -61,8 +61,9 @@ func (s faultyStore) AddToLine(ctx context.Context, ev rediskeys.Event, qt strin
 
 type nopMetrics struct{}
 
-func (nopMetrics) Incr(string)            {}
-func (nopMetrics) Record(string, float64) {}
+func (nopMetrics) Incr(string)              {}
+func (nopMetrics) Record(string, float64)   {}
+func (nopMetrics) IncrEvent(string, string) {}
 
 func setup(t *testing.T, failOn string) (*usecase.Join, *goredis.Client, string) {
 	t.Helper()

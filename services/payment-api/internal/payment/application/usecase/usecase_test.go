@@ -185,6 +185,7 @@ type harness struct {
 	brk   *fakeBreaker
 	creds *fakeCredentials
 	sw    *fakeSwitches
+	met   *fakeMetrics
 	cfg   Config
 }
 
@@ -196,12 +197,13 @@ func newHarness(t *testing.T, mutate ...func(*harness)) *harness {
 		brk:   &fakeBreaker{},
 		creds: &fakeCredentials{},
 		sw:    &fakeSwitches{},
+		met:   &fakeMetrics{counts: map[string]int{}},
 		cfg:   testConfig(),
 	}
 	for _, m := range mutate {
 		m(h)
 	}
-	uc := New(h.repo, h.gw, h.brk, h.creds, h.sw, h.cfg).(*PaymentUsecase)
+	uc := New(h.repo, h.gw, h.brk, h.creds, h.sw, h.met, h.cfg).(*PaymentUsecase)
 	uc.now = func() time.Time { return fixedNow }
 	h.uc = uc
 	return h
@@ -222,3 +224,9 @@ func heldBooking(status entity.BookingStatus) entity.Booking {
 		GrantToken:       "grant-abc",
 	}
 }
+
+// fakeMetrics counts by name and, for per-event metrics, by "name/eventID".
+type fakeMetrics struct{ counts map[string]int }
+
+func (m *fakeMetrics) Incr(n string)          { m.counts[n]++ }
+func (m *fakeMetrics) IncrEvent(n, ev string) { m.counts[n+"/"+ev]++ }

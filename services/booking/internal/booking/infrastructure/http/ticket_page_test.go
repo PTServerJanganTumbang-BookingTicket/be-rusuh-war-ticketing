@@ -46,7 +46,8 @@ func (noSessions) Verify(string) (token.Claims, error) { return token.Claims{}, 
 
 type noMetrics struct{}
 
-func (noMetrics) Incr(string) {}
+func (noMetrics) Incr(string)              {}
+func (noMetrics) IncrEvent(string, string) {}
 
 // The handler behind the real middleware: what a client sees for a valid guest grant.
 func TestTheTicketPageAnswersInTheContractEnvelope(t *testing.T) {

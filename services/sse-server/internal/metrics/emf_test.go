@@ -32,11 +32,11 @@ func TestEMF_linesAreCloudWatchMetrics(t *testing.T) {
 	if err := json.Unmarshal(lines[1], &m); err != nil {
 		t.Fatal(err)
 	}
-	if m["CtlHeartbeatAge"] != 12.0 || m["Event"] != "E1" {
+	if m["CtlHeartbeatAge"] != 12.0 || m["EventId"] != "E1" {
 		t.Errorf("gauge line = %v", m)
 	}
 	cw := m["_aws"].(map[string]any)["CloudWatchMetrics"].([]any)[0].(map[string]any)
-	if cw["Namespace"] != Namespace || cw["Dimensions"].([]any)[0].([]any)[0] != "Event" {
+	if cw["Namespace"] != Namespace || cw["Dimensions"].([]any)[0].([]any)[0] != "EventId" || len(cw["Dimensions"].([]any)) != 2 {
 		t.Errorf("CloudWatchMetrics = %v", cw)
 	}
 	if err := json.Unmarshal(lines[2], &m); err != nil || m["_aws"].(map[string]any)["CloudWatchMetrics"].([]any)[0].(map[string]any)["Metrics"].([]any)[0].(map[string]any)["Unit"] != "Seconds" {

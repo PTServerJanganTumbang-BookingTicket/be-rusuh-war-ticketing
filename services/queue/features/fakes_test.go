@@ -32,6 +32,8 @@ func (m *fakeMetrics) Incr(name string) {
 	m.counts[name]++
 }
 
+func (m *fakeMetrics) IncrEvent(name, _ string) { m.Incr(name) }
+
 func (m *fakeMetrics) Record(name string, v float64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

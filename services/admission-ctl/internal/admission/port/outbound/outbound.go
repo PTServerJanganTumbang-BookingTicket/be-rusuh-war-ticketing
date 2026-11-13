@@ -105,8 +105,11 @@ type PaymentReconciler interface {
 // Clock is the time source (frozen in tests).
 type Clock interface{ Now() time.Time }
 
-// Metrics counts events and raises alerts by name (CountFailures, TickOverrun, ...).
+// Metrics counts events and raises alerts by name (CountFailures, TickOverrun, ...). The *Event variants are for
+// metrics that belong to one event (QueueDepth, Granted, ...): they are kept per event and in the all-events total.
 type Metrics interface {
 	Inc(name string)
 	Gauge(name string, value float64)
+	IncEvent(name, eventID string)
+	GaugeEvent(name, eventID string, value float64)
 }

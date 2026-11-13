@@ -83,3 +83,20 @@ func (t *Tick) publish(ctx context.Context, msg any, send func(context.Context, 
 	}
 	return nil
 }
+
+// writeGauges reports where one event's queue stands as read by this tick's SNAPSHOT, at most once per Heartbeat:
+// CloudWatch keeps one-minute points anyway, and writing them every 500 ms tick would only add log lines. Every gauge
+// carries the event, so each sale has its own series; the all-events series EMF also fills mixes them and is not read
+// for gauges (the dashboard sums the per-event series). Queue depth comes from the two counters, never from
+// counting the sorted set (ZCARD). The rate is the one the last tick published.
+func (t *Tick) writeGauges(eventID string, st *eventState, nowServing, issued int64) {
+	now := t.clock.Now()
+	if !st.gaugesAt.IsZero() && now.Sub(st.gaugesAt) < t.cfg.Heartbeat {
+		return
+	}
+	t.metrics.GaugeEvent(GaugeQueueDepth, eventID, float64(max(issued-nowServing, 0)))
+	t.metrics.GaugeEvent(GaugeNowServing, eventID, float64(nowServing))
+	t.metrics.GaugeEvent(GaugeIssued, eventID, float64(issued))
+	t.metrics.GaugeEvent(GaugeRatePerMin, eventID, float64(st.writtenRate))
+	st.gaugesAt = now
+}
