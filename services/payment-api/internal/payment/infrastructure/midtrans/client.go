@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/payment-api/internal/payment/domain/entity"
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/payment-api/internal/payment/domain/valueobject"
 	portout "github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/payment-api/internal/payment/port/outbound"
 )
 
@@ -26,12 +27,6 @@ import (
 // Lambda image without zoneinfo would silently fall back to UTC and shift
 // every custom_expiry by seven hours.
 var wib = time.FixedZone("WIB", 7*60*60)
-
-// midtransTimeLayout is how Midtrans writes every timestamp it sends:
-// no zone marker, WIB implied. Declared here rather than imported from
-// domain/dto, which owns the same layout for notifications, so this adapter
-// stays independent of the domain packages.
-const midtransTimeLayout = "2006-01-02 15:04:05"
 
 // Client talks to Midtrans Core API.
 type Client struct {
@@ -95,7 +90,13 @@ type chargeResponse struct {
 	OrderID           string `json:"order_id"`
 	PaymentType       string `json:"payment_type"`
 	GrossAmount       string `json:"gross_amount"`
-	VANumbers         []struct {
+	// SettlementTime is when the money moved, in WIB. Present on settlement
+	// and refund notifications, absent on pending.
+	SettlementTime string `json:"settlement_time"`
+	// TransactionTime is when the transaction was created, in WIB. Always
+	// present; falls back for paid_at when settlement_time is missing.
+	TransactionTime string `json:"transaction_time"`
+	VANumbers       []struct {
 		Bank     string `json:"bank"`
 		VANumber string `json:"va_number"`
 	} `json:"va_numbers"`
@@ -168,7 +169,7 @@ func (c *Client) Charge(ctx context.Context, req portout.ChargeRequest) (portout
 	// charge: the instrument exists and the customer can pay it, so refusing
 	// here would throw away a live payment over a reporting discrepancy.
 	if res.ExpiryTime != "" {
-		if got, perr := time.ParseInLocation(midtransTimeLayout, res.ExpiryTime, wib); perr == nil {
+		if got, perr := time.ParseInLocation(valueobject.MidtransTimeLayout, res.ExpiryTime, wib); perr == nil {
 			out.GatewayExpiry = &got
 			want := req.HeldAt.Add(time.Duration(req.ExpirySeconds) * time.Second)
 			if drift := got.Sub(want); drift > gatewayExpiryTolerance || drift < -gatewayExpiryTolerance {
@@ -247,6 +248,8 @@ func (c *Client) Status(ctx context.Context, orderID string) (portout.StatusResu
 		FraudStatus:       res.FraudStatus,
 		StatusCode:        res.StatusCode,
 		GrossAmount:       res.GrossAmount,
+		SettlementTime:    res.SettlementTime,
+		TransactionTime:   res.TransactionTime,
 		Raw:               raw,
 	}, nil
 }

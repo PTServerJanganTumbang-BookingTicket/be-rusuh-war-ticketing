@@ -133,6 +133,18 @@ type NotificationOutcome struct {
 	QueueToken string
 	AccountID  string
 	EventID    string
+
+	// Seats and NIKs are populated only when Applied is true AND the action
+	// releases stock (ActionExpire). They carry the data needed for the Redis
+	// release that follows the database commit.
+	Seats []SeatCount
+	NIKs  []string
+}
+
+// SeatCount is one category's seat total released by an expired booking.
+type SeatCount struct {
+	CategoryID string
+	Qty        int64
 }
 
 // IBookingRepository owns every payment write.
@@ -179,4 +191,35 @@ type SettleInput struct {
 	QueueToken   string
 	AccountID    string
 	TombstoneTTL time.Duration
+}
+
+// IHolds releases expired bookings' stock and NIK locks back to Redis.
+//
+// The webhook and the sweep both call this after the database commit that ends
+// a booking. Calling it before the commit risks releasing seats for a booking
+// whose expiry then rolls back; calling it twice double-credits inventory.
+type IHolds interface {
+	// Release adds the held seats back to stock and deletes the NIK locks.
+	// stockMissing counts categories whose stock key was gone (not recreated;
+	// stock reconciliation restores them).
+	Release(ctx context.Context, eventID string, seats []SeatCount, niks []string) (stockMissing int, err error)
+}
+
+// AwaitingCandidate is one AWAITING_PAYMENT booking past its grace window,
+// returned by DueAwaitingPayment for the sweep to poll.
+type AwaitingCandidate struct {
+	ID               string
+	PaymentRef       string
+	PaymentExpiresAt time.Time
+}
+
+// ISweepRepository extends IBookingRepository with sweep-specific queries.
+type ISweepRepository interface {
+	IBookingRepository
+
+	// DueAwaitingPayment returns AWAITING_PAYMENT bookings whose
+	// payment_expires_at is older than (now - grace), ordered by deadline
+	// ascending. Empty payment_ref bookings are included so the caller can
+	// count and skip them.
+	DueAwaitingPayment(ctx context.Context, now time.Time, graceSeconds, limit int) ([]AwaitingCandidate, error)
 }

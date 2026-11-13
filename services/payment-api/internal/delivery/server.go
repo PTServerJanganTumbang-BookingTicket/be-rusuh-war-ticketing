@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/aws/aws-lambda-go/events"
+	"github.com/awslabs/aws-lambda-go-api-proxy/httpadapter"
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
 
@@ -22,6 +24,7 @@ import (
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/payment-api/internal/payment/infrastructure/midtrans"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/payment-api/internal/payment/infrastructure/postgres"
 	paymentredis "github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/payment-api/internal/payment/infrastructure/redis"
+	portout "github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/payment-api/internal/payment/port/outbound"
 )
 
 // Server holds the wired dependencies.
@@ -29,7 +32,10 @@ type Server struct {
 	// Handler is the mux, named to match the other services so cmd/ stays
 	// interchangeable between them.
 	Handler http.Handler
-	close   func()
+	// events is the Lambda event handler, supporting both API Gateway and
+	// internal ops like sweep_awaiting_payment.
+	events *EventHandler
+	close  func()
 }
 
 // Close releases the pools.
@@ -37,6 +43,12 @@ func (s *Server) Close() {
 	if s.close != nil {
 		s.close()
 	}
+}
+
+// Events returns the Lambda event handler that routes both API Gateway
+// requests and internal operations.
+func (s *Server) Events() *EventHandler {
+	return s.events
 }
 
 // New wires everything and returns a ready mux.
@@ -64,6 +76,7 @@ func newMux(pool *pgxpool.Pool, rdb *goredis.Client, cfg paymentcfg.Config) (*Se
 	gateway := midtrans.New(cfg.Midtrans.BaseURL, cfg.Midtrans.ServerKey, cfg.Midtrans.Timeout)
 	breaker := paymentredis.NewCircuitBreaker(rdb, cfg.Midtrans.BreakerThreshold, cfg.Midtrans.BreakerOpenFor)
 	credentials := paymentredis.NewCredentialStore(rdb)
+	holds := paymentredis.NewHolds(rdb)
 	// Cached, because §5.1 is on the path of every customer on the payment
 	// page. The TTL is how long a switch takes to bite: seconds, because the
 	// lever exists to replace a fifteen-minute deploy, not to be synchronous.
@@ -76,6 +89,18 @@ func newMux(pool *pgxpool.Pool, rdb *goredis.Client, cfg paymentcfg.Config) (*Se
 		MaxPaymentAttempts:  cfg.Payment.MaxAttempts,
 		SettledTombstoneTTL: cfg.Payment.SettledTombstoneTTL,
 		SignatureSecretKey:  cfg.Midtrans.SignatureSecretKey,
+	}).(*usecase.PaymentUsecase).WithHolds(holds)
+
+	// The sweep use case shares adapters with the payment use case but has its
+	// own configuration. The repo satisfies ISweepRepository because it
+	// implements DueAwaitingPayment (migration 0019).
+	sweepRepo := repo.(portout.ISweepRepository)
+	sweep := usecase.NewSweep(sweepRepo, gateway, breaker, credentials, holds, usecase.SweepConfig{
+		GraceSeconds:        cfg.Sweep.GraceSeconds,
+		BatchSize:           cfg.Sweep.BatchSize,
+		StuckMinutes:        cfg.Sweep.StuckMinutes,
+		MaxPaymentAttempts:  cfg.Payment.MaxAttempts,
+		SettledTombstoneTTL: cfg.Payment.SettledTombstoneTTL,
 	})
 
 	// Verify-only: payment-api never issues a session, so the TTL here is
@@ -113,12 +138,21 @@ func newMux(pool *pgxpool.Pool, rdb *goredis.Client, cfg paymentcfg.Config) (*Se
 	paymenthttp.RegisterRoutes(mux, paymenthttp.NewPayment(uc), sessionGuard)
 	paymenthttp.RegisterHandoffRoutes(mux, paymenthttp.NewHandoff(handoff), grantGuard)
 
-	return &Server{Handler: mux, close: func() {
-		if pool != nil {
-			pool.Close()
-		}
-		_ = rdb.Close()
-	}}, nil
+	// The HTTP adapter for API Gateway events — same format Lambda uses.
+	httpProxy := func(ctx context.Context, req events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
+		return httpadapter.NewV2(mux).ProxyWithContext(ctx, req)
+	}
+
+	return &Server{
+		Handler: mux,
+		events:  NewEventHandler(sweep, httpProxy),
+		close: func() {
+			if pool != nil {
+				pool.Close()
+			}
+			_ = rdb.Close()
+		},
+	}, nil
 }
 
 // newQRNonce mints tickets.qr_nonce.

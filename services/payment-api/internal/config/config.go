@@ -10,6 +10,7 @@ type Config struct {
 	Redis    Redis
 	Midtrans Midtrans
 	Payment  Payment
+	Sweep    Sweep
 }
 
 // App holds general application settings.
@@ -144,6 +145,25 @@ type Payment struct {
 	// in the service for state that changes a handful of times a year. Zero
 	// disables the cache, which is what a debugging session wants.
 	SwitchCacheTTL time.Duration
+}
+
+// Sweep holds the backstop sweep parameters.
+type Sweep struct {
+	// GraceSeconds is the delay after payment_expires_at before a booking
+	// becomes a sweep candidate. Non-zero to let in-flight webhooks land:
+	// a booking swept one second after its deadline may race with a payment
+	// that arrived on time. Defaults to 120s.
+	GraceSeconds int
+
+	// BatchSize caps how many candidates are processed per sweep invocation.
+	// Each candidate costs a Midtrans Status call, so the batch bounds the
+	// gateway load per tick. Defaults to 100.
+	BatchSize int
+
+	// StuckMinutes is the threshold for logging stuck AWAITING_PAYMENT
+	// bookings — those that have been due longer than this but were skipped
+	// because the gateway was unreachable. Defaults to 30.
+	StuckMinutes int
 }
 
 // IsLocal reports whether this is a local development run.

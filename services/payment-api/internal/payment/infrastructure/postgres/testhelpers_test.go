@@ -243,6 +243,25 @@ func (t *mockTx) execMatching(fragments ...string) []execCall {
 	return out
 }
 
+// queryMatching returns the recorded Query/QueryRow calls whose SQL contains
+// every one of the given fragments.
+func (t *mockTx) queryMatching(fragments ...string) []string {
+	var out []string
+	for _, sql := range t.queries {
+		all := true
+		for _, f := range fragments {
+			if !strings.Contains(sql, f) {
+				all = false
+				break
+			}
+		}
+		if all {
+			out = append(out, sql)
+		}
+	}
+	return out
+}
+
 // ── pool ──────────────────────────────────────────────────────────────────────
 
 type mockDB struct {

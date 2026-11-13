@@ -286,3 +286,69 @@ back on is an insert rather than a `DELETE`: the incident timeline survives.
 | 4 | **OPEN:** `MAX_PAYMENT_ATTEMPTS` (5) and `MIN_RETRY_REMAINING_SECONDS` (60) are product policy with no stated source. Confirm with the team before the sale. |
 | 5 | **OPEN:** The API Gateway resource policy that allowlists Midtrans's notification IPs (§5.5) is in neither template, and the webhook now arrives through the unified gateway, so the policy would belong on `infra/api-gateway/template.yaml` and would apply to every route on that API. Today the signature is the only authentication on the webhook — which is the authentication that matters, but the allowlist was specified and is missing. |
 | 6 | **OPEN:** `/admin/reconciliation/disputed` (§6.3, Apidog › Admin) is assigned to this service in `docs/README.md` but not implemented. It is the operator's half of the late-settlement path; without it a disputed payment is only discoverable in CloudWatch. Plan it as `08-admin/`. |
+
+## 11. AWAITING_PAYMENT backstop sweep
+
+When the webhook never arrives — Midtrans fails to call us, or the call is lost
+to a network partition — the booking stays `AWAITING_PAYMENT` indefinitely and
+its seats are frozen: the customer has paid but never gets tickets, or hasn't
+paid but keeps seats no one else can buy.
+
+The backstop sweep fixes this by polling Midtrans for the truth:
+
+```mermaid
+flowchart LR
+    CTL[admission-ctl<br/>tick + sweep] -->|lambda:InvokeFunction<br/>"sweep_awaiting_payment"| PAY[payment-api<br/>Lambda]
+    PAY -->|DueAwaitingPayment| DB[(Aurora<br/>bookings)]
+    PAY -->|Status per order| MID[Midtrans<br/>Core API]
+    PAY -->|ApplyNotification| DB
+    PAY -->|Release| RDS[(Redis<br/>stock + NIK)]
+```
+
+### 11.1 Query (migration 0019)
+
+```sql
+SELECT id, COALESCE(payment_ref, ''), payment_expires_at
+  FROM bookings
+ WHERE status = 'AWAITING_PAYMENT'
+   AND payment_expires_at < $1          -- now - grace
+ ORDER BY payment_expires_at
+ LIMIT $2
+```
+
+The partial index `bookings_awaiting_payment_deadline_idx` makes this an index
+scan. It is **separate** from the `0012_held_deadline_index` on purpose: two
+narrow indexes, each read by one query, beat one wide index read by two.
+
+### 11.2 Processing
+
+For each candidate, in order (the order is the design):
+
+1. Skip if `payment_ref` is empty (no order at Midtrans to poll — charge reconciler's job).
+2. `gateway.Status(ctx, payment_ref)` — poll Midtrans.
+3. **On error or open breaker: skip.** Never expire a booking on an unknown answer.
+4. `valueobject.Decide(status, fraud, booking.Status)` — the same decision table as the webhook.
+5. If `Decide` returns `ActionExpire`, call `gateway.Expire(order_id)` first, so Midtrans stops accepting.
+6. Feed through `ApplyNotification` with `GatewayEventID = {order_id}:poll:{status}:{status_code}`.
+7. Release Redis through the same path as the webhook when `out.Applied`.
+
+### 11.3 Metrics
+
+| Metric | Meaning |
+|---|---|
+| `AwaitingSweptExpired` | Bookings expired by the sweep (normal) |
+| `AwaitingSweptSettled` | **Alarm: non-zero means the webhook is broken.** Bookings confirmed by the sweep, not the webhook. |
+| `AwaitingSweepSkipped` | Bookings skipped: gateway unreachable, no `payment_ref`, or non-terminal decision |
+| `AwaitingSweepFailed` | The sweep invocation itself failed |
+
+### 11.4 Configuration
+
+| Variable | Default | Effect |
+|---|---|---|
+| `SWEEP_GRACE_SECONDS` | 120 | Delay after `payment_expires_at` before sweep considers the booking |
+| `SWEEP_BATCH_SIZE` | 100 | Max candidates per invocation (each costs a Midtrans round trip) |
+| `SWEEP_STUCK_MINUTES` | 30 | Threshold for logging stuck bookings |
+| `SWEEP_AWAITING_INTERVAL_SECONDS` (admission-ctl) | 60 | How often to invoke the sweep |
+| `PAYMENT_API_FUNCTION` (admission-ctl) | — | Lambda function name; empty disables the sweep |
+
+The grace window is **required** and must be positive: a booking swept one second after its deadline may race with a payment that arrived on time.

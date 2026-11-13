@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"errors"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5/pgconn"
 
@@ -32,6 +33,9 @@ func NewBookingRepository(db DBConn, newID func() string, newNonce func() (strin
 	return &BookingRepository{db: db, newID: newID, newNonce: newNonce}
 }
 
+// Compile-time proof the repository satisfies the sweep port.
+var _ portout.ISweepRepository = (*BookingRepository)(nil)
+
 // isUniqueViolation reports a 23505, which on payment_events means the
 // gateway_event_id was already stored — a redelivery.
 func isUniqueViolation(err error) bool {
@@ -40,10 +44,15 @@ func isUniqueViolation(err error) bool {
 }
 
 // wrapDB turns a driver error into something the HTTP layer can render without
-// leaking SQL state to the client.
+// leaking SQL state to the client. The original error is logged so that 500s
+// can be diagnosed from CloudWatch without exposing database internals in the
+// response.
 func wrapDB(err error, what string) error {
 	if err == nil {
 		return nil
 	}
+	slog.Error("database error",
+		slog.String("operation", what),
+		slog.Any("err", err))
 	return apperror.ErrInternal(what)
 }

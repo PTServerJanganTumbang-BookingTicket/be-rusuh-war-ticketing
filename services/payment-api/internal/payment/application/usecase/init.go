@@ -42,6 +42,11 @@ type PaymentUsecase struct {
 	switches    portout.IMethodSwitches
 	cfg         Config
 
+	// holds releases stock and NIK locks on expire. Wired with WithHolds; if
+	// nil, the expire path logs and continues — the webhook must not fail on a
+	// release error, and stock reconciliation repairs the keys.
+	holds portout.IHolds
+
 	// now is injectable so the TTL arithmetic is testable without sleeping.
 	now func() time.Time
 }
@@ -71,6 +76,15 @@ func New(
 		cfg:         cfg,
 		now:         func() time.Time { return time.Now().UTC() },
 	}
+}
+
+// WithHolds wires the Redis release adapter. Without it, the expire path logs
+// and continues — the webhook must not fail on a release error, and stock
+// reconciliation repairs the keys. With it, seats and NIK locks are returned
+// immediately on expire.
+func (u *PaymentUsecase) WithHolds(h portout.IHolds) *PaymentUsecase {
+	u.holds = h
+	return u
 }
 
 // disabledMethods reads the operator kill switch, treating an unreadable

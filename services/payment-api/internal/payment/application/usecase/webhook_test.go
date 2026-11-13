@@ -310,3 +310,105 @@ func TestParseGrossAmount(t *testing.T) {
 		assert.Equal(t, want, parseGrossAmount(in), in)
 	}
 }
+
+// ── expire/release tests (F3/F6) ─────────────────────────────────────────────
+
+func expireNotification() dto.Notification {
+	return signed(dto.Notification{
+		OrderID:           "RB-00912:1",
+		StatusCode:        "407",
+		GrossAmount:       "3000000.00",
+		TransactionStatus: "expire",
+		FraudStatus:       "accept",
+		PaymentType:       entity.MethodBankTransfer,
+		TransactionID:     "tx-1",
+	})
+}
+
+func TestHandleNotification_Expire_ReleasesTheHold(t *testing.T) {
+	h := newHarness(t)
+	fakeHolds := &fakeHoldsDouble{}
+	h.uc.(*PaymentUsecase).holds = fakeHolds
+
+	h.repo.notifyFn = func(context.Context, portout.NotificationInput) (portout.NotificationOutcome, error) {
+		return portout.NotificationOutcome{
+			Action:  valueobject.ActionExpire,
+			Applied: true,
+			EventID: "EV-1",
+			Seats:   []portout.SeatCount{{CategoryID: "CAT-A", Qty: 2}},
+			NIKs:    []string{"nik-hmac-1"},
+		}, nil
+	}
+
+	require.NoError(t, h.uc.HandleNotification(context.Background(), expireNotification()))
+
+	require.Equal(t, 1, fakeHolds.releaseCalls)
+	assert.Equal(t, "EV-1", fakeHolds.lastEventID)
+	assert.Equal(t, []portout.SeatCount{{CategoryID: "CAT-A", Qty: 2}}, fakeHolds.lastSeats)
+	assert.Equal(t, []string{"nik-hmac-1"}, fakeHolds.lastNIKs)
+}
+
+// A non-2xx makes Midtrans retry a notification already applied, and retrying
+// the release would double-credit inventory. So a release failure must not
+// fail the webhook.
+func TestHandleNotification_Expire_ReleaseFailure_StillAnswers200(t *testing.T) {
+	h := newHarness(t)
+	fakeHolds := &fakeHoldsDouble{
+		releaseFn: func(ctx context.Context, eventID string, seats []portout.SeatCount, niks []string) (int, error) {
+			return 0, errors.New("redis: connection refused")
+		},
+	}
+	h.uc.(*PaymentUsecase).holds = fakeHolds
+
+	h.repo.notifyFn = func(context.Context, portout.NotificationInput) (portout.NotificationOutcome, error) {
+		return portout.NotificationOutcome{
+			Action:  valueobject.ActionExpire,
+			Applied: true,
+			EventID: "EV-1",
+			Seats:   []portout.SeatCount{{CategoryID: "CAT-A", Qty: 2}},
+		}, nil
+	}
+
+	// The webhook should succeed even when Release fails
+	assert.NoError(t, h.uc.HandleNotification(context.Background(), expireNotification()))
+}
+
+func TestHandleNotification_Confirm_DoesNotRelease(t *testing.T) {
+	h := newHarness(t)
+	fakeHolds := &fakeHoldsDouble{}
+	h.uc.(*PaymentUsecase).holds = fakeHolds
+
+	h.repo.notifyFn = func(context.Context, portout.NotificationInput) (portout.NotificationOutcome, error) {
+		return portout.NotificationOutcome{
+			Action:     valueobject.ActionConfirm,
+			Applied:    true,
+			Booking:    heldBooking(entity.StatusConfirmed),
+			EventID:    "EV-1",
+			QueueToken: "qt-1",
+		}, nil
+	}
+
+	require.NoError(t, h.uc.HandleNotification(context.Background(), settlement()))
+
+	assert.Equal(t, 0, fakeHolds.releaseCalls, "confirm should not release holds")
+}
+
+// Test double for IHolds
+type fakeHoldsDouble struct {
+	releaseFn    func(ctx context.Context, eventID string, seats []portout.SeatCount, niks []string) (int, error)
+	releaseCalls int
+	lastEventID  string
+	lastSeats    []portout.SeatCount
+	lastNIKs     []string
+}
+
+func (h *fakeHoldsDouble) Release(ctx context.Context, eventID string, seats []portout.SeatCount, niks []string) (int, error) {
+	h.releaseCalls++
+	h.lastEventID = eventID
+	h.lastSeats = seats
+	h.lastNIKs = niks
+	if h.releaseFn != nil {
+		return h.releaseFn(ctx, eventID, seats, niks)
+	}
+	return 0, nil
+}
