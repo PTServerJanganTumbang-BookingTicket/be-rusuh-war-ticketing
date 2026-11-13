@@ -4,9 +4,11 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/alicebob/miniredis/v2"
+	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/queue/internal/config"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/queue/internal/queue/application/usecase"
@@ -35,6 +37,28 @@ func TestNew_wiresRoutesAndCloses(t *testing.T) {
 	srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/events/E1/queue/join", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("GET join = %d, want 405 (POST only)", rec.Code)
+	}
+}
+
+// /queue/serving reads Redis only, so it is mounted even when no database is wired (unlike /queue/me).
+func TestWireMountsServingWithoutADatabase(t *testing.T) {
+	mr := miniredis.RunT(t)
+	mr.HSet("queue:{E1}", "state", "OPEN", "now_serving", "7", "rate_per_min", "60")
+	rdb := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
+	srv, err := Wire(testConfig(mr.Addr()), Clients{Redis: rdb})
+	if err != nil {
+		t.Fatalf("Wire() = %v", err)
+	}
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/events/E1/queue/serving", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"now_serving":7`) {
+		t.Errorf("GET serving = %d %s", rec.Code, rec.Body)
+	}
+	rec = httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/events/E1/queue/me", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("GET me without a DB = %d, want 404 (not mounted)", rec.Code)
 	}
 }
 

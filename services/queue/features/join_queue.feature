@@ -1,6 +1,7 @@
+# 2026-11-13: queue_token cookie removed (Erma approved editing this frozen file); clients send X-Queue-Token.
 @step-4 @queue-service @join @FR-04 @NFR-05
 Feature: I join the queue and get a ticket number
-  I get the next number and a queue_token (in the body for mobile, in a cookie for web). queue_token = "qt_" + ULID.
+  I get the next number and a queue_token in the body; I send it back in X-Queue-Token. queue_token = "qt_" + ULID.
   Join writes only to Redis: no grant, no Lua, no publish, no Aurora (ADR-006 §4).
 
   Sources: api-contracts §3.1 · Apidog "Join Queue" · 01-join-queue.md · impl-plan §7.2
@@ -34,13 +35,10 @@ Feature: I join the queue and get a ticket number
     And meta has no "error_code"
 
   @unit
-  Scenario: My queue_token comes back in the body and in a cookie
-    Given COOKIE_DOMAIN is "my-rusuh.my.id"
+  Scenario: My queue_token comes back in the body only, never in a cookie
     When a guest with device id "dev-aaaaaaaaaaaaaaaa" joins "E1" with captcha "cap-ok"
     Then data.queue_token is a "qt_" token
-    And the response sets cookie "queue_token" to the same value as data.queue_token
-    And the cookie is HttpOnly, Secure, SameSite=Strict, Path=/events/E1 and Max-Age=21600
-    And the cookie Domain is "my-rusuh.my.id" (configurable via env COOKIE_DOMAIN)
+    And the response sets no cookie
 
   @integration @redis-cluster
   Scenario: Joining writes exactly these Redis keys
@@ -92,7 +90,7 @@ Feature: I join the queue and get a ticket number
   Scenario: Lambda and the local server answer identically
     When the join request goes through the API Gateway Lambda proxy adapter
     And the same request goes through the local HTTP server
-    Then both return the same status, body shape and Set-Cookie header
+    Then both return the same status and body shape, and neither sets a cookie
 
   @unit @security
   Scenario: My secrets never reach the logs

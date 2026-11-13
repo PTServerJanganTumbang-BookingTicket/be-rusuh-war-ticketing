@@ -4,7 +4,6 @@ package http
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net"
 	"net/http"
 	"net/url"
@@ -20,10 +19,8 @@ import (
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/queue/internal/queue/domain"
 )
 
-// CookieName is the web client's queue_token cookie.
-const CookieName = "queue_token"
-
-// HeaderQueueToken carries the queue_token on mobile (no cookie store).
+// HeaderQueueToken carries the queue_token on every client (web and mobile). The queue never sets or reads a cookie:
+// the token is in the response body and the client sends it back here.
 const HeaderQueueToken = "X-Queue-Token"
 
 // maxBody is far above {"captcha_token": "..."}; larger bodies are not parsed.
@@ -39,18 +36,22 @@ type MeGetter interface {
 	Get(ctx context.Context, in usecase.MeInput) (usecase.MeResult, error)
 }
 
+// ServingGetter is the GET /queue/serving use case.
+type ServingGetter interface {
+	Get(ctx context.Context, eventID string) (usecase.ServingResult, error)
+}
+
 // Options configures the handler.
 type Options struct {
-	CookieDomain string        // COOKIE_DOMAIN, e.g. my-rusuh.my.id (join on api.*, stream on events.*)
-	CookieMaxAge time.Duration // SALE_WINDOW_SECONDS
-	SSEBaseURL   string        // e.g. https://events.my-rusuh.my.id; "" = relative path
+	SSEBaseURL string // e.g. https://events.my-rusuh.my.id; "" = relative path
 }
 
 // Handler serves POST /events/{event_id}/queue/join.
 type Handler struct {
-	join Joiner
-	me   MeGetter
-	opt  Options
+	join    Joiner
+	me      MeGetter
+	serving ServingGetter
+	opt     Options
 }
 
 // NewHandler builds the handler.
@@ -59,11 +60,17 @@ func NewHandler(j Joiner, opt Options) *Handler { return &Handler{join: j, opt: 
 // WithMe adds GET /queue/me to the handler.
 func (h *Handler) WithMe(m MeGetter) *Handler { h.me = m; return h }
 
+// WithServing adds GET /queue/serving to the handler.
+func (h *Handler) WithServing(s ServingGetter) *Handler { h.serving = s; return h }
+
 // RegisterRoutes mounts the queue routes.
 func RegisterRoutes(mux *http.ServeMux, h *Handler) {
 	mux.HandleFunc("POST /events/{event_id}/queue/join", h.Join)
 	if h.me != nil {
 		mux.HandleFunc("GET /events/{event_id}/queue/me", h.Me)
+	}
+	if h.serving != nil {
+		mux.HandleFunc("GET /events/{event_id}/queue/serving", h.Serving)
 	}
 }
 
@@ -90,21 +97,15 @@ func (h *Handler) Join(w http.ResponseWriter, r *http.Request) {
 		CaptchaToken: body.CaptchaToken,
 		DeviceID:     r.Header.Get("X-Device-Id"),
 		Bearer:       bearer,
-		QueueToken:   presentedQueueToken(r),
+		QueueToken:   r.Header.Get(HeaderQueueToken),
 		ClientIP:     ClientIP(r),
 	}
 
 	res, err := h.join.Join(r.Context(), in)
 	if err != nil {
-		// Clear the cookie only if it carried the rejected token: a foreign token in
-		// X-Queue-Token must not wipe the caller's own cookie.
-		if errors.Is(err, usecase.ErrForeignToken) && r.Header.Get(HeaderQueueToken) == "" {
-			http.SetCookie(w, h.clearCookie(in.EventID))
-		}
 		apinizer.WriteError(w, err)
 		return
 	}
-	http.SetCookie(w, h.cookie(in.EventID, res.Engagement.QueueToken))
 	switch res.Outcome {
 	case usecase.Rejoined:
 		apinizer.WriteEnvelope(w, http.StatusOK, "Rejoined existing queue position", rejoinedData{
@@ -159,39 +160,6 @@ func (h *Handler) SSEURL(eventID string) string {
 	return strings.TrimRight(h.opt.SSEBaseURL, "/") + "/events/" + url.PathEscape(eventID) + "/queue/stream"
 }
 
-// cookie is the queue_token cookie, scoped to one event (Path=/events/{event_id}),
-// so joining another event never overwrites it. The path covers join, /queue/me
-// and the stream on both hosts, and not another event (/events/E10 ≠ /events/E1).
-func (h *Handler) cookie(eventID, queueToken string) *http.Cookie {
-	return &http.Cookie{
-		Name:     CookieName,
-		Value:    queueToken,
-		Path:     "/events/" + url.PathEscape(eventID),
-		Domain:   h.opt.CookieDomain,
-		MaxAge:   int(h.opt.CookieMaxAge.Seconds()),
-		HttpOnly: true,
-		Secure:   true,
-		SameSite: http.SameSiteStrictMode,
-	}
-}
-
-// clearCookie expires the queue_token cookie (same Domain and Path as cookie).
-func (h *Handler) clearCookie(eventID string) *http.Cookie {
-	c := h.cookie(eventID, "")
-	c.MaxAge = -1
-	return c
-}
-
-func presentedQueueToken(r *http.Request) string {
-	if v := r.Header.Get(HeaderQueueToken); v != "" {
-		return v
-	}
-	if c, err := r.Cookie(CookieName); err == nil {
-		return c.Value
-	}
-	return ""
-}
-
 // ClientIP is the caller's address as API Gateway saw it. X-Forwarded-For is
 // never read: the client controls it.
 func ClientIP(r *http.Request) string {
@@ -216,23 +184,13 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 		EventID:    r.PathValue("event_id"),
 		DeviceID:   r.Header.Get("X-Device-Id"),
 		Bearer:     bearer,
-		QueueToken: presentedQueueToken(r),
+		QueueToken: r.Header.Get(HeaderQueueToken),
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	res, err := h.me.Get(r.Context(), in)
 	if err != nil {
-		// Same rule as join: clear the cookie only if it carried the rejected token.
-		if errors.Is(err, usecase.ErrForeignToken) && r.Header.Get(HeaderQueueToken) == "" {
-			http.SetCookie(w, h.clearCookie(in.EventID))
-		}
 		apinizer.WriteError(w, err)
 		return
-	}
-	switch {
-	case res.ClearCookie:
-		http.SetCookie(w, h.clearCookie(in.EventID))
-	case res.SetCookie:
-		http.SetCookie(w, h.cookie(in.EventID, res.QueueToken))
 	}
 	apinizer.WriteEnvelope(w, http.StatusOK, "Success", meData(res))
 }

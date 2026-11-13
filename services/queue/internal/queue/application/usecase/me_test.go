@@ -223,19 +223,19 @@ func TestMeAGrantWithoutABookingRowIsALostGrant(t *testing.T) {
 	}
 }
 
-func TestMeATombstoneAnswersConfirmedAndClearsTheCookie(t *testing.T) {
+func TestMeATombstoneAnswersConfirmed(t *testing.T) {
 	f := newMe(t)
 	f.store.settled["qt1"] = "RB-9"
 	r, err := f.me.Get(context.Background(), MeInput{EventID: "E1", DeviceID: "dev-1", QueueToken: "qt1"})
-	if err != nil || r.State != domain.MeConfirmed || r.BookingID != "RB-9" || !r.ClearCookie {
+	if err != nil || r.State != domain.MeConfirmed || r.BookingID != "RB-9" {
 		t.Fatalf("result %+v err %v", r, err)
 	}
 }
 
-func TestMeNoTokenAndNoTombstoneIsExpiredAndKeepsTheCookie(t *testing.T) {
+func TestMeNoTokenAndNoTombstoneIsExpired(t *testing.T) {
 	f := newMe(t)
 	r, err := f.me.Get(context.Background(), MeInput{EventID: "E1", DeviceID: "dev-1", QueueToken: "gone"})
-	if err != nil || r.State != domain.MeExpired || r.ClearCookie {
+	if err != nil || r.State != domain.MeExpired {
 		t.Fatalf("result %+v err %v", r, err)
 	}
 }
@@ -286,12 +286,12 @@ func TestMeNoCredentialIsUnauthorized(t *testing.T) {
 	}
 }
 
-func TestMeBearerFindsTheAccountsTokenAndReissuesTheCookie(t *testing.T) {
+func TestMeBearerFindsTheAccountsToken(t *testing.T) {
 	f := newMe(t)
 	f.member("qt-acc", 150, "acc-1")
 	f.store.acct["acc-1"] = "qt-acc"
 	r, err := f.me.Get(context.Background(), MeInput{EventID: "E1", Bearer: "good"})
-	if err != nil || r.State != domain.MeQueued || r.QueueToken != "qt-acc" || !r.SetCookie {
+	if err != nil || r.State != domain.MeQueued || r.QueueToken != "qt-acc" {
 		t.Fatalf("result %+v err %v", r, err)
 	}
 }
@@ -304,7 +304,7 @@ func TestMeBearerWithoutAnAcctIsUnauthorized(t *testing.T) {
 	}
 }
 
-func TestMeBearerWinsOverAGuestCookie(t *testing.T) {
+func TestMeBearerWinsOverAGuestToken(t *testing.T) {
 	f := newMe(t)
 	f.guest("guest-qt", 20, "dev-1")
 	f.member("qt-acc", 150, "acc-1")

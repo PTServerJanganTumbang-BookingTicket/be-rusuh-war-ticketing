@@ -20,7 +20,7 @@ import (
 // Config is the join policy.
 type Config struct {
 	Capacity     int64           // QUEUE_CAPACITY
-	SaleWindow   time.Duration   // SALE_WINDOW_SECONDS: TTL of token and acct keys, cookie Max-Age
+	SaleWindow   time.Duration   // SALE_WINDOW_SECONDS: TTL of token and acct keys
 	ClaimWait    time.Duration   // rejoin: how long an acct pointer without a token may be in flight before it is stale
 	RaceWait     time.Duration   // lost acct claim: how long to wait for the winning join's token
 	RateLimits   bool            // off only in load tests
@@ -61,7 +61,7 @@ type JoinInput struct {
 	CaptchaToken string
 	DeviceID     string // X-Device-Id
 	Bearer       string // access token without "Bearer "
-	QueueToken   string // cookie or X-Queue-Token (BR-09)
+	QueueToken   string // X-Queue-Token (BR-09)
 	ClientIP     string // from the gateway, never from X-Forwarded-For
 }
 
@@ -101,8 +101,7 @@ func NewJoin(cfg Config, d Deps) *Join {
 }
 
 // ErrForeignToken marks a rejection because the presented queue_token belongs
-// to another device or account. The HTTP layer clears the cookie on it, so the
-// next join is a fresh one instead of the same 401 forever.
+// to another device or account.
 var ErrForeignToken = errors.New("queue token belongs to another device or account")
 
 // errForeignToken is a 401 that matches both *apperror.AppError and ErrForeignToken.
@@ -240,10 +239,12 @@ func saleGate(s domain.EventSnapshot) error {
 }
 
 // rejoin returns the existing place (BR-09 token, then BR-07 account). stale
-// is an acct pointer whose token no longer exists, to be replaced on issue.
+// is an acct pointer to replace on issue: its token no longer exists, or its
+// booking has ended.
 //
 // A presented token of this event rejoins only for its owner (see owns).
-// Unknown tokens and tokens of another event are ignored.
+// Unknown tokens and tokens of another event are ignored, and so is a place
+// whose booking has ended (ADR-006 §8.21): the caller gets a new place.
 func (j *Join) rejoin(ctx context.Context, ev rediskeys.Event, snap domain.EventSnapshot, presented, accountID, deviceHash string) (res JoinResult, ok bool, stale string, err error) {
 	if presented != "" {
 		e, found, err := j.d.Store.Engagement(ctx, presented)
@@ -255,8 +256,18 @@ func (j *Join) rejoin(ctx context.Context, ev rediskeys.Event, snap domain.Event
 				return JoinResult{}, false, "", err
 			}
 			if e.AccountID != "" || accountID == "" {
-				res, err := j.restore(ctx, ev, snap, e, false)
-				return res, err == nil, "", err
+				res, ended, err := j.restore(ctx, ev, snap, e, false)
+				switch {
+				case err != nil:
+					return JoinResult{}, false, "", err
+				case !ended:
+					return res, true, "", nil
+				case accountID != "":
+					// The account's own place ended: acct (if it still points here) moves to the new place.
+					return JoinResult{}, false, e.QueueToken, nil
+				default:
+					return JoinResult{}, false, "", nil
+				}
 			}
 		}
 	}
@@ -274,8 +285,11 @@ func (j *Join) rejoin(ctx context.Context, ev rediskeys.Event, snap domain.Event
 	if !found || e.EventID != ev.ID() {
 		return JoinResult{}, false, qt, nil
 	}
-	res, err = j.restore(ctx, ev, snap, e, true)
-	return res, err == nil, "", err
+	res, ended, err := j.restore(ctx, ev, snap, e, true)
+	if err != nil || ended {
+		return JoinResult{}, false, qt, err
+	}
+	return res, true, "", nil
 }
 
 func (j *Join) owns(e domain.Engagement, accountID, deviceHash string) error {
@@ -308,14 +322,19 @@ func (j *Join) waitEngagement(ctx context.Context, qt string, wait time.Duration
 //
 // Turn has come: the booking row says where the customer is. No row yet means
 // a pending grant that admission-ctl finishes from by_ticket (QUEUED). A failed
-// lookup is an error, not a guess.
-func (j *Join) restore(ctx context.Context, ev rediskeys.Event, snap domain.EventSnapshot, e domain.Engagement, viaAccount bool) (JoinResult, error) {
+// lookup is an error, not a guess. A booking that has ended is reported as
+// ended, not restored: the caller gets a new place (ADR-006 §8.21).
+func (j *Join) restore(ctx context.Context, ev rediskeys.Event, snap domain.EventSnapshot, e domain.Engagement, viaAccount bool) (res JoinResult, ended bool, err error) {
 	state := domain.EngagementQueued
 	if e.TicketNo <= snap.NowServing {
 		if j.d.Bookings != nil {
 			b, found, err := j.d.Bookings.ByQueueToken(ctx, ev.ID(), e.QueueToken)
 			if err != nil {
-				return JoinResult{}, fmt.Errorf("booking lookup on rejoin: %w", err)
+				return JoinResult{}, false, fmt.Errorf("booking lookup on rejoin: %w", err)
+			}
+			if found && b.Ended() {
+				j.d.Metrics.Incr(domain.MetricJoinAfterEnded)
+				return JoinResult{}, true, nil
 			}
 			if found {
 				state = b.Status
@@ -324,7 +343,7 @@ func (j *Join) restore(ctx context.Context, ev rediskeys.Event, snap domain.Even
 	} else {
 		added, err := j.d.Store.RepairLine(ctx, ev, e.QueueToken, e.TicketNo)
 		if err != nil {
-			return JoinResult{}, err
+			return JoinResult{}, false, err
 		}
 		if added {
 			j.d.Metrics.Incr(domain.MetricJoinRepaired)
@@ -333,7 +352,7 @@ func (j *Join) restore(ctx context.Context, ev rediskeys.Event, snap domain.Even
 	if viaAccount {
 		j.d.Metrics.Incr(domain.MetricBR07Recovered)
 	}
-	return JoinResult{Outcome: Rejoined, Engagement: e, NowServing: snap.NowServing, EventName: snap.Name, State: state}, nil
+	return JoinResult{Outcome: Rejoined, Engagement: e, NowServing: snap.NowServing, EventName: snap.Name, State: state}, false, nil
 }
 
 func (j *Join) issue(ctx context.Context, ev rediskeys.Event, snap domain.EventSnapshot, accountID, deviceHash, stale string) (JoinResult, error) {
@@ -350,9 +369,10 @@ func (j *Join) issue(ctx context.Context, ev rediskeys.Event, snap domain.EventS
 			if err != nil || !found {
 				return JoinResult{}, errUnavailable()
 			}
-			res, err := j.restore(ctx, ev, snap, e, true)
-			if err != nil {
-				slog.ErrorContext(ctx, "join: restoring the winning place failed", slog.String("event_id", ev.ID()), slog.Any("err", err))
+			res, ended, err := j.restore(ctx, ev, snap, e, true)
+			if err != nil || ended { // ended: the winner's place is already over; a retry takes the stale path
+				slog.ErrorContext(ctx, "join: restoring the winning place failed", slog.String("event_id", ev.ID()),
+					slog.Bool("ended", ended), slog.Any("err", err))
 				return JoinResult{}, errUnavailable()
 			}
 			return res, nil

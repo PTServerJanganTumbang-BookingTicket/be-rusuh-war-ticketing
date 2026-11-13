@@ -31,9 +31,8 @@ type Config struct {
 	RedisPass    string
 	RedisCluster bool // true in AWS (ElastiCache cluster mode)
 
-	JWTSecret    string
-	CookieDomain string
-	SSEBaseURL   string
+	JWTSecret  string
+	SSEBaseURL string
 
 	Captcha         string
 	TurnstileSecret string
@@ -63,7 +62,6 @@ func Load() (Config, error) {
 		RedisPass:       os.Getenv("REDIS_PASSWORD"),
 		RedisCluster:    envutil.EnvBool("REDIS_CLUSTER", true),
 		JWTSecret:       os.Getenv("JWT_SECRET"),
-		CookieDomain:    os.Getenv("COOKIE_DOMAIN"),
 		SSEBaseURL:      os.Getenv("SSE_BASE_URL"),
 		Captcha:         envutil.Env("CAPTCHA_PROVIDER", CaptchaTurnstile),
 		TurnstileSecret: os.Getenv("TURNSTILE_SECRET_KEY"),
