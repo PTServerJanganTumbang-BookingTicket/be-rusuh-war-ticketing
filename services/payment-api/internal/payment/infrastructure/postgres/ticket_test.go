@@ -245,7 +245,7 @@ func TestEnqueueFailureNotice_CarriesThePaymentReference(t *testing.T) {
 	tx := ticketTx(nil, inserted())
 
 	require.NoError(t, newRepo(&mockDB{}).enqueueFailureNotice(
-		context.Background(), tx, testBooking(), "RB-00912:1", 3000000, events.FailureDisputed))
+		context.Background(), tx, testBooking(), "RB-00912_1", 3000000, events.FailureDisputed))
 
 	rows := tx.execMatching("INSERT INTO outbox")
 	require.Len(t, rows, 1)
@@ -253,7 +253,7 @@ func TestEnqueueFailureNotice_CarriesThePaymentReference(t *testing.T) {
 
 	var payload events.PaymentFailedNoticePayload
 	require.NoError(t, json.Unmarshal(rows[0].args[3].([]byte), &payload))
-	assert.Equal(t, "RB-00912:1", payload.OrderID)
+	assert.Equal(t, "RB-00912_1", payload.OrderID)
 	assert.Equal(t, "buyer@example", payload.ContactEmail)
 	assert.Equal(t, int64(3000000), payload.GrossAmount)
 	assert.Equal(t, events.FailureDisputed, payload.Reason)

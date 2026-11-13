@@ -29,7 +29,7 @@ func cancellingRepo(b entity.Booking, cancelled string, attempt int) func(contex
 func TestRetry_OK(t *testing.T) {
 	h := newHarness(t)
 	b := heldBooking(entity.StatusHeld)
-	h.repo.retryFn = cancellingRepo(b, "RB-00912:1", 2)
+	h.repo.retryFn = cancellingRepo(b, "RB-00912_1", 2)
 
 	out, err := h.uc.Retry(context.Background(), "RB-00912", "grant-abc")
 	require.NoError(t, err)
@@ -37,7 +37,7 @@ func TestRetry_OK(t *testing.T) {
 	assert.Equal(t, "RB-00912", out.BookingID)
 	assert.Equal(t, string(entity.StatusHeld), out.Status)
 	assert.Equal(t, 2, out.Attempt)
-	assert.Equal(t, "RB-00912:1", out.CancelledOrderID)
+	assert.Equal(t, "RB-00912_1", out.CancelledOrderID)
 	assert.Equal(t, fixedNow.Format(time.RFC3339), out.ServerTime)
 	assert.Equal(t, 1, h.gw.cancelCalls)
 }
@@ -48,7 +48,7 @@ func TestRetry_OK(t *testing.T) {
 func TestRetry_DoesNotResetTheWindow(t *testing.T) {
 	h := newHarness(t)
 	b := heldBooking(entity.StatusHeld)
-	h.repo.retryFn = cancellingRepo(b, "RB-00912:1", 2)
+	h.repo.retryFn = cancellingRepo(b, "RB-00912_1", 2)
 
 	out, err := h.uc.Retry(context.Background(), "RB-00912", "grant-abc")
 	require.NoError(t, err)
@@ -57,7 +57,7 @@ func TestRetry_DoesNotResetTheWindow(t *testing.T) {
 
 func TestRetry_PassesPolicyToRepository(t *testing.T) {
 	h := newHarness(t)
-	h.repo.retryFn = cancellingRepo(heldBooking(entity.StatusHeld), "RB-00912:1", 2)
+	h.repo.retryFn = cancellingRepo(heldBooking(entity.StatusHeld), "RB-00912_1", 2)
 
 	_, err := h.uc.Retry(context.Background(), "RB-00912", "grant-abc")
 	require.NoError(t, err)
@@ -124,7 +124,7 @@ func TestRetry_CancelFails_Is503(t *testing.T) {
 	h := newHarness(t)
 	h.gw.cancelFn = func(context.Context, string) error { return errors.New("context deadline exceeded") }
 	h.repo.retryFn = func(ctx context.Context, in portout.RetryInput, cancel portout.CancelFunc) (portout.RetryOutcome, error) {
-		if err := cancel(ctx, "RB-00912:1"); err != nil {
+		if err := cancel(ctx, "RB-00912_1"); err != nil {
 			// The real repository rolls back and reports this sentinel.
 			return portout.RetryOutcome{}, portout.ErrGatewayUnavailable
 		}
@@ -168,9 +168,9 @@ func TestRetry_UsesCancelNotExpire(t *testing.T) {
 		gotOrderID = orderID
 		return nil
 	}
-	h.repo.retryFn = cancellingRepo(heldBooking(entity.StatusHeld), "RB-00912:1", 2)
+	h.repo.retryFn = cancellingRepo(heldBooking(entity.StatusHeld), "RB-00912_1", 2)
 
 	_, err := h.uc.Retry(context.Background(), "RB-00912", "grant-abc")
 	require.NoError(t, err)
-	assert.Equal(t, "RB-00912:1", gotOrderID)
+	assert.Equal(t, "RB-00912_1", gotOrderID)
 }

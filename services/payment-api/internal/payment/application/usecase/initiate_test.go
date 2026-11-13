@@ -38,7 +38,7 @@ func chargingRepo(b entity.Booking, orderID string) func(context.Context, portou
 func TestInitiate_BankTransfer_OK(t *testing.T) {
 	h := newHarness(t)
 	b := heldBooking(entity.StatusHeld)
-	h.repo.initiateFn = chargingRepo(b, "RB-00912:1")
+	h.repo.initiateFn = chargingRepo(b, "RB-00912_1")
 	h.gw.chargeFn = func(context.Context, portout.ChargeRequest) (portout.ChargeResult, error) {
 		return portout.ChargeResult{
 			TransactionStatus: "pending",
@@ -50,7 +50,7 @@ func TestInitiate_BankTransfer_OK(t *testing.T) {
 		dto.InitiateRequest{Method: entity.MethodBankTransfer, Bank: entity.BankBCA})
 	require.NoError(t, err)
 
-	assert.Equal(t, "RB-00912:1", out.PaymentID)
+	assert.Equal(t, "RB-00912_1", out.PaymentID)
 	assert.Equal(t, entity.MethodBankTransfer, out.Method)
 	assert.Equal(t, dto.StatusPending, out.Status)
 	assert.Equal(t, "8277081234567890", out.Instructions["va_number"])
@@ -60,7 +60,7 @@ func TestInitiate_BankTransfer_OK(t *testing.T) {
 
 func TestInitiate_GoPay_NeedsNoBank(t *testing.T) {
 	h := newHarness(t)
-	h.repo.initiateFn = chargingRepo(heldBooking(entity.StatusHeld), "RB-00912:1")
+	h.repo.initiateFn = chargingRepo(heldBooking(entity.StatusHeld), "RB-00912_1")
 
 	out, err := h.uc.Initiate(context.Background(), "RB-00912", "grant-abc",
 		dto.InitiateRequest{Method: entity.MethodGoPay})
@@ -113,7 +113,7 @@ func TestInitiate_ASwitchedOffBankIsRefused(t *testing.T) {
 func TestInitiate_AnotherBankUnderTheSameMethodStillCharges(t *testing.T) {
 	h := newHarness(t)
 	h.sw.off = offBank(entity.MethodBankTransfer, entity.BankBCA)
-	h.repo.initiateFn = chargingRepo(heldBooking(entity.StatusHeld), "RB-00912:1")
+	h.repo.initiateFn = chargingRepo(heldBooking(entity.StatusHeld), "RB-00912_1")
 
 	_, err := h.uc.Initiate(context.Background(), "RB-00912", "grant-abc",
 		dto.InitiateRequest{Method: entity.MethodBankTransfer, Bank: entity.BankBNI})
@@ -143,7 +143,7 @@ func TestInitiate_AMethodOffAlsoRefusesEachOfItsBanks(t *testing.T) {
 func TestInitiate_AnUnrelatedSwitchDoesNotBlockTheCharge(t *testing.T) {
 	h := newHarness(t)
 	h.sw.off = offMethod(entity.MethodBankTransfer)
-	h.repo.initiateFn = chargingRepo(heldBooking(entity.StatusHeld), "RB-00912:1")
+	h.repo.initiateFn = chargingRepo(heldBooking(entity.StatusHeld), "RB-00912_1")
 
 	_, err := h.uc.Initiate(context.Background(), "RB-00912", "grant-abc",
 		dto.InitiateRequest{Method: entity.MethodGoPay})
@@ -155,7 +155,7 @@ func TestInitiate_AnUnrelatedSwitchDoesNotBlockTheCharge(t *testing.T) {
 func TestInitiate_SwitchStoreUnreadable_ChargesAnyway(t *testing.T) {
 	h := newHarness(t)
 	h.sw.err = errors.New("pq: connection refused")
-	h.repo.initiateFn = chargingRepo(heldBooking(entity.StatusHeld), "RB-00912:1")
+	h.repo.initiateFn = chargingRepo(heldBooking(entity.StatusHeld), "RB-00912_1")
 
 	_, err := h.uc.Initiate(context.Background(), "RB-00912", "grant-abc",
 		dto.InitiateRequest{Method: entity.MethodGoPay})
@@ -195,7 +195,7 @@ func TestInitiate_UnsupportedBank_IsBankNotSupported(t *testing.T) {
 func TestInitiate_ChargeAnchorsExpiryOnHeldAt(t *testing.T) {
 	h := newHarness(t)
 	b := heldBooking(entity.StatusHeld)
-	h.repo.initiateFn = chargingRepo(b, "RB-00912:1")
+	h.repo.initiateFn = chargingRepo(b, "RB-00912_1")
 
 	_, err := h.uc.Initiate(context.Background(), "RB-00912", "grant-abc",
 		dto.InitiateRequest{Method: entity.MethodGoPay})
@@ -214,7 +214,7 @@ func TestInitiate_NoHeldAt_FallsBackToNow(t *testing.T) {
 	h := newHarness(t)
 	b := heldBooking(entity.StatusHeld)
 	b.HeldAt = nil
-	h.repo.initiateFn = chargingRepo(b, "RB-00912:1")
+	h.repo.initiateFn = chargingRepo(b, "RB-00912_1")
 
 	_, err := h.uc.Initiate(context.Background(), "RB-00912", "grant-abc",
 		dto.InitiateRequest{Method: entity.MethodGoPay})
@@ -228,7 +228,7 @@ func TestInitiate_ChargesTheLockedTotal(t *testing.T) {
 	h := newHarness(t)
 	b := heldBooking(entity.StatusHeld)
 	b.Total = 4500000
-	h.repo.initiateFn = chargingRepo(b, "RB-00912:1")
+	h.repo.initiateFn = chargingRepo(b, "RB-00912_1")
 
 	_, err := h.uc.Initiate(context.Background(), "RB-00912", "grant-abc",
 		dto.InitiateRequest{Method: entity.MethodGoPay})
@@ -249,7 +249,7 @@ func TestInitiate_ReplayWorksWhileBreakerOpen(t *testing.T) {
 		// the closure at all.
 		return portout.InitiateOutcome{
 			Booking:      b,
-			OrderID:      "RB-00912:1",
+			OrderID:      "RB-00912_1",
 			Instructions: map[string]string{"bank": "bca", "va_number": "8277081234567890"},
 			Replayed:     true,
 		}, nil
@@ -266,7 +266,7 @@ func TestInitiate_ReplayWorksWhileBreakerOpen(t *testing.T) {
 func TestInitiate_BreakerOpen_Is503(t *testing.T) {
 	h := newHarness(t)
 	h.brk.allowFn = func(context.Context) (bool, error) { return false, nil }
-	h.repo.initiateFn = chargingRepo(heldBooking(entity.StatusHeld), "RB-00912:1")
+	h.repo.initiateFn = chargingRepo(heldBooking(entity.StatusHeld), "RB-00912_1")
 
 	_, err := h.uc.Initiate(context.Background(), "RB-00912", "grant-abc",
 		dto.InitiateRequest{Method: entity.MethodGoPay})
@@ -281,7 +281,7 @@ func TestInitiate_BreakerUnreadable_ChargesAnyway(t *testing.T) {
 	h.brk.allowFn = func(context.Context) (bool, error) {
 		return false, errors.New("redis: connection refused")
 	}
-	h.repo.initiateFn = chargingRepo(heldBooking(entity.StatusHeld), "RB-00912:1")
+	h.repo.initiateFn = chargingRepo(heldBooking(entity.StatusHeld), "RB-00912_1")
 
 	_, err := h.uc.Initiate(context.Background(), "RB-00912", "grant-abc",
 		dto.InitiateRequest{Method: entity.MethodGoPay})
@@ -295,7 +295,7 @@ func TestInitiate_BreakerUnreadable_ChargesAnyway(t *testing.T) {
 // back with payment_ref still NULL for the reconciler to resolve.
 func TestInitiate_GatewayTimeout_Is503AndCountsAFailure(t *testing.T) {
 	h := newHarness(t)
-	h.repo.initiateFn = chargingRepo(heldBooking(entity.StatusHeld), "RB-00912:1")
+	h.repo.initiateFn = chargingRepo(heldBooking(entity.StatusHeld), "RB-00912_1")
 	h.gw.chargeFn = func(context.Context, portout.ChargeRequest) (portout.ChargeResult, error) {
 		return portout.ChargeResult{}, errors.New("context deadline exceeded")
 	}
@@ -309,7 +309,7 @@ func TestInitiate_GatewayTimeout_Is503AndCountsAFailure(t *testing.T) {
 
 func TestInitiate_Success_RecordsBreakerSuccess(t *testing.T) {
 	h := newHarness(t)
-	h.repo.initiateFn = chargingRepo(heldBooking(entity.StatusHeld), "RB-00912:1")
+	h.repo.initiateFn = chargingRepo(heldBooking(entity.StatusHeld), "RB-00912_1")
 
 	_, err := h.uc.Initiate(context.Background(), "RB-00912", "grant-abc",
 		dto.InitiateRequest{Method: entity.MethodGoPay})
@@ -323,7 +323,7 @@ func TestInitiate_Success_RecordsBreakerSuccess(t *testing.T) {
 func TestInitiate_BreakerBookkeepingFailure_DoesNotFailTheCharge(t *testing.T) {
 	h := newHarness(t)
 	h.brk.successErr = errors.New("redis: write failed")
-	h.repo.initiateFn = chargingRepo(heldBooking(entity.StatusHeld), "RB-00912:1")
+	h.repo.initiateFn = chargingRepo(heldBooking(entity.StatusHeld), "RB-00912_1")
 
 	out, err := h.uc.Initiate(context.Background(), "RB-00912", "grant-abc",
 		dto.InitiateRequest{Method: entity.MethodGoPay})
@@ -339,7 +339,7 @@ func TestInitiate_SynchronousDecline_Is200Failed(t *testing.T) {
 	for _, status := range []string{"deny", "cancel", "failure"} {
 		t.Run(status, func(t *testing.T) {
 			h := newHarness(t)
-			h.repo.initiateFn = chargingRepo(heldBooking(entity.StatusHeld), "RB-00912:1")
+			h.repo.initiateFn = chargingRepo(heldBooking(entity.StatusHeld), "RB-00912_1")
 			h.gw.chargeFn = func(context.Context, portout.ChargeRequest) (portout.ChargeResult, error) {
 				return portout.ChargeResult{TransactionStatus: status, StatusMessage: "refused"}, nil
 			}
@@ -382,7 +382,7 @@ func TestInitiate_UnknownBooking_Is404(t *testing.T) {
 // Midtrans rather than a second instrument.
 func TestInitiate_PassesStoredStateToRepository(t *testing.T) {
 	h := newHarness(t)
-	h.repo.initiateFn = chargingRepo(heldBooking(entity.StatusHeld), "RB-00912:1")
+	h.repo.initiateFn = chargingRepo(heldBooking(entity.StatusHeld), "RB-00912_1")
 
 	_, err := h.uc.Initiate(context.Background(), "RB-00912", "grant-abc",
 		dto.InitiateRequest{Method: entity.MethodBankTransfer, Bank: entity.BankBNI})

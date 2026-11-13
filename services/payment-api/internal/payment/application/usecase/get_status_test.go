@@ -212,7 +212,7 @@ func TestGetStatus_PaymentDetailIsPresentOnEveryStatus(t *testing.T) {
 		t.Run(string(st), func(t *testing.T) {
 			h := newHarness(t)
 			b := heldBooking(st)
-			b.PaymentRef = "RB-00912:1"
+			b.PaymentRef = "RB-00912_1"
 			b.PaymentMethod = "bank_transfer"
 			b.PaymentStatus = "settlement"
 			b.PaymentAmount = &amount
@@ -224,7 +224,7 @@ func TestGetStatus_PaymentDetailIsPresentOnEveryStatus(t *testing.T) {
 
 			out := statusOf(t, h, b)
 
-			assert.Equal(t, "RB-00912:1", out.PaymentID)
+			assert.Equal(t, "RB-00912_1", out.PaymentID)
 			assert.Equal(t, "bank_transfer", out.Method)
 			assert.Equal(t, "settlement", out.PaymentStatus)
 			require.NotNil(t, out.TotalAmount)
@@ -260,7 +260,7 @@ func TestGetStatus_NoChargeYet_OmitsThePaymentDetail(t *testing.T) {
 func TestGetStatus_GatewayStatusIsReportedSeparatelyFromOurs(t *testing.T) {
 	h := newHarness(t)
 	b := heldBooking(entity.StatusAwaitingPayment)
-	b.PaymentRef = "RB-00912:1"
+	b.PaymentRef = "RB-00912_1"
 	b.PaymentStatus = "deny"
 
 	out := statusOf(t, h, b)
@@ -276,7 +276,7 @@ func TestGetStatus_GatewayStatusIsReportedSeparatelyFromOurs(t *testing.T) {
 func TestGetStatus_PendingTransfer_CarriesTheVirtualAccount(t *testing.T) {
 	h := newHarness(t)
 	b := heldBooking(entity.StatusAwaitingPayment)
-	b.PaymentRef = "RB-00912:1"
+	b.PaymentRef = "RB-00912_1"
 	b.PaymentMethod = "bank_transfer"
 	b.PaymentInstructions = map[string]string{"bank": "bca", "va_number": "8801234567890"}
 

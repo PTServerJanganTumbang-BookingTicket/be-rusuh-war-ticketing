@@ -72,7 +72,7 @@ func TestInvoke_JSONObjectPayload_Unmarshals(t *testing.T) {
 				Path:   "/payments/webhook",
 			},
 		},
-		Body: `{"order_id":"RB-001:1","transaction_status":"settlement"}`,
+		Body: `{"order_id":"RB-001_1","transaction_status":"settlement"}`,
 	}
 	payload, err := json.Marshal(apiEvent)
 	require.NoError(t, err)

@@ -58,7 +58,7 @@ func heldAt() time.Time {
 
 func vaRequest() portout.ChargeRequest {
 	return portout.ChargeRequest{
-		OrderID:       "RB-00912:1",
+		OrderID:       "RB-00912_1",
 		GrossAmount:   3000000,
 		PaymentType:   entity.MethodBankTransfer,
 		Bank:          entity.BankBCA,
@@ -71,7 +71,7 @@ const vaResponse = `{
   "status_code": "201",
   "status_message": "Success, Bank Transfer transaction is created",
   "transaction_id": "tx-1",
-  "order_id": "RB-00912:1",
+  "order_id": "RB-00912_1",
   "gross_amount": "3000000.00",
   "payment_type": "bank_transfer",
   "transaction_status": "pending",
@@ -146,7 +146,7 @@ func TestCharge_ParsesGatewayExpiryInWIB(t *testing.T) {
 	// requested. This is the matching case.
 	const resp = `{
   "status_code": "201",
-  "order_id": "RB-00912:1",
+  "order_id": "RB-00912_1",
   "gross_amount": "3000000.00",
   "payment_type": "bank_transfer",
   "transaction_status": "pending",
@@ -171,7 +171,7 @@ func TestCharge_GatewayExpiryMismatch_IsReportedNotFatal(t *testing.T) {
 	// 24 hours out: custom_expiry ignored entirely.
 	const resp = `{
   "status_code": "201",
-  "order_id": "RB-00912:1",
+  "order_id": "RB-00912_1",
   "gross_amount": "3000000.00",
   "payment_type": "bank_transfer",
   "transaction_status": "pending",
@@ -203,7 +203,7 @@ func TestCharge_NoExpiryTime_IsNotAnError(t *testing.T) {
 func TestCharge_UnparseableExpiryTime_IsNotAnError(t *testing.T) {
 	const resp = `{
   "status_code": "201",
-  "order_id": "RB-00912:1",
+  "order_id": "RB-00912_1",
   "gross_amount": "3000000.00",
   "payment_type": "bank_transfer",
   "transaction_status": "pending",
@@ -240,7 +240,7 @@ func TestCharge_GrossAmountIsNumericOnRequest(t *testing.T) {
 
 	td := cap.body["transaction_details"].(map[string]any)
 	assert.Equal(t, float64(3000000), td["gross_amount"])
-	assert.Equal(t, "RB-00912:1", td["order_id"])
+	assert.Equal(t, "RB-00912_1", td["order_id"])
 }
 
 func TestCharge_BankTransfer_CarriesBank(t *testing.T) {
@@ -274,7 +274,7 @@ func TestCharge_GoPay_OmitsBankTransfer(t *testing.T) {
 	c, cap := newStub(t, 201, gopayResponse)
 
 	res, err := c.Charge(context.Background(), portout.ChargeRequest{
-		OrderID: "RB-00912:1", GrossAmount: 3000000,
+		OrderID: "RB-00912_1", GrossAmount: 3000000,
 		PaymentType: entity.MethodGoPay, HeldAt: heldAt(), ExpirySeconds: 600,
 	})
 	require.NoError(t, err)
@@ -298,7 +298,7 @@ func TestCharge_DeclinedWithStatusCode_IsAnAnswerNotAnError(t *testing.T) {
       "status_code": "402",
       "status_message": "Transaction is declined",
       "transaction_status": "deny",
-      "order_id": "RB-00912:1"
+      "order_id": "RB-00912_1"
     }`
 	c, _ := newStub(t, 402, declined)
 
@@ -347,9 +347,9 @@ func TestCharge_Timeout_IsAnError(t *testing.T) {
 func TestCancel_PostsToCancelNotExpire(t *testing.T) {
 	c, cap := newStub(t, 200, `{"status_code":"200","transaction_status":"cancel"}`)
 
-	require.NoError(t, c.Cancel(context.Background(), "RB-00912:1"))
+	require.NoError(t, c.Cancel(context.Background(), "RB-00912_1"))
 	assert.Equal(t, http.MethodPost, cap.method)
-	assert.Equal(t, "/v2/RB-00912:1/cancel", cap.path)
+	assert.Equal(t, "/v2/RB-00912_1/cancel", cap.path)
 }
 
 // Midtrans refusing to cancel a transaction that is already paid is a real
@@ -359,7 +359,7 @@ func TestCancel_AlreadyPaid_ReportsAlreadySettled(t *testing.T) {
 	for _, status := range []string{"settlement", "capture"} {
 		t.Run(status, func(t *testing.T) {
 			c, _ := newStub(t, 412, `{"status_code":"412","transaction_status":"`+status+`"}`)
-			err := c.Cancel(context.Background(), "RB-00912:1")
+			err := c.Cancel(context.Background(), "RB-00912_1")
 			assert.ErrorIs(t, err, portout.ErrAlreadySettled)
 		})
 	}
@@ -368,9 +368,9 @@ func TestCancel_AlreadyPaid_ReportsAlreadySettled(t *testing.T) {
 func TestExpire_PostsToExpire(t *testing.T) {
 	c, cap := newStub(t, 200, `{"status_code":"200","transaction_status":"expire"}`)
 
-	require.NoError(t, c.Expire(context.Background(), "RB-00912:1"))
+	require.NoError(t, c.Expire(context.Background(), "RB-00912_1"))
 	assert.Equal(t, http.MethodPost, cap.method)
-	assert.Equal(t, "/v2/RB-00912:1/expire", cap.path)
+	assert.Equal(t, "/v2/RB-00912_1/expire", cap.path)
 }
 
 // Status is the only way the reconciler learns the fate of a charge that timed
@@ -383,11 +383,11 @@ func TestStatus_IsAReadOnlyGet(t *testing.T) {
       "gross_amount": "3000000.00"
     }`)
 
-	res, err := c.Status(context.Background(), "RB-00912:1")
+	res, err := c.Status(context.Background(), "RB-00912_1")
 	require.NoError(t, err)
 
 	assert.Equal(t, http.MethodGet, cap.method)
-	assert.Equal(t, "/v2/RB-00912:1/status", cap.path)
+	assert.Equal(t, "/v2/RB-00912_1/status", cap.path)
 	assert.Empty(t, cap.body)
 	assert.Equal(t, "settlement", res.TransactionStatus)
 	assert.Equal(t, "accept", res.FraudStatus)
@@ -400,7 +400,7 @@ func TestStatus_IsAReadOnlyGet(t *testing.T) {
 func TestStatus_UndecodableBody_IsAnError(t *testing.T) {
 	c, _ := newStub(t, 200, `not json`)
 
-	_, err := c.Status(context.Background(), "RB-00912:1")
+	_, err := c.Status(context.Background(), "RB-00912_1")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "decode status")
 }

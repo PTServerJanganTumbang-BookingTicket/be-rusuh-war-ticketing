@@ -109,13 +109,13 @@ func TestInitiate_MalformedBody_Is400(t *testing.T) {
 // status code.
 func TestInitiate_SuccessIs200NotCreated(t *testing.T) {
 	uc := &fakeUsecase{initFn: func(context.Context, string, string, dto.InitiateRequest) (dto.InitiateResponse, error) {
-		return dto.InitiateResponse{PaymentID: "RB-00912:1", Status: dto.StatusPending}, nil
+		return dto.InitiateResponse{PaymentID: "RB-00912_1", Status: dto.StatusPending}, nil
 	}}
 	mux := newServer(t, uc, testGuard(testGrant))
 
 	w := do(t, mux, http.MethodPost, "/payments/RB-00912", `{"method":"gopay"}`)
 	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Contains(t, string(decode(t, w).Data), "RB-00912:1")
+	assert.Contains(t, string(decode(t, w).Data), "RB-00912_1")
 }
 
 // Every use-case error reaches the client as its own status AND its own

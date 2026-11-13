@@ -21,7 +21,7 @@ const notificationBody = `{
   "signature_key": "deadbeef",
   "settlement_time": "2026-03-01 10:07:30",
   "payment_type": "bank_transfer",
-  "order_id": "RB-00912:1",
+  "order_id": "RB-00912_1",
   "merchant_id": "M-1",
   "gross_amount": "3000000.00",
   "fraud_status": "accept",
@@ -49,7 +49,7 @@ func TestWebhook_DecodesEveryFieldAsString(t *testing.T) {
 	require.Equal(t, http.StatusOK, do(t, mux, http.MethodPost, "/payments/webhook", notificationBody).Code)
 
 	n := uc.gotNotify
-	assert.Equal(t, "RB-00912:1", n.OrderID)
+	assert.Equal(t, "RB-00912_1", n.OrderID)
 	assert.Equal(t, "settlement", n.TransactionStatus)
 	assert.Equal(t, "200", n.StatusCode)
 	assert.Equal(t, "accept", n.FraudStatus)

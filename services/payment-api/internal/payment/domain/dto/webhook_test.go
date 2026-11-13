@@ -13,16 +13,16 @@ import (
 // mapped idempotency onto an `event_id` field that does not exist, which would
 // have left the column NULL and the UNIQUE constraint guarding nothing.
 func TestGatewayEventID(t *testing.T) {
-	n := Notification{OrderID: "RB-00912:1", TransactionStatus: "settlement", StatusCode: "200"}
-	assert.Equal(t, "RB-00912:1:settlement:200", n.GatewayEventID())
+	n := Notification{OrderID: "RB-00912_1", TransactionStatus: "settlement", StatusCode: "200"}
+	assert.Equal(t, "RB-00912_1:settlement:200", n.GatewayEventID())
 }
 
 // Not transaction_id: that is stable for the LIFETIME of one transaction, so
 // the pending and settlement notifications of the same payment carry an
 // identical value. Keying on it would swallow every later legitimate event.
 func TestGatewayEventID_DistinguishesEventsOfOneTransaction(t *testing.T) {
-	pending := Notification{OrderID: "RB-00912:1", TransactionStatus: "pending", StatusCode: "201", TransactionID: "tx-1"}
-	settled := Notification{OrderID: "RB-00912:1", TransactionStatus: "settlement", StatusCode: "200", TransactionID: "tx-1"}
+	pending := Notification{OrderID: "RB-00912_1", TransactionStatus: "pending", StatusCode: "201", TransactionID: "tx-1"}
+	settled := Notification{OrderID: "RB-00912_1", TransactionStatus: "settlement", StatusCode: "200", TransactionID: "tx-1"}
 
 	assert.NotEqual(t, pending.GatewayEventID(), settled.GatewayEventID())
 }
@@ -30,8 +30,8 @@ func TestGatewayEventID_DistinguishesEventsOfOneTransaction(t *testing.T) {
 // One row per EVENT, not per booking: two attempts on one booking are
 // different keys, so neither is mistaken for the other's redelivery.
 func TestGatewayEventID_IsPerAttempt(t *testing.T) {
-	first := Notification{OrderID: "RB-00912:1", TransactionStatus: "deny", StatusCode: "202"}
-	second := Notification{OrderID: "RB-00912:2", TransactionStatus: "deny", StatusCode: "202"}
+	first := Notification{OrderID: "RB-00912_1", TransactionStatus: "deny", StatusCode: "202"}
+	second := Notification{OrderID: "RB-00912_2", TransactionStatus: "deny", StatusCode: "202"}
 
 	assert.NotEqual(t, first.GatewayEventID(), second.GatewayEventID())
 }
@@ -41,7 +41,7 @@ func TestGatewayEventID_IsPerAttempt(t *testing.T) {
 // matches.
 func TestNotification_MoneyAndCodesDecodeAsStrings(t *testing.T) {
 	const body = `{
-      "order_id": "RB-00912:1",
+      "order_id": "RB-00912_1",
       "status_code": "200",
       "gross_amount": "3000000.00",
       "transaction_status": "settlement",
@@ -66,7 +66,7 @@ func TestNotification_MoneyAndCodesDecodeAsStrings(t *testing.T) {
 // Re-encoding must not reformat the money: payment_events.raw is what a later
 // reconciliation recomputes a signature from.
 func TestNotification_RoundTripsGrossAmountUnchanged(t *testing.T) {
-	n := Notification{OrderID: "RB-00912:1", StatusCode: "200", GrossAmount: "3000000.00"}
+	n := Notification{OrderID: "RB-00912_1", StatusCode: "200", GrossAmount: "3000000.00"}
 
 	raw, err := json.Marshal(n)
 	require.NoError(t, err)
