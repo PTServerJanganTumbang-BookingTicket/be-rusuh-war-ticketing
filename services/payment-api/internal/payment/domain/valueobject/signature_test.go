@@ -13,8 +13,8 @@ import (
 // against an independently computed SHA512 rather than against SignatureKey's
 // own output, so a change to the concatenation order fails here.
 func TestSignatureKey_MatchesSpec(t *testing.T) {
-	order, status, amount, key := "RB-00912:1", "200", "3000000.00", "SB-Mid-server-xyz"
-	sum := sha512.Sum512([]byte("RB-00912:1" + "200" + "3000000.00" + "SB-Mid-server-xyz"))
+	order, status, amount, key := "RB-00912_1", "200", "3000000.00", "SB-Mid-server-xyz"
+	sum := sha512.Sum512([]byte("RB-00912_1" + "200" + "3000000.00" + "SB-Mid-server-xyz"))
 	assert.Equal(t, hex.EncodeToString(sum[:]), SignatureKey(order, status, amount, key))
 }
 
@@ -36,32 +36,32 @@ func TestSignatureKey_AmountNotNormalised(t *testing.T) {
 
 func TestVerifySignature(t *testing.T) {
 	const key = "SB-Mid-server-xyz"
-	want := SignatureKey("RB-00912:1", "200", "3000000.00", key)
+	want := SignatureKey("RB-00912_1", "200", "3000000.00", key)
 
-	assert.True(t, VerifySignature(want, "RB-00912:1", "200", "3000000.00", key))
+	assert.True(t, VerifySignature(want, "RB-00912_1", "200", "3000000.00", key))
 
 	t.Run("wrong signature secret key", func(t *testing.T) {
-		assert.False(t, VerifySignature(want, "RB-00912:1", "200", "3000000.00", "other"))
+		assert.False(t, VerifySignature(want, "RB-00912_1", "200", "3000000.00", "other"))
 	})
 	t.Run("wrong order id", func(t *testing.T) {
-		assert.False(t, VerifySignature(want, "RB-00912:2", "200", "3000000.00", key))
+		assert.False(t, VerifySignature(want, "RB-00912_2", "200", "3000000.00", key))
 	})
 	t.Run("wrong status code", func(t *testing.T) {
-		assert.False(t, VerifySignature(want, "RB-00912:1", "201", "3000000.00", key))
+		assert.False(t, VerifySignature(want, "RB-00912_1", "201", "3000000.00", key))
 	})
 	t.Run("wrong amount", func(t *testing.T) {
-		assert.False(t, VerifySignature(want, "RB-00912:1", "200", "3000000.01", key))
+		assert.False(t, VerifySignature(want, "RB-00912_1", "200", "3000000.01", key))
 	})
 	t.Run("empty signature", func(t *testing.T) {
-		assert.False(t, VerifySignature("", "RB-00912:1", "200", "3000000.00", key))
+		assert.False(t, VerifySignature("", "RB-00912_1", "200", "3000000.00", key))
 	})
 	t.Run("truncated signature", func(t *testing.T) {
-		assert.False(t, VerifySignature(want[:127], "RB-00912:1", "200", "3000000.00", key))
+		assert.False(t, VerifySignature(want[:127], "RB-00912_1", "200", "3000000.00", key))
 	})
 	t.Run("uppercase hex is not accepted", func(t *testing.T) {
 		// The comparison is over bytes, not hex values. Midtrans sends lower
 		// case; accepting either would mean decoding first, which is a wider
 		// surface for no benefit.
-		assert.False(t, VerifySignature(strings.ToUpper(want), "RB-00912:1", "200", "3000000.00", key))
+		assert.False(t, VerifySignature(strings.ToUpper(want), "RB-00912_1", "200", "3000000.00", key))
 	})
 }

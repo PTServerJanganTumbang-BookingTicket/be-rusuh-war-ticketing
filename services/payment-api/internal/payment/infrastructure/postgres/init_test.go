@@ -48,12 +48,12 @@ func TestWrapDB_NilStaysNil(t *testing.T) {
 // The middle segment of a notification key is always a transaction_status, so
 // ":charge:" cannot collide with one.
 func TestChargeEventID_CannotCollideWithANotification(t *testing.T) {
-	assert.Equal(t, "RB-00912:1:charge:201", chargeEventID("RB-00912:1", "201"))
+	assert.Equal(t, "RB-00912_1:charge:201", chargeEventID("RB-00912_1", "201"))
 	assert.NotEqual(t,
-		chargeEventID("RB-00912:1", "200"),
-		"RB-00912:1:settlement:200",
+		chargeEventID("RB-00912_1", "200"),
+		"RB-00912_1:settlement:200",
 	)
 	// Different status codes are different stored charges, so a decline and a
 	// success for one attempt both survive.
-	assert.NotEqual(t, chargeEventID("RB-00912:1", "201"), chargeEventID("RB-00912:1", "402"))
+	assert.NotEqual(t, chargeEventID("RB-00912_1", "201"), chargeEventID("RB-00912_1", "402"))
 }

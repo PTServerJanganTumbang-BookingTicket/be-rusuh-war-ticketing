@@ -24,7 +24,7 @@ func signed(n dto.Notification) dto.Notification {
 
 func settlement() dto.Notification {
 	return signed(dto.Notification{
-		OrderID:           "RB-00912:1",
+		OrderID:           "RB-00912_1",
 		StatusCode:        "200",
 		GrossAmount:       "3000000.00",
 		TransactionStatus: valueobject.TxSettlement,
@@ -163,8 +163,8 @@ func TestHandleNotification_GatewayEventIDIsPerEvent(t *testing.T) {
 
 	require.Len(t, ids, 2)
 	// order_id carries the attempt, so the key is per attempt AND per event.
-	assert.Equal(t, "RB-00912:1:pending:201", ids[0])
-	assert.Equal(t, "RB-00912:1:settlement:200", ids[1])
+	assert.Equal(t, "RB-00912_1:pending:201", ids[0])
+	assert.Equal(t, "RB-00912_1:settlement:200", ids[1])
 	assert.NotEqual(t, ids[0], ids[1])
 }
 
@@ -273,7 +273,7 @@ func TestHandleNotification_StoresRawAndParsedAmount(t *testing.T) {
 	h.repo.notifyFn = func(_ context.Context, in portout.NotificationInput) (portout.NotificationOutcome, error) {
 		assert.Equal(t, int64(3000000), in.GrossAmount)
 		assert.Equal(t, "RB-00912", in.BookingID)
-		assert.Equal(t, "RB-00912:1", in.OrderID)
+		assert.Equal(t, "RB-00912_1", in.OrderID)
 		assert.Equal(t, valueobject.TxSettlement, in.TransactionStatus)
 		assert.Equal(t, valueobject.FraudAccept, in.FraudStatus)
 		assert.Equal(t, entity.MethodBankTransfer, in.PaymentType)
@@ -315,7 +315,7 @@ func TestParseGrossAmount(t *testing.T) {
 
 func expireNotification() dto.Notification {
 	return signed(dto.Notification{
-		OrderID:           "RB-00912:1",
+		OrderID:           "RB-00912_1",
 		StatusCode:        "407",
 		GrossAmount:       "3000000.00",
 		TransactionStatus: "expire",

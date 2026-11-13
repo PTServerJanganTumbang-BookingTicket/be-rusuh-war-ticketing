@@ -8,9 +8,9 @@ import (
 )
 
 func TestOrderID(t *testing.T) {
-	assert.Equal(t, "RB-00912:1", OrderID("RB-00912", 1))
-	assert.Equal(t, "RB-00912:0", OrderID("RB-00912", 0))
-	assert.Equal(t, "RB-00912:12", OrderID("RB-00912", 12))
+	assert.Equal(t, "RB-00912_1", OrderID("RB-00912", 1))
+	assert.Equal(t, "RB-00912_0", OrderID("RB-00912", 0))
+	assert.Equal(t, "RB-00912_12", OrderID("RB-00912", 12))
 }
 
 // A fresh attempt must produce a different order_id, because Midtrans carries
@@ -29,25 +29,25 @@ func TestParseOrderID_RoundTrip(t *testing.T) {
 	}
 }
 
-// The split is from the RIGHT, so a booking id that itself contains a colon
+// The split is from the RIGHT, so a booking id that itself contains an underscore
 // still parses. Splitting from the left would hand the repository a truncated
 // booking id and lock the wrong row.
-func TestParseOrderID_ColonInBookingID(t *testing.T) {
-	id, n, err := ParseOrderID("ev:RB-00912:3")
+func TestParseOrderID_UnderscoreInBookingID(t *testing.T) {
+	id, n, err := ParseOrderID("ev_RB-00912_3")
 	require.NoError(t, err)
-	assert.Equal(t, "ev:RB-00912", id)
+	assert.Equal(t, "ev_RB-00912", id)
 	assert.Equal(t, 3, n)
 }
 
 func TestParseOrderID_Malformed(t *testing.T) {
 	cases := map[string]string{
-		"no colon":          "RB-00912",
-		"empty":             "",
-		"leading colon":     ":1",
-		"trailing colon":    "RB-00912:",
-		"attempt not a int": "RB-00912:abc",
-		"negative attempt":  "RB-00912:-1",
-		"float attempt":     "RB-00912:1.0",
+		"no underscore":        "RB-00912",
+		"empty":                "",
+		"leading underscore":   "_1",
+		"trailing underscore":  "RB-00912_",
+		"attempt not a int":    "RB-00912_abc",
+		"negative attempt":     "RB-00912_-1",
+		"float attempt":        "RB-00912_1.0",
 	}
 	for name, in := range cases {
 		t.Run(name, func(t *testing.T) {

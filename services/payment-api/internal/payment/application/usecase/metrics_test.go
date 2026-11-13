@@ -85,13 +85,13 @@ func TestALateSettlementCountsLateSettlementAndLogsItsEventAndAmount(t *testing.
 	// The FR-36 disputed list is read from this line (docs/metrics.md §7).
 	assert.Equal(t, "EV-1", line["event_id"])
 	assert.Equal(t, "RB-00912", line["booking_id"])
-	assert.Equal(t, "RB-00912:1", line["order_id"])
+	assert.Equal(t, "RB-00912_1", line["order_id"])
 	assert.Equal(t, "3000000.00", line["gross_amount"])
 }
 
 func TestAFailedChargeCountsAMidtransError(t *testing.T) {
 	h := newHarness(t)
-	h.repo.initiateFn = chargingRepo(heldBooking(entity.StatusHeld), "RB-00912:1")
+	h.repo.initiateFn = chargingRepo(heldBooking(entity.StatusHeld), "RB-00912_1")
 	h.gw.chargeFn = func(context.Context, portout.ChargeRequest) (portout.ChargeResult, error) {
 		return portout.ChargeResult{}, errors.New("context deadline exceeded")
 	}
@@ -104,7 +104,7 @@ func TestAFailedCancelCountsAMidtransError(t *testing.T) {
 	h := newHarness(t)
 	h.gw.cancelFn = func(context.Context, string) error { return errors.New("context deadline exceeded") }
 	h.repo.retryFn = func(ctx context.Context, _ portout.RetryInput, cancel portout.CancelFunc) (portout.RetryOutcome, error) {
-		if err := cancel(ctx, "RB-00912:1"); err != nil {
+		if err := cancel(ctx, "RB-00912_1"); err != nil {
 			return portout.RetryOutcome{}, portout.ErrGatewayUnavailable
 		}
 		return portout.RetryOutcome{}, nil
@@ -116,7 +116,7 @@ func TestAFailedCancelCountsAMidtransError(t *testing.T) {
 
 func TestASuccessfulChargeCountsNoMidtransError(t *testing.T) {
 	h := newHarness(t)
-	h.repo.initiateFn = chargingRepo(heldBooking(entity.StatusHeld), "RB-00912:1")
+	h.repo.initiateFn = chargingRepo(heldBooking(entity.StatusHeld), "RB-00912_1")
 
 	_, err := h.uc.Initiate(context.Background(), "RB-00912", "grant-abc", dto.InitiateRequest{Method: entity.MethodGoPay})
 	require.NoError(t, err)
@@ -127,7 +127,7 @@ func TestACancelRefusedBecauseThePaymentIsAlreadyPaidIsNotAMidtransError(t *test
 	h := newHarness(t)
 	h.gw.cancelFn = func(context.Context, string) error { return portout.ErrAlreadySettled }
 	h.repo.retryFn = func(ctx context.Context, _ portout.RetryInput, cancel portout.CancelFunc) (portout.RetryOutcome, error) {
-		return portout.RetryOutcome{}, cancel(ctx, "RB-00912:1")
+		return portout.RetryOutcome{}, cancel(ctx, "RB-00912_1")
 	}
 
 	_, _ = h.uc.Retry(context.Background(), "RB-00912", "grant-abc")

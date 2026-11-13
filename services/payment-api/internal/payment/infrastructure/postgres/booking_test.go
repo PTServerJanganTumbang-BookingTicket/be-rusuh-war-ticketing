@@ -21,7 +21,7 @@ import (
 
 func TestGetOwned_OK(t *testing.T) {
 	db := &mockDB{queryRowFn: func(context.Context, string, ...any) pgx.Row {
-		return rowValues(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912:1"))...)
+		return rowValues(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912_1"))...)
 	}}
 
 	b, err := newRepo(db).GetOwned(context.Background(), "RB-00912", "grant-abc")
@@ -30,7 +30,7 @@ func TestGetOwned_OK(t *testing.T) {
 	assert.Equal(t, "RB-00912", b.ID)
 	assert.Equal(t, "EV-1", b.EventID)
 	assert.Equal(t, entity.StatusAwaitingPayment, b.Status)
-	assert.Equal(t, "RB-00912:1", b.PaymentRef)
+	assert.Equal(t, "RB-00912_1", b.PaymentRef)
 	assert.Equal(t, "grant-abc", b.GrantToken)
 }
 
@@ -110,12 +110,12 @@ func TestInitiate_HeldBooking_ChargesAndCommits(t *testing.T) {
 	require.NoError(t, err)
 
 	// order_id is derived from stored state, never from the client.
-	assert.Equal(t, "RB-00912:0", gotOrderID)
+	assert.Equal(t, "RB-00912_0", gotOrderID)
 	// The amount comes from booking_items, summed under the lock.
 	assert.Equal(t, int64(3000000), gotTotal)
 
 	assert.Equal(t, entity.StatusAwaitingPayment, out.Booking.Status)
-	assert.Equal(t, "RB-00912:0", out.OrderID)
+	assert.Equal(t, "RB-00912_0", out.OrderID)
 	assert.Equal(t, "https://q", out.Instructions["qr_url"])
 	assert.False(t, out.Declined)
 	assert.False(t, out.Replayed)
@@ -178,7 +178,7 @@ func TestInitiate_Replay_ReturnsStoredInstructionsWithoutCharging(t *testing.T) 
 	tx.queryRowFn = func(_ context.Context, sql string, _ ...any) pgx.Row {
 		switch {
 		case strings.Contains(sql, "FOR UPDATE"):
-			return rowValues(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912:1"))...)
+			return rowValues(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912_1"))...)
 		case strings.Contains(sql, "FROM payment_events"):
 			return rowValues(stored)
 		}
@@ -197,7 +197,7 @@ func TestInitiate_Replay_ReturnsStoredInstructionsWithoutCharging(t *testing.T) 
 
 	assert.False(t, charged)
 	assert.True(t, out.Replayed)
-	assert.Equal(t, "RB-00912:1", out.OrderID)
+	assert.Equal(t, "RB-00912_1", out.OrderID)
 	assert.Equal(t, "8277081234567890", out.Instructions["va_number"])
 	assert.Empty(t, tx.execs, "a replay must write nothing")
 	assert.Equal(t, 1, tx.commits)
@@ -210,7 +210,7 @@ func TestInitiate_Replay_NoStoredCharge_StillSucceeds(t *testing.T) {
 	tx := &mockTx{}
 	tx.queryRowFn = func(_ context.Context, sql string, _ ...any) pgx.Row {
 		if strings.Contains(sql, "FOR UPDATE") {
-			return rowValues(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912:1"))...)
+			return rowValues(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912_1"))...)
 		}
 		return rowErr(pgx.ErrNoRows)
 	}
@@ -234,7 +234,7 @@ func TestInitiate_Replay_CorruptStoredCharge_StillSucceeds(t *testing.T) {
 	tx.queryRowFn = func(_ context.Context, sql string, _ ...any) pgx.Row {
 		switch {
 		case strings.Contains(sql, "FOR UPDATE"):
-			return rowValues(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912:1"))...)
+			return rowValues(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912_1"))...)
 		case strings.Contains(sql, "FROM payment_events"):
 			return rowValues([]byte("not json"))
 		}
@@ -321,7 +321,7 @@ func TestInitiate_OrderIDUsesStoredAttemptCount(t *testing.T) {
 			return portout.ChargeResult{TransactionStatus: "pending", StatusCode: "201"}, nil
 		})
 	require.NoError(t, err)
-	assert.Equal(t, "RB-00912:3", gotOrderID)
+	assert.Equal(t, "RB-00912_3", gotOrderID)
 }
 
 // A timeout rolls back with payment_ref still NULL. The instrument may exist
@@ -390,7 +390,7 @@ func TestInitiate_StoresTheChargeResponse(t *testing.T) {
 	// Keyed so a redelivered notification cannot collide with it, and
 	// idempotent in its own right.
 	assert.Contains(t, inserts[0].sql, "ON CONFLICT (gateway_event_id) DO NOTHING")
-	assert.Contains(t, inserts[0].args, "RB-00912:0:charge:201")
+	assert.Contains(t, inserts[0].args, "RB-00912_0:charge:201")
 
 	var stored storedCharge
 	raw, ok := inserts[0].args[len(inserts[0].args)-1].([]byte)
@@ -438,7 +438,7 @@ func retryTx(booking []any) *mockTx {
 }
 
 func TestRetry_CancelsThenCommits(t *testing.T) {
-	tx := retryTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912:1"), withAttempts(1)))
+	tx := retryTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912_1"), withAttempts(1)))
 
 	var cancelledWhenWrites int
 	var gotOrderID string
@@ -451,8 +451,8 @@ func TestRetry_CancelsThenCommits(t *testing.T) {
 		})
 	require.NoError(t, err)
 
-	assert.Equal(t, "RB-00912:1", gotOrderID)
-	assert.Equal(t, "RB-00912:1", out.CancelledOrderID)
+	assert.Equal(t, "RB-00912_1", gotOrderID)
+	assert.Equal(t, "RB-00912_1", out.CancelledOrderID)
 	assert.Equal(t, 2, out.Attempt)
 	assert.Equal(t, entity.StatusHeld, out.Booking.Status)
 	assert.Empty(t, out.Booking.PaymentRef)
@@ -470,7 +470,7 @@ func TestRetry_OnlyFromAwaitingPayment(t *testing.T) {
 		entity.StatusLapsed, entity.StatusPendingCancellation, entity.StatusGranted,
 	} {
 		t.Run(string(st), func(t *testing.T) {
-			tx := retryTx(bookingValues(st, withPaymentRef("RB-00912:1")))
+			tx := retryTx(bookingValues(st, withPaymentRef("RB-00912_1")))
 			cancelled := false
 
 			_, err := newRepo(&mockDB{tx: tx}).Retry(context.Background(),
@@ -509,7 +509,7 @@ func TestRetry_TooLittleTimeLeft_RefusesBeforeCancelling(t *testing.T) {
 	}
 	for name, exp := range cases {
 		t.Run(name, func(t *testing.T) {
-			tx := retryTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912:1"), withExpiresAt(exp)))
+			tx := retryTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912_1"), withExpiresAt(exp)))
 			cancelled := false
 
 			_, err := newRepo(&mockDB{tx: tx}).Retry(context.Background(),
@@ -525,7 +525,7 @@ func TestRetry_TooLittleTimeLeft_RefusesBeforeCancelling(t *testing.T) {
 // Midtrans refusing to cancel something already paid is a real outcome, not a
 // transport failure: nothing changes and the webhook confirms the booking.
 func TestRetry_AlreadySettled_ChangesNothing(t *testing.T) {
-	tx := retryTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912:1")))
+	tx := retryTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912_1")))
 
 	_, err := newRepo(&mockDB{tx: tx}).Retry(context.Background(),
 		portout.RetryInput{BookingID: "RB-00912", GrantToken: "grant-abc", Now: fixedNow, MinRemaining: time.Minute, MaxAttempts: 5},
@@ -541,7 +541,7 @@ func TestRetry_AlreadySettled_ChangesNothing(t *testing.T) {
 // deliberately NOT raised: the customer may simply pay the VA they already
 // have.
 func TestRetry_CancelFails_RaisesNothing(t *testing.T) {
-	tx := retryTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912:1")))
+	tx := retryTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912_1")))
 
 	_, err := newRepo(&mockDB{tx: tx}).Retry(context.Background(),
 		portout.RetryInput{BookingID: "RB-00912", GrantToken: "grant-abc", Now: fixedNow, MinRemaining: time.Minute, MaxAttempts: 5},
@@ -564,7 +564,7 @@ func TestRetry_UnknownOrUnowned_Is404(t *testing.T) {
 // The UPDATE is guarded on the status it read, so a booking that moved between
 // the lock and the write cannot be dragged backwards.
 func TestRetry_UpdateIsGuardedOnStatus(t *testing.T) {
-	tx := retryTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912:1")))
+	tx := retryTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912_1")))
 
 	_, err := newRepo(&mockDB{tx: tx}).Retry(context.Background(),
 		portout.RetryInput{BookingID: "RB-00912", GrantToken: "grant-abc", Now: fixedNow, MinRemaining: time.Minute, MaxAttempts: 5},
@@ -624,12 +624,12 @@ func notifyTx(booking []any, items ...[]any) *mockTx {
 // the gateway's own settlement time (migration 0013). §5.4 reports it, and
 // before the column existed it reported the payment DEADLINE instead.
 func TestApplyNotification_Confirm_StoresTheGatewaySettlementTime(t *testing.T) {
-	tx := notifyTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912:1")))
+	tx := notifyTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912_1")))
 	settled := time.Date(2026, 3, 1, 10, 8, 30, 0, time.UTC)
 
 	_, err := newRepo(&mockDB{tx: tx}).ApplyNotification(context.Background(), portout.NotificationInput{
-		BookingID: "RB-00912", OrderID: "RB-00912:1",
-		GatewayEventID:    "RB-00912:1:settlement:200",
+		BookingID: "RB-00912", OrderID: "RB-00912_1",
+		GatewayEventID:    "RB-00912_1:settlement:200",
 		TransactionStatus: "settlement", FraudStatus: "accept",
 		PaidAt: &settled, Now: fixedNow, MaxAttempts: 5,
 	})
@@ -648,11 +648,11 @@ func TestApplyNotification_Confirm_StoresTheGatewaySettlementTime(t *testing.T) 
 // is faking it from the deadline again. COALESCE in SQL rather than a Go
 // fallback, so the value comes from the same clock as the transition.
 func TestApplyNotification_Confirm_WithoutAGatewayTimeFallsBackInSQL(t *testing.T) {
-	tx := notifyTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912:1")))
+	tx := notifyTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912_1")))
 
 	_, err := newRepo(&mockDB{tx: tx}).ApplyNotification(context.Background(), portout.NotificationInput{
-		BookingID: "RB-00912", OrderID: "RB-00912:1",
-		GatewayEventID:    "RB-00912:1:settlement:200",
+		BookingID: "RB-00912", OrderID: "RB-00912_1",
+		GatewayEventID:    "RB-00912_1:settlement:200",
 		TransactionStatus: "settlement", FraudStatus: "accept",
 		PaidAt: nil, Now: fixedNow, MaxAttempts: 5,
 	})
@@ -669,10 +669,10 @@ func TestApplyNotification_Settlement_ConfirmsIssuesAndEnqueues(t *testing.T) {
 		{"bi-1", "EV-1", "cat-1", "Festival", int64(1500000), "hmac-1", "3171****33", "a@example"},
 		{"bi-2", "EV-1", "cat-1", "Festival", int64(1500000), "hmac-2", "3171****44", "b@example"},
 	}
-	tx := notifyTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912:1")), items...)
+	tx := notifyTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912_1")), items...)
 
 	out, err := newRepo(&mockDB{tx: tx}).ApplyNotification(context.Background(),
-		notification("settlement", "accept", "RB-00912:1"))
+		notification("settlement", "accept", "RB-00912_1"))
 	require.NoError(t, err)
 
 	assert.True(t, out.Applied)
@@ -689,21 +689,21 @@ func TestApplyNotification_Settlement_ConfirmsIssuesAndEnqueues(t *testing.T) {
 // The idempotency row goes in FIRST, so a redelivery aborts before it can
 // touch a status.
 func TestApplyNotification_RecordsTheEventBeforeAnythingElse(t *testing.T) {
-	tx := notifyTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912:1")))
+	tx := notifyTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912_1")))
 
 	_, err := newRepo(&mockDB{tx: tx}).ApplyNotification(context.Background(),
-		notification("pending", "", "RB-00912:1"))
+		notification("pending", "", "RB-00912_1"))
 	require.NoError(t, err)
 
 	require.NotEmpty(t, tx.execs)
 	assert.Contains(t, tx.execs[0].sql, "INSERT INTO payment_events")
-	assert.Contains(t, tx.execs[0].args, "RB-00912:1:pending:200")
+	assert.Contains(t, tx.execs[0].args, "RB-00912_1:pending:200")
 }
 
 // The UNIQUE on gateway_event_id is the guard, and the rollback is the whole
 // point: a redelivered settlement must not issue a second set of tickets.
 func TestApplyNotification_Duplicate_RollsBack(t *testing.T) {
-	tx := notifyTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912:1")))
+	tx := notifyTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912_1")))
 	tx.execFn = func(_ context.Context, sql string, _ ...any) (pgconn.CommandTag, error) {
 		if strings.Contains(sql, "INSERT INTO payment_events") {
 			return pgconn.CommandTag{}, &pgconn.PgError{Code: "23505"}
@@ -712,7 +712,7 @@ func TestApplyNotification_Duplicate_RollsBack(t *testing.T) {
 	}
 
 	_, err := newRepo(&mockDB{tx: tx}).ApplyNotification(context.Background(),
-		notification("settlement", "accept", "RB-00912:1"))
+		notification("settlement", "accept", "RB-00912_1"))
 
 	assert.ErrorIs(t, err, portout.ErrDuplicateEvent)
 	assert.Empty(t, tx.execMatching("INSERT INTO tickets"))
@@ -732,7 +732,7 @@ func TestApplyNotification_ForeignKeyFailure_Is404(t *testing.T) {
 	}
 
 	_, err := newRepo(&mockDB{tx: tx}).ApplyNotification(context.Background(),
-		notification("settlement", "accept", "RB-00912:1"))
+		notification("settlement", "accept", "RB-00912_1"))
 	assert.ErrorIs(t, err, portout.ErrNotFound)
 }
 
@@ -740,10 +740,10 @@ func TestApplyNotification_ForeignKeyFailure_Is404(t *testing.T) {
 // ignored: applying it would move a booking on the strength of an instrument
 // that is no longer live.
 func TestApplyNotification_StaleAttempt_IsRecordedOnly(t *testing.T) {
-	tx := notifyTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912:2")))
+	tx := notifyTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912_2")))
 
 	out, err := newRepo(&mockDB{tx: tx}).ApplyNotification(context.Background(),
-		notification("settlement", "accept", "RB-00912:1"))
+		notification("settlement", "accept", "RB-00912_1"))
 	require.NoError(t, err)
 
 	assert.False(t, out.Applied)
@@ -760,7 +760,7 @@ func TestApplyNotification_LateSettlement_MarksDisputedWithoutTransitioning(t *t
 			tx := notifyTx(bookingValues(st, withPaymentRef("")))
 
 			out, err := newRepo(&mockDB{tx: tx}).ApplyNotification(context.Background(),
-				notification("settlement", "accept", "RB-00912:1"))
+				notification("settlement", "accept", "RB-00912_1"))
 			require.NoError(t, err)
 
 			assert.True(t, out.Applied)
@@ -778,10 +778,10 @@ func TestApplyNotification_LateSettlement_MarksDisputedWithoutTransitioning(t *t
 // Back to HELD, not EXPIRED: the payment failed, the claim did not, so the
 // seats stay with the customer until the TTL.
 func TestApplyNotification_Decline_ReturnsToHeldAndRaisesAttempts(t *testing.T) {
-	tx := notifyTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912:1"), withAttempts(1)))
+	tx := notifyTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912_1"), withAttempts(1)))
 
 	out, err := newRepo(&mockDB{tx: tx}).ApplyNotification(context.Background(),
-		notification("deny", "", "RB-00912:1"))
+		notification("deny", "", "RB-00912_1"))
 	require.NoError(t, err)
 
 	assert.True(t, out.Applied)
@@ -811,10 +811,10 @@ func TestApplyNotification_DeclineAtLastAttempt_NotifiesTheCustomer(t *testing.T
 // though its booking is dead, and BR-02 would block the customer from ever
 // buying again. The returned NIKs are needed for the Redis release.
 func TestApplyNotification_Expire_ReleasesNIKClaims(t *testing.T) {
-	tx := notifyTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912:1")))
+	tx := notifyTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912_1")))
 
 	out, err := newRepo(&mockDB{tx: tx}).ApplyNotification(context.Background(),
-		notification("expire", "", "RB-00912:1"))
+		notification("expire", "", "RB-00912_1"))
 	require.NoError(t, err)
 
 	assert.True(t, out.Applied)
@@ -834,7 +834,7 @@ func TestApplyNotification_UpdateAffectsNoRows_DowngradesToRecordOnly(t *testing
 	}
 	for name, status := range cases {
 		t.Run(name, func(t *testing.T) {
-			tx := notifyTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912:1")))
+			tx := notifyTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912_1")))
 			tx.execFn = func(_ context.Context, sql string, _ ...any) (pgconn.CommandTag, error) {
 				if strings.Contains(sql, "UPDATE bookings") {
 					return pgconn.NewCommandTag("UPDATE 0"), nil
@@ -843,7 +843,7 @@ func TestApplyNotification_UpdateAffectsNoRows_DowngradesToRecordOnly(t *testing
 			}
 
 			out, err := newRepo(&mockDB{tx: tx}).ApplyNotification(context.Background(),
-				notification(status, "accept", "RB-00912:1"))
+				notification(status, "accept", "RB-00912_1"))
 			require.NoError(t, err)
 
 			assert.False(t, out.Applied)
@@ -857,10 +857,10 @@ func TestApplyNotification_UpdateAffectsNoRows_DowngradesToRecordOnly(t *testing
 // capture without fraud_status=accept is authorised but NOT funded: issuing
 // tickets would hand out seats for money never received.
 func TestApplyNotification_UnfundedCapture_ChangesNothing(t *testing.T) {
-	tx := notifyTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912:1")))
+	tx := notifyTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912_1")))
 
 	out, err := newRepo(&mockDB{tx: tx}).ApplyNotification(context.Background(),
-		notification("capture", "challenge", "RB-00912:1"))
+		notification("capture", "challenge", "RB-00912_1"))
 	require.NoError(t, err)
 
 	assert.False(t, out.Applied)
@@ -873,10 +873,10 @@ func TestApplyNotification_UnfundedCapture_ChangesNothing(t *testing.T) {
 
 // pending is the normal state of an unpaid VA: recorded, nothing else.
 func TestApplyNotification_Pending_IsRecordedOnly(t *testing.T) {
-	tx := notifyTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912:1")))
+	tx := notifyTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912_1")))
 
 	out, err := newRepo(&mockDB{tx: tx}).ApplyNotification(context.Background(),
-		notification("pending", "", "RB-00912:1"))
+		notification("pending", "", "RB-00912_1"))
 	require.NoError(t, err)
 
 	assert.False(t, out.Applied)
@@ -888,10 +888,10 @@ func TestApplyNotification_Pending_IsRecordedOnly(t *testing.T) {
 // having a grace, so PENDING_CANCELLATION is accepted alongside
 // AWAITING_PAYMENT.
 func TestApplyNotification_ConfirmAcceptsTheGracePeriod(t *testing.T) {
-	tx := notifyTx(bookingValues(entity.StatusPendingCancellation, withPaymentRef("RB-00912:1")))
+	tx := notifyTx(bookingValues(entity.StatusPendingCancellation, withPaymentRef("RB-00912_1")))
 
 	out, err := newRepo(&mockDB{tx: tx}).ApplyNotification(context.Background(),
-		notification("settlement", "accept", "RB-00912:1"))
+		notification("settlement", "accept", "RB-00912_1"))
 	require.NoError(t, err)
 
 	assert.True(t, out.Applied)
@@ -906,17 +906,17 @@ func TestApplyNotification_BookingVanished_Is404(t *testing.T) {
 	}}
 
 	_, err := newRepo(&mockDB{tx: tx}).ApplyNotification(context.Background(),
-		notification("settlement", "accept", "RB-00912:1"))
+		notification("settlement", "accept", "RB-00912_1"))
 	assert.ErrorIs(t, err, portout.ErrNotFound)
 }
 
 // The booking is locked by ID, not by payment_ref: payment_ref is cleared on a
 // decline, so a later notification for that attempt would match nothing.
 func TestApplyNotification_LocksByID(t *testing.T) {
-	tx := notifyTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912:1")))
+	tx := notifyTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912_1")))
 
 	_, err := newRepo(&mockDB{tx: tx}).ApplyNotification(context.Background(),
-		notification("pending", "", "RB-00912:1"))
+		notification("pending", "", "RB-00912_1"))
 	require.NoError(t, err)
 
 	var locked string
@@ -932,10 +932,10 @@ func TestApplyNotification_LocksByID(t *testing.T) {
 
 // A guest booking has no account_id, so there is no BR-07 hold to release.
 func TestApplyNotification_GuestBooking_ReportsNoAccount(t *testing.T) {
-	tx := notifyTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912:1"), withAccountID("")))
+	tx := notifyTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912_1"), withAccountID("")))
 
 	out, err := newRepo(&mockDB{tx: tx}).ApplyNotification(context.Background(),
-		notification("settlement", "accept", "RB-00912:1"))
+		notification("settlement", "accept", "RB-00912_1"))
 	require.NoError(t, err)
 
 	assert.True(t, out.Applied)
@@ -950,7 +950,7 @@ func TestApplyNotification_GuestBooking_ReportsNoAccount(t *testing.T) {
 func TestGetOwned_ReadsThePaymentDetailColumns(t *testing.T) {
 	db := &mockDB{queryRowFn: func(context.Context, string, ...any) pgx.Row {
 		return rowValues(bookingValues(entity.StatusAwaitingPayment,
-			withPaymentRef("RB-00912:1"),
+			withPaymentRef("RB-00912_1"),
 			withPaymentAmount(3000000),
 			withPaymentStatus("pending"),
 			withInstructions(`{"bank":"bca","va_number":"8801234567890"}`),
@@ -959,7 +959,7 @@ func TestGetOwned_ReadsThePaymentDetailColumns(t *testing.T) {
 	b, err := newRepo(db).GetOwned(context.Background(), "RB-00912", "grant-abc")
 	require.NoError(t, err)
 
-	assert.Equal(t, "RB-00912:1", b.PaymentRef)
+	assert.Equal(t, "RB-00912_1", b.PaymentRef)
 	require.NotNil(t, b.PaymentAmount)
 	assert.Equal(t, int64(3000000), *b.PaymentAmount)
 	assert.Equal(t, "pending", b.PaymentStatus)
@@ -1001,10 +1001,10 @@ func TestGetOwned_UnreadableInstructions_StillReturnsTheBooking(t *testing.T) {
 // the column exists for: a booking back in HELD, retryable, showing exactly
 // why the last attempt failed without anyone opening payment_events.
 func TestApplyNotification_AppliedAction_RecordsTheGatewayStatus(t *testing.T) {
-	tx := notifyTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912:1")))
+	tx := notifyTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912_1")))
 
 	out, err := newRepo(&mockDB{tx: tx}).ApplyNotification(context.Background(),
-		notification("deny", "", "RB-00912:1"))
+		notification("deny", "", "RB-00912_1"))
 	require.NoError(t, err)
 
 	require.True(t, out.Applied)
@@ -1017,10 +1017,10 @@ func TestApplyNotification_AppliedAction_RecordsTheGatewayStatus(t *testing.T) {
 // and not funded, and a payment_status of 'capture' reads as money received —
 // the exact misreading ActionIgnoreUnfunded exists to prevent.
 func TestApplyNotification_UnfundedCapture_DoesNotRecordCapture(t *testing.T) {
-	tx := notifyTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912:1")))
+	tx := notifyTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912_1")))
 
 	out, err := newRepo(&mockDB{tx: tx}).ApplyNotification(context.Background(),
-		notification("capture", "challenge", "RB-00912:1"))
+		notification("capture", "challenge", "RB-00912_1"))
 	require.NoError(t, err)
 
 	assert.False(t, out.Applied)
