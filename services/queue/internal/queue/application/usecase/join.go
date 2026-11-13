@@ -20,7 +20,7 @@ import (
 // Config is the join policy.
 type Config struct {
 	Capacity     int64           // QUEUE_CAPACITY
-	SaleWindow   time.Duration   // SALE_WINDOW_SECONDS: TTL of token and acct keys, cookie Max-Age
+	SaleWindow   time.Duration   // SALE_WINDOW_SECONDS: TTL of token and acct keys
 	ClaimWait    time.Duration   // rejoin: how long an acct pointer without a token may be in flight before it is stale
 	RaceWait     time.Duration   // lost acct claim: how long to wait for the winning join's token
 	RateLimits   bool            // off only in load tests
@@ -61,7 +61,7 @@ type JoinInput struct {
 	CaptchaToken string
 	DeviceID     string // X-Device-Id
 	Bearer       string // access token without "Bearer "
-	QueueToken   string // cookie or X-Queue-Token (BR-09)
+	QueueToken   string // X-Queue-Token (BR-09)
 	ClientIP     string // from the gateway, never from X-Forwarded-For
 }
 
@@ -101,8 +101,7 @@ func NewJoin(cfg Config, d Deps) *Join {
 }
 
 // ErrForeignToken marks a rejection because the presented queue_token belongs
-// to another device or account. The HTTP layer clears the cookie on it, so the
-// next join is a fresh one instead of the same 401 forever.
+// to another device or account.
 var ErrForeignToken = errors.New("queue token belongs to another device or account")
 
 // errForeignToken is a 401 that matches both *apperror.AppError and ErrForeignToken.

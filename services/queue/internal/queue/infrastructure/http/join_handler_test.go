@@ -6,7 +6,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/awslabs/aws-lambda-go-api-proxy/core"
@@ -29,7 +28,7 @@ func (f *fakeJoin) Join(_ context.Context, in usecase.JoinInput) (usecase.JoinRe
 
 func serveJoin(t *testing.T, f *fakeJoin, body string, mutate func(*http.Request)) *httptest.ResponseRecorder {
 	t.Helper()
-	h := NewHandler(f, Options{CookieDomain: "my-rusuh.my.id", CookieMaxAge: time.Hour, SSEBaseURL: "https://events.my-rusuh.my.id/"})
+	h := NewHandler(f, Options{SSEBaseURL: "https://events.my-rusuh.my.id/"})
 	mux := http.NewServeMux()
 	RegisterRoutes(mux, h)
 	req := httptest.NewRequest(http.MethodPost, "/events/E1/queue/join", strings.NewReader(body))
@@ -50,7 +49,7 @@ func joined(outcome usecase.Outcome) usecase.JoinResult {
 	}
 }
 
-func TestAFirstJoinAnswersWithTheTicketPositionStreamAndAScopedCookie(t *testing.T) {
+func TestAFirstJoinAnswersWithTheTicketPositionAndStreamAndSetsNoCookie(t *testing.T) {
 	f := &fakeJoin{res: joined(usecase.Queued)}
 	rec := serveJoin(t, f, `{"captcha_token":"cap"}`, nil)
 	if rec.Code != 200 {
@@ -69,20 +68,22 @@ func TestAFirstJoinAnswersWithTheTicketPositionStreamAndAScopedCookie(t *testing
 	if _, has := d["rejoined"]; has {
 		t.Fatal("a first join must not say rejoined")
 	}
-	c := rec.Result().Cookies()[0]
-	if c.Name != CookieName || c.Value != "qt_A" || c.Path != "/events/E1" || c.Domain != "my-rusuh.my.id" || c.MaxAge != 3600 || !c.HttpOnly || !c.Secure || c.SameSite != http.SameSiteStrictMode {
-		t.Fatalf("cookie = %+v", c)
+	if c := rec.Header().Values("Set-Cookie"); len(c) != 0 {
+		t.Fatalf("Set-Cookie = %v, want none", c)
 	}
 	if f.in.EventID != "E1" || f.in.CaptchaToken != "cap" || f.in.ClientIP != "203.0.113.9" {
 		t.Fatalf("input = %+v", f.in)
 	}
 }
 
-func TestARejoinSaysSoAndReportsTheEngagementState(t *testing.T) {
+func TestARejoinSaysSoAndReportsTheEngagementStateAndSetsNoCookie(t *testing.T) {
 	rec := serveJoin(t, &fakeJoin{res: joined(usecase.Rejoined)}, `{}`, nil)
 	d := data(t, rec)
-	if d["rejoined"] != true || d["state"] != "QUEUED" || d["position"] != float64(20) {
+	if d["rejoined"] != true || d["state"] != "QUEUED" || d["position"] != float64(20) || d["queue_token"] != "qt_A" {
 		t.Fatalf("data = %v", d)
+	}
+	if c := rec.Header().Values("Set-Cookie"); len(c) != 0 {
+		t.Fatalf("Set-Cookie = %v, want none", c)
 	}
 }
 
@@ -91,17 +92,20 @@ func TestJoinPassesTheCallersCredentialsToTheUseCase(t *testing.T) {
 	serveJoin(t, f, `{}`, func(r *http.Request) {
 		r.Header.Set("Authorization", "Bearer jwt")
 		r.Header.Set("X-Device-Id", "dev-1")
-		r.AddCookie(&http.Cookie{Name: CookieName, Value: "from-cookie"})
-	})
-	if f.in.Bearer != "jwt" || f.in.DeviceID != "dev-1" || f.in.QueueToken != "from-cookie" {
-		t.Fatalf("input = %+v", f.in)
-	}
-	serveJoin(t, f, `{}`, func(r *http.Request) {
-		r.AddCookie(&http.Cookie{Name: CookieName, Value: "from-cookie"})
 		r.Header.Set(HeaderQueueToken, "from-header")
 	})
-	if f.in.QueueToken != "from-header" {
-		t.Fatalf("queue token = %q, want the header to win", f.in.QueueToken)
+	if f.in.Bearer != "jwt" || f.in.DeviceID != "dev-1" || f.in.QueueToken != "from-header" {
+		t.Fatalf("input = %+v", f.in)
+	}
+}
+
+// A queue_token cookie left in a browser by an older release is never read: it caused the wrong place to be presented
+// when the customer joined another event.
+func TestJoinIgnoresAnOldQueueTokenCookie(t *testing.T) {
+	f := &fakeJoin{res: joined(usecase.Queued)}
+	serveJoin(t, f, `{}`, func(r *http.Request) { r.AddCookie(&http.Cookie{Name: "queue_token", Value: "from-cookie"}) })
+	if f.in.QueueToken != "" {
+		t.Fatalf("queue token = %q, want the cookie ignored", f.in.QueueToken)
 	}
 }
 
@@ -119,20 +123,16 @@ func TestJoinRejectsAnUnreadableBodyOrAuthorizationHeaderWithoutCallingTheUseCas
 	}
 }
 
-func TestJoinErrorsKeepTheirStatusAndAForeignCookieIsCleared(t *testing.T) {
+func TestJoinErrorsKeepTheirStatusAndSetNoCookie(t *testing.T) {
 	f := &fakeJoin{err: apperror.ErrBadRequest("captcha").WithCode("CAPTCHA_FAILED")}
 	if rec := serveJoin(t, f, `{}`, nil); rec.Code != 400 || !strings.Contains(rec.Body.String(), "CAPTCHA_FAILED") || len(rec.Result().Cookies()) != 0 {
 		t.Fatalf("%d %s cookies=%v", rec.Code, rec.Body, rec.Result().Cookies())
 	}
 
 	f.err = foreign("TOKEN_FOREIGN")
-	rec := serveJoin(t, f, `{}`, func(r *http.Request) { r.AddCookie(&http.Cookie{Name: CookieName, Value: "x"}) })
-	if cs := rec.Result().Cookies(); len(cs) != 1 || cs[0].MaxAge >= 0 || cs[0].Path != "/events/E1" {
-		t.Fatalf("cookie not cleared: %v", cs)
-	}
-	rec = serveJoin(t, f, `{}`, func(r *http.Request) { r.Header.Set(HeaderQueueToken, "x") })
-	if len(rec.Result().Cookies()) != 0 {
-		t.Fatal("a foreign header token wiped the caller's cookie")
+	rec := serveJoin(t, f, `{}`, func(r *http.Request) { r.Header.Set(HeaderQueueToken, "x") })
+	if rec.Code != 401 || len(rec.Header().Values("Set-Cookie")) != 0 {
+		t.Fatalf("%d Set-Cookie=%v", rec.Code, rec.Header().Values("Set-Cookie"))
 	}
 }
 

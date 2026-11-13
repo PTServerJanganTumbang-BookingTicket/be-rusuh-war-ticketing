@@ -124,11 +124,7 @@ func Wire(cfg config.Config, c Clients) (*Server, error) {
 		Metrics: c.Metrics,
 		Clock:   c.Clock,
 	})
-	h := queuehttp.NewHandler(join, queuehttp.Options{
-		CookieDomain: cfg.CookieDomain,
-		CookieMaxAge: cfg.Join.SaleWindow,
-		SSEBaseURL:   cfg.SSEBaseURL,
-	})
+	h := queuehttp.NewHandler(join, queuehttp.Options{SSEBaseURL: cfg.SSEBaseURL})
 
 	if details != nil { // /queue/me needs Aurora for customers who already have a grant
 		h.WithMe(me)

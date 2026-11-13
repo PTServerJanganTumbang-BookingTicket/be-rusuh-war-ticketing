@@ -5,10 +5,10 @@ import (
 	"testing"
 )
 
-// Review finding: a foreign token sent in X-Queue-Token is rejected, but the
-// caller's own cookie (not the carrier) must not be cleared. A foreign token
-// sent in the cookie is cleared.
-func TestForeignToken_clearsTheCookieOnlyWhenTheCookieCarriedIt(t *testing.T) {
+// The queue never reads or writes the queue_token cookie (removed 2026-11-13: a browser's cookie was presented when
+// the customer joined another event). A foreign token in X-Queue-Token is refused; the same token in an old cookie is
+// not read at all, so the caller simply gets a new place. Neither answer sets a cookie.
+func TestForeignToken_isRefusedInTheHeaderAndIgnoredInAnOldCookie(t *testing.T) {
 	w := newWorld(false)
 	if err := w.start(); err != nil {
 		t.Fatal(err)
@@ -21,16 +21,15 @@ func TestForeignToken_clearsTheCookieOnlyWhenTheCookieCarriedIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, c := range []struct {
-		carrier   string
-		wantClear bool
-	}{{"header", false}, {"cookie", true}} {
+		carrier    string
+		wantStatus int
+	}{{"header", http.StatusUnauthorized}, {"cookie", http.StatusOK}} {
 		r := w.do(joinReq{eventID: "E1", deviceID: "dev-laptop-000000002", queueToken: "qt_G", carrier: c.carrier})
-		if r.status != http.StatusUnauthorized {
-			t.Fatalf("%s: status %d, want 401", c.carrier, r.status)
+		if r.status != c.wantStatus {
+			t.Fatalf("%s carrier: status %d, want %d", c.carrier, r.status, c.wantStatus)
 		}
-		_, err := r.cookie("queue_token")
-		if cleared := err == nil; cleared != c.wantClear {
-			t.Fatalf("%s carrier: cookie cleared = %v, want %v", c.carrier, cleared, c.wantClear)
+		if sc := r.header.Values("Set-Cookie"); len(sc) != 0 {
+			t.Fatalf("%s carrier: Set-Cookie = %v, want none", c.carrier, sc)
 		}
 	}
 }

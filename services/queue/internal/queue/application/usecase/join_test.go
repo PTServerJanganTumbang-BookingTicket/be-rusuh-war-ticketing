@@ -181,7 +181,7 @@ func hashDevice(pepper []byte, id string) string {
 }
 
 // A presented token that is not the caller's is a 401 that also matches
-// ErrForeignToken (the HTTP layer clears the cookie on it), and issues nothing.
+// ErrForeignToken, and issues nothing.
 func TestJoin_foreignTokenIs401AndMatchesErrForeignToken(t *testing.T) {
 	j, rdb, bearer := setup(t, "")
 	ctx := context.Background()

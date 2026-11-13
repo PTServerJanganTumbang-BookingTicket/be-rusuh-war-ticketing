@@ -56,10 +56,6 @@ Parameters:
     Type: String
     Description: Secrets Manager secret holding the Cloudflare Turnstile secret key (CAPTCHA at join). Never in the repo.
 
-  CookieDomain:
-    Type: String
-    Default: my-rusuh.my.id
-    Description: queue_token cookie domain; join is on api.*, the stream on events.*
 
   SseBaseUrl:
     Type: String
@@ -151,7 +147,6 @@ Resources:
           APP_ENV: production
           REDIS_ADDR: !Ref RedisAddr
           REDIS_CLUSTER: "false"
-          COOKIE_DOMAIN: !Ref CookieDomain
           SSE_BASE_URL: !Ref SseBaseUrl
           QUEUE_CAPACITY: !Ref QueueCapacity
           SALE_WINDOW_SECONDS: !Ref SaleWindowSeconds

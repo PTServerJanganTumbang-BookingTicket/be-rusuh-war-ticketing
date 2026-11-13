@@ -1,6 +1,7 @@
+# 2026-11-13: queue_token cookie removed (Erma approved editing this frozen file); clients send X-Queue-Token.
 @step-4 @queue-service @join @BR-07 @BR-09
 Feature: If I come back, I get my place back, not a second one
-  Two ways back (contract §3.1): BR-09 I bring my queue_token (cookie on web, X-Queue-Token on mobile);
+  Two ways back (contract §3.1): BR-09 I bring my queue_token (X-Queue-Token);
   BR-07 I am logged in and my account already has a place. Neither creates a second place or number.
   Guests are not covered by BR-07. The token must be mine: join_token_binding.feature.
 
@@ -16,21 +17,22 @@ Feature: If I come back, I get my place back, not a second one
     When account "acc-1" joins "E1" again from another device with captcha "cap-ok"
     Then the response status is 200 with message "Rejoined existing queue position"
     And data has ticket_no 32748, now_serving 31520, position 1228, queue_token "qt_A", rejoined true, state "QUEUED"
-    And the response sets cookie "queue_token" to "qt_A"
+    And the response sets no cookie
     And queue:{E1} issued is still 40000
     And the metric "Br07JoinRecovered" is incremented
 
   @integration @redis-cluster @BR-09
-  Scenario Outline: Outline: I bring my queue_token back from the same device and get the same place
+  Scenario: I bring my queue_token back from the same device and get the same place
     Given a guest with device id "dev-gggggggggggggggg" joined "E1" earlier with ticket number 32748 and queue_token "qt_G"
-    When the guest joins "E1" again from the same device sending queue_token "qt_G" as <carrier> with captcha "cap-ok"
+    When the guest joins "E1" again from the same device sending queue_token "qt_G" as the X-Queue-Token header with captcha "cap-ok"
     Then data has ticket_no 32748, queue_token "qt_G", rejoined true, state "QUEUED"
     And queue:{E1} issued is still 40000
 
-    Examples:
-      | carrier                 |
-      | the queue_token cookie  |
-      | the X-Queue-Token header |
+  @integration @redis-cluster @BR-09
+  Scenario: An old queue_token cookie is not read
+    Given a guest with device id "dev-gggggggggggggggg" joined "E1" earlier with ticket number 32748 and queue_token "qt_G"
+    When the guest joins "E1" again from the same device sending queue_token "qt_G" as the queue_token cookie with captcha "cap-ok"
+    Then the response is a normal new join for "E1"
 
   @integration @redis-cluster @BR-09
   Scenario: A queue_token from another event is ignored

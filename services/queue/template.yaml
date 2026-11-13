@@ -24,10 +24,6 @@ Parameters:
   RedisAddr:
     Type: String
     Description: ElastiCache (cluster mode) configuration endpoint, host:port
-  CookieDomain:
-    Type: String
-    Default: my-rusuh.my.id
-    Description: queue_token cookie domain; join is on api.*, the stream on events.*
   SseBaseUrl:
     Type: String
     Default: https://events.my-rusuh.my.id
@@ -65,7 +61,6 @@ Resources:
           APP_ENV: production
           REDIS_ADDR: !Ref RedisAddr
           REDIS_CLUSTER: "true"
-          COOKIE_DOMAIN: !Ref CookieDomain
           SSE_BASE_URL: !Ref SseBaseUrl
           QUEUE_CAPACITY: "300000"
           SALE_WINDOW_SECONDS: "21600"

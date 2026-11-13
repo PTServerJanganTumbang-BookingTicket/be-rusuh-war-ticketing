@@ -29,7 +29,7 @@ func (f *fakeMe) Get(_ context.Context, in usecase.MeInput) (usecase.MeResult, e
 
 func serveMe(t *testing.T, f *fakeMe, mutate func(*http.Request)) *httptest.ResponseRecorder {
 	t.Helper()
-	h := NewHandler(nil, Options{CookieDomain: "my-rusuh.my.id", CookieMaxAge: time.Hour}).WithMe(f)
+	h := NewHandler(nil, Options{}).WithMe(f)
 	mux := http.NewServeMux()
 	RegisterRoutes(mux, h)
 	req := httptest.NewRequest(http.MethodGet, "/events/E1/queue/me", nil)
@@ -99,34 +99,32 @@ func TestMePassesTheCallersCredentialsToTheUseCase(t *testing.T) {
 	serveMe(t, f, func(r *http.Request) {
 		r.Header.Set("X-Device-Id", "dev-1")
 		r.Header.Set("Authorization", "Bearer abc")
-		r.AddCookie(&http.Cookie{Name: CookieName, Value: "from-cookie"})
+		r.Header.Set(HeaderQueueToken, "from-header")
 	})
-	want := usecase.MeInput{EventID: "E1", DeviceID: "dev-1", Bearer: "abc", QueueToken: "from-cookie"}
+	want := usecase.MeInput{EventID: "E1", DeviceID: "dev-1", Bearer: "abc", QueueToken: "from-header"}
 	if f.in != want {
 		t.Fatalf("input %+v, want %+v", f.in, want)
 	}
-	serveMe(t, f, func(r *http.Request) {
-		r.Header.Set(HeaderQueueToken, "from-header")
-		r.AddCookie(&http.Cookie{Name: CookieName, Value: "from-cookie"})
-	})
-	if f.in.QueueToken != "from-header" {
-		t.Fatalf("queue token %q, want the X-Queue-Token header to win", f.in.QueueToken)
+}
+
+func TestMeIgnoresAnOldQueueTokenCookie(t *testing.T) {
+	f := &fakeMe{res: usecase.MeResult{State: domain.MeExpired}}
+	serveMe(t, f, func(r *http.Request) { r.AddCookie(&http.Cookie{Name: "queue_token", Value: "from-cookie"}) })
+	if f.in.QueueToken != "" {
+		t.Fatalf("queue token %q, want the cookie ignored", f.in.QueueToken)
 	}
 }
 
-func TestMeCookieIsReissuedOrClearedOnlyWhenTheUseCaseSaysSo(t *testing.T) {
-	rec := serveMe(t, &fakeMe{res: usecase.MeResult{State: domain.MeQueued, QueueToken: "qt_9", SetCookie: true}}, nil)
-	c := rec.Result().Cookies()
-	if len(c) != 1 || c[0].Name != CookieName || c[0].Value != "qt_9" || c[0].Path != "/events/E1" || !c[0].HttpOnly || !c[0].Secure || c[0].MaxAge != 3600 {
-		t.Fatalf("re-issued cookie %+v", c)
-	}
-	rec = serveMe(t, &fakeMe{res: usecase.MeResult{State: domain.MeConfirmed, BookingID: "RB-1", ClearCookie: true}}, nil)
-	if c := rec.Result().Cookies(); len(c) != 1 || c[0].MaxAge != -1 {
-		t.Fatalf("clearing cookie %+v", c)
-	}
-	rec = serveMe(t, &fakeMe{res: usecase.MeResult{State: domain.MeQueued}}, nil)
-	if c := rec.Result().Cookies(); len(c) != 0 {
-		t.Fatalf("a plain answer set cookies: %+v", c)
+func TestMeNeverSetsACookie(t *testing.T) {
+	for _, res := range []usecase.MeResult{
+		{State: domain.MeQueued, QueueToken: "qt_9"},   // Bearer-only recovery
+		{State: domain.MeConfirmed, BookingID: "RB-1"}, // tombstone
+		{State: domain.MeExpired},
+	} {
+		rec := serveMe(t, &fakeMe{res: res}, nil)
+		if c := rec.Header().Values("Set-Cookie"); len(c) != 0 {
+			t.Fatalf("%s: Set-Cookie = %v, want none", res.State, c)
+		}
 	}
 }
 
@@ -134,19 +132,13 @@ func foreign(code string) error {
 	return fmt.Errorf("%w: %w", usecase.ErrForeignToken, apperror.New(http.StatusUnauthorized, "40100", "milik orang lain").WithCode(code))
 }
 
-func TestMeAForeignTokenIs401AndClearsOnlyTheCookieItCameIn(t *testing.T) {
-	rec := serveMe(t, &fakeMe{err: foreign(domain.CodeDeviceMismatch)}, func(r *http.Request) {
-		r.AddCookie(&http.Cookie{Name: CookieName, Value: "q"})
-	})
+func TestMeAForeignTokenIs401AndSetsNoCookie(t *testing.T) {
+	rec := serveMe(t, &fakeMe{err: foreign(domain.CodeDeviceMismatch)}, func(r *http.Request) { r.Header.Set(HeaderQueueToken, "q") })
 	if rec.Code != 401 || !strings.Contains(rec.Body.String(), "DEVICE_MISMATCH") {
 		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
 	}
-	if c := rec.Result().Cookies(); len(c) != 1 || c[0].MaxAge != -1 {
-		t.Fatalf("cookie not cleared: %+v", c)
-	}
-	rec = serveMe(t, &fakeMe{err: foreign(domain.CodeDeviceMismatch)}, func(r *http.Request) { r.Header.Set(HeaderQueueToken, "q") })
-	if c := rec.Result().Cookies(); len(c) != 0 {
-		t.Fatalf("a foreign X-Queue-Token wiped the caller's own cookie: %+v", c)
+	if c := rec.Header().Values("Set-Cookie"); len(c) != 0 {
+		t.Fatalf("Set-Cookie = %v, want none", c)
 	}
 }
 

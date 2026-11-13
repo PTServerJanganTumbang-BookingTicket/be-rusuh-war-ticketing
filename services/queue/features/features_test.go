@@ -232,7 +232,7 @@ func newWorld(integration bool) *world {
 		hook:        &cmdHook{},
 		usedIPs:     map[string]bool{defaultIP: true},
 		cfg:         cfg,
-		opt:         queuehttp.Options{CookieMaxAge: cfg.SaleWindow, SSEBaseURL: testSSEBase},
+		opt:         queuehttp.Options{SSEBaseURL: testSSEBase},
 		clock:       time.Now,
 		fcaptcha:    &fakeCaptcha{accept: map[string]bool{defaultCaptcha: true}, reject: map[string]bool{"cap-bad": true}},
 		metrics:     newFakeMetrics(),
@@ -468,7 +468,7 @@ type joinReq struct {
 	noDevice   bool
 	bearer     string
 	queueToken string
-	carrier    string // "cookie" (default) or "header"
+	carrier    string // "header" (default) or "cookie" (an old cookie the queue must ignore)
 	ip         string
 	header     map[string]string
 	ctx        context.Context
@@ -503,10 +503,10 @@ func (w *world) buildRequest(r joinReq) *http.Request {
 		req.Header.Set("Authorization", "Bearer "+r.bearer)
 	}
 	if r.queueToken != "" {
-		if r.carrier == "header" {
-			req.Header.Set(queuehttp.HeaderQueueToken, r.queueToken)
+		if r.carrier == "cookie" {
+			req.AddCookie(&http.Cookie{Name: "queue_token", Value: r.queueToken})
 		} else {
-			req.AddCookie(&http.Cookie{Name: queuehttp.CookieName, Value: r.queueToken})
+			req.Header.Set(queuehttp.HeaderQueueToken, r.queueToken)
 		}
 	}
 	for k, v := range r.header {
