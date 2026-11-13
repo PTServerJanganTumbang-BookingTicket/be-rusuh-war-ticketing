@@ -308,6 +308,12 @@ Resources:
           # as a forgery: no booking is ever confirmed and the sweep resells
           # the seats. Populate it before the first charge.
           MIDTRANS_SIGNATURE_SECRET_KEY: !Sub '{{resolve:secretsmanager:rusuh-${Environment}/midtrans-signature-secret-key:SecretString:signature_secret_key}}'
+          # Comma-separated list of IPs allowed to call POST /payments/webhook.
+          # Defense-in-depth: the signature already proves authenticity, but
+          # limiting who can attempt a guess reduces the attack surface.
+          # Get the current list from: https://docs.midtrans.com/docs/ip-address
+          # Sandbox and production have different IP ranges.
+          MIDTRANS_WEBHOOK_IP_ALLOWLIST: !Sub '{{resolve:ssm:/rusuh/${Environment}/midtrans/webhook-ip-allowlist}}'
 
   # ============================================================================
   # CloudWatch Log Group (explicit retention)

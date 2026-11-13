@@ -92,7 +92,8 @@ func passthroughGuard() func(http.Handler) http.Handler {
 func newServer(t *testing.T, uc *fakeUsecase, guard func(http.Handler) http.Handler) *http.ServeMux {
 	t.Helper()
 	mux := http.NewServeMux()
-	RegisterRoutes(mux, NewPayment(uc), guard)
+	// Empty allowlist disables IP check in tests.
+	RegisterRoutes(mux, NewPayment(uc, nil), guard)
 	return mux
 }
 

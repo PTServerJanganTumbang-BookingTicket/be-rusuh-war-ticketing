@@ -138,7 +138,7 @@ func TestExchangePassesTheUseCaseErrorThrough(t *testing.T) {
 func TestTheHandoffRoutesDoNotShadowTheExistingPaymentRoutes(t *testing.T) {
 	mux := http.NewServeMux()
 	pay := &fakeUsecase{}
-	RegisterRoutes(mux, NewPayment(pay), testGuard(grantauth.Grant{Token: "gt_1"}))
+	RegisterRoutes(mux, NewPayment(pay, nil), testGuard(grantauth.Grant{Token: "gt_1"}))
 	RegisterHandoffRoutes(mux, NewHandoff(&fakeHandoff{}), testGuard(grantauth.Grant{Token: "gt_1"}))
 	for _, c := range []struct{ method, path string }{
 		{http.MethodPost, "/payments/RB-1/handoff"},

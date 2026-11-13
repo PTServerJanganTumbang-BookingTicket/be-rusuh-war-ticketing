@@ -46,6 +46,7 @@ func Load() (Config, error) {
 			Timeout:            envutil.EnvDuration("MIDTRANS_TIMEOUT_MS", 10*time.Second),
 			BreakerThreshold:   envutil.EnvInt("PAYMENT_BREAKER_FAILURE_THRESHOLD", 5),
 			BreakerOpenFor:     envutil.EnvDuration("PAYMENT_BREAKER_OPEN_SECONDS", 30*time.Second),
+			WebhookIPAllowlist: parseIPAllowlist(os.Getenv("MIDTRANS_WEBHOOK_IP_ALLOWLIST")),
 		},
 		Payment: Payment{
 			TTL:                 envutil.EnvDuration("PAYMENT_TTL_SECONDS", 600*time.Second),
@@ -151,4 +152,21 @@ func (a App) validatePaymentPage() error {
 			BookingIDPlaceholder, p)
 	}
 	return nil
+}
+
+// parseIPAllowlist splits a comma-separated list of IPs into a slice, trimming
+// whitespace from each entry and dropping empty strings.
+func parseIPAllowlist(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }

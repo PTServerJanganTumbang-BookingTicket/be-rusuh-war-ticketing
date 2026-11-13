@@ -3,7 +3,11 @@ package http
 import (
 	"encoding/json"
 	"log/slog"
+	"net"
 	"net/http"
+	"strings"
+
+	"github.com/awslabs/aws-lambda-go-api-proxy/core"
 
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/apinizer"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/payment-api/internal/payment/domain/dto"
@@ -24,6 +28,18 @@ import (
 //
 // Everything interesting is therefore in the log, not the response.
 func (c *PaymentController) Webhook(w http.ResponseWriter, r *http.Request) {
+	// IP allowlist check — defense in depth alongside signature verification.
+	// An empty allowlist disables the check (local dev).
+	if len(c.webhookIPAllowlist) > 0 {
+		ip := webhookClientIP(r)
+		if _, ok := c.webhookIPAllowlist[ip]; !ok {
+			slog.WarnContext(r.Context(), "webhook from non-allowlisted IP",
+				slog.String("ip", ip))
+			c.ack(w)
+			return
+		}
+	}
+
 	var n dto.Notification
 	if err := json.NewDecoder(r.Body).Decode(&n); err != nil {
 		// Even a body we cannot parse gets a 200: retrying it will not make it
@@ -44,4 +60,23 @@ func (c *PaymentController) Webhook(w http.ResponseWriter, r *http.Request) {
 
 func (c *PaymentController) ack(w http.ResponseWriter) {
 	apinizer.WriteEnvelope(w, http.StatusOK, "Callback processed", struct{}{})
+}
+
+// webhookClientIP extracts the client IP from the request, preferring the
+// API Gateway context (Lambda) over X-Forwarded-For (which the client controls
+// and cannot be trusted when set by anything other than the gateway).
+func webhookClientIP(r *http.Request) string {
+	// Lambda behind API Gateway: the source IP is in the request context.
+	if gw, ok := core.GetAPIGatewayV2ContextFromContext(r.Context()); ok && gw.HTTP.SourceIP != "" {
+		return gw.HTTP.SourceIP
+	}
+	// Fallback for local dev or tests: use RemoteAddr, stripping the port.
+	// X-Forwarded-For is deliberately NOT used as a fallback: outside Lambda,
+	// it is client-controlled and would let any caller claim any IP.
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		// RemoteAddr without a port (rare).
+		return strings.TrimSpace(r.RemoteAddr)
+	}
+	return host
 }

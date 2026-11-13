@@ -139,7 +139,7 @@ func newMux(pool *pgxpool.Pool, rdb *goredis.Client, cfg paymentcfg.Config) (*Se
 	// The CI smoke test curls it after a deploy, so a different path here would
 	// report a healthy release as a failed one.
 	apinizer.RegisterHealthCheck(mux, "/sys/ping")
-	paymenthttp.RegisterRoutes(mux, paymenthttp.NewPayment(uc), sessionGuard)
+	paymenthttp.RegisterRoutes(mux, paymenthttp.NewPayment(uc, cfg.Midtrans.WebhookIPAllowlist), sessionGuard)
 	paymenthttp.RegisterHandoffRoutes(mux, paymenthttp.NewHandoff(handoff), grantGuard)
 
 	// The HTTP adapter for API Gateway events — same format Lambda uses.

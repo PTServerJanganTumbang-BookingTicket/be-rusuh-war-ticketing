@@ -22,13 +22,24 @@ type Payment interface {
 
 // PaymentController translates HTTP to use case calls and back.
 type PaymentController struct {
-	usecase  portin.IPaymentUsecase
-	validate *validator.Validate
+	usecase            portin.IPaymentUsecase
+	validate           *validator.Validate
+	webhookIPAllowlist map[string]struct{}
 }
 
 // NewPayment creates a PaymentController behind the Payment interface.
-func NewPayment(uc portin.IPaymentUsecase) Payment {
-	return &PaymentController{usecase: uc, validate: validator.New()}
+// webhookIPs is the allowlist for POST /payments/webhook; an empty slice
+// disables the check (acceptable for local dev, logs a warning).
+func NewPayment(uc portin.IPaymentUsecase, webhookIPs []string) Payment {
+	allow := make(map[string]struct{}, len(webhookIPs))
+	for _, ip := range webhookIPs {
+		allow[ip] = struct{}{}
+	}
+	return &PaymentController{
+		usecase:            uc,
+		validate:           validator.New(),
+		webhookIPAllowlist: allow,
+	}
 }
 
 // WriteError maps an error onto the response envelope, carrying the Appendix A

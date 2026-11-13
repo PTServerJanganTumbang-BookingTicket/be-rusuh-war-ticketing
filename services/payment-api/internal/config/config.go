@@ -111,6 +111,14 @@ type Midtrans struct {
 	// needs no scheduler.
 	BreakerThreshold int
 	BreakerOpenFor   time.Duration
+
+	// WebhookIPAllowlist is the set of IPs allowed to call POST /payments/webhook.
+	// Defense-in-depth alongside signature verification: the signature proves
+	// authenticity, the allowlist limits who can even attempt a guess.
+	//
+	// Comma-separated in the environment variable. An empty list disables the
+	// check, which is acceptable for local development but logs a warning.
+	WebhookIPAllowlist []string
 }
 
 // Payment holds the window and attempt rules.
