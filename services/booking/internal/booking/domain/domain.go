@@ -52,6 +52,8 @@ const (
 	MetricStockNegative = "StockNegative"
 	// MetricNIKClaimConflict counts nik_claims refusing a NIK that Redis had let through (a flush or failover).
 	MetricNIKClaimConflict = "NIKClaimConflict"
+	// MetricBookingsHeld counts a booking this request moved to HELD (per event; the FR-35 denominator).
+	MetricBookingsHeld = "BookingsHeld"
 )
 
 // ErrNIKUnavailable means the NIK check could not be completed: the invocation failed or timed out, nik-verify or

@@ -53,6 +53,7 @@ type recordingMetrics struct {
 
 func (m *recordingMetrics) Incr(n string)              { m.record(n) }
 func (m *recordingMetrics) Record(n string, _ float64) { m.record(n) }
+func (m *recordingMetrics) IncrEvent(n, ev string)     { m.record(n + "/" + ev) }
 func (m *recordingMetrics) record(n string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -269,5 +270,49 @@ func TestJoin_errorDataUsesTheHomePageStateNames(t *testing.T) {
 	_, ae = gates(t, func(c *usecase.Config) { c.Capacity = 10 }).tryJoin(usecase.JoinInput{CaptchaToken: "c"})
 	if ae == nil || ae.Data.(map[string]any)["queue_state"] != "FULL_QUEUE" {
 		t.Fatalf("full queue data = %+v", ae)
+	}
+}
+
+func (m *recordingMetrics) count(n string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.seen[n]
+}
+
+func TestANewJoinCountsQueueJoinedOnceForItsEvent(t *testing.T) {
+	e := gates(t, nil)
+	if _, ae := e.tryJoin(usecase.JoinInput{CaptchaToken: "c"}); ae != nil {
+		t.Fatal(ae)
+	}
+	if got := e.metrics.count(domain.MetricQueueJoined + "/E1"); got != 1 {
+		t.Fatalf("QueueJoined{EventId=E1} = %d, want 1", got)
+	}
+}
+
+func TestARejoinWithALiveTokenCountsNothing(t *testing.T) {
+	e := gates(t, nil)
+	first, ae := e.tryJoin(usecase.JoinInput{CaptchaToken: "c"})
+	if ae != nil {
+		t.Fatal(ae)
+	}
+	again, ae := e.tryJoin(usecase.JoinInput{CaptchaToken: "c", QueueToken: first.Engagement.QueueToken})
+	if ae != nil {
+		t.Fatal(ae)
+	}
+	if again.Engagement.TicketNo != first.Engagement.TicketNo {
+		t.Fatalf("rejoin got ticket %d, want the same place %d", again.Engagement.TicketNo, first.Engagement.TicketNo)
+	}
+	if got := e.metrics.count(domain.MetricQueueJoined + "/E1"); got != 1 {
+		t.Fatalf("QueueJoined{EventId=E1} = %d after a join and a rejoin, want 1", got)
+	}
+}
+
+func TestARefusedJoinCountsNothing(t *testing.T) {
+	e := gates(t, nil, "state", "SCHEDULED", "now_serving", 0, "issued", 0)
+	if _, ae := e.tryJoin(usecase.JoinInput{CaptchaToken: "c"}); ae == nil {
+		t.Fatal("a join before the sale opened was accepted")
+	}
+	if got := e.metrics.count(domain.MetricQueueJoined + "/E1"); got != 0 {
+		t.Fatalf("QueueJoined{EventId=E1} = %d for a refused join, want 0", got)
 	}
 }

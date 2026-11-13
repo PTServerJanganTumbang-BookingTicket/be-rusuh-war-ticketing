@@ -41,9 +41,11 @@ type fakeMetrics struct {
 func newMetrics() *fakeMetrics {
 	return &fakeMetrics{counts: map[string]int{}, gauges: map[string]float64{}}
 }
-func (m *fakeMetrics) Inc(n string)              { m.mu.Lock(); m.counts[n]++; m.mu.Unlock() }
-func (m *fakeMetrics) Gauge(n string, v float64) { m.mu.Lock(); m.gauges[n] = v; m.mu.Unlock() }
-func (m *fakeMetrics) count(n string) int        { m.mu.Lock(); defer m.mu.Unlock(); return m.counts[n] }
+func (m *fakeMetrics) Inc(n string)                      { m.mu.Lock(); m.counts[n]++; m.mu.Unlock() }
+func (m *fakeMetrics) Gauge(n string, v float64)         { m.mu.Lock(); m.gauges[n] = v; m.mu.Unlock() }
+func (m *fakeMetrics) IncEvent(n, _ string)              { m.Inc(n) }
+func (m *fakeMetrics) GaugeEvent(n, _ string, v float64) { m.Gauge(n, v) }
+func (m *fakeMetrics) count(n string) int                { m.mu.Lock(); defer m.mu.Unlock(); return m.counts[n] }
 
 // ---------------------------------------------------------------- crash injection
 

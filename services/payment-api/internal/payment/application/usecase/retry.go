@@ -24,7 +24,12 @@ import (
 // switching at minute 8 yields a new instrument with 2 minutes on it (BR-05).
 func (u *PaymentUsecase) Retry(ctx context.Context, bookingID, grantToken string) (dto.RetryResponse, error) {
 	cancel := func(ctx context.Context, orderID string) error {
-		return u.gateway.Cancel(ctx, orderID)
+		err := u.gateway.Cancel(ctx, orderID)
+		// "Already paid" is Midtrans answering, not Midtrans failing: it must not push the error alarm.
+		if err != nil && !errors.Is(err, portout.ErrAlreadySettled) {
+			u.metrics.Incr(MetricMidtransErrors)
+		}
+		return err
 	}
 
 	out, err := u.bookings.Retry(ctx, portout.RetryInput{

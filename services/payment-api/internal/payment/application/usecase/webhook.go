@@ -85,6 +85,8 @@ func (u *PaymentUsecase) HandleNotification(ctx context.Context, n dto.Notificat
 		return err
 	}
 
+	u.countNotification(out)
+
 	if out.Action == valueobject.ActionLateSettlement {
 		// Money arrived after the seats were resold. The booking is already
 		// marked disputed and a payment.failed_notice is queued inside the
@@ -93,8 +95,10 @@ func (u *PaymentUsecase) HandleNotification(ctx context.Context, n dto.Notificat
 		// and an automated path triggered by a callback is the most expensive
 		// thing to get wrong.
 		slog.ErrorContext(ctx, "LatePaymentRefund: settlement after booking expiry",
+			slog.String("event_id", out.EventID),
 			slog.String("booking_id", bookingID),
 			slog.String("order_id", n.OrderID),
+			slog.String("gross_amount", n.GrossAmount),
 			slog.String("alarm", "LatePaymentRefund"))
 	}
 
@@ -166,4 +170,20 @@ func parseGrossAmount(s string) int64 {
 		return 0
 	}
 	return n
+}
+
+// countNotification counts what a notification changed, once: only an applied transition counts, so a Midtrans
+// redelivery (rejected as a duplicate before this) or a notification that changed nothing is never counted.
+func (u *PaymentUsecase) countNotification(out portout.NotificationOutcome) {
+	if !out.Applied {
+		return
+	}
+	switch out.Action {
+	case valueobject.ActionConfirm:
+		u.metrics.IncrEvent(MetricBookingsConfirmed, out.EventID)
+	case valueobject.ActionExpire:
+		u.metrics.IncrEvent(MetricBookingsPaymentExpired, out.EventID)
+	case valueobject.ActionLateSettlement:
+		u.metrics.IncrEvent(MetricLateSettlement, out.EventID)
+	}
 }

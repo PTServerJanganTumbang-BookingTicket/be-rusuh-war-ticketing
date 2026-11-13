@@ -81,4 +81,6 @@ type TokenVerifier interface {
 type Metrics interface {
 	Incr(name string)
 	Record(name string, value float64)
+	// IncrEvent counts one event's metric, kept per event and in the all-events total (docs/metrics.md).
+	IncrEvent(name, eventID string)
 }

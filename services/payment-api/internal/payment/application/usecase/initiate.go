@@ -96,6 +96,7 @@ func (u *PaymentUsecase) Initiate(ctx context.Context, bookingID, grantToken str
 			// not re-send. Record the failure, let the transaction roll back
 			// with payment_ref still NULL, and leave the truth to the charge
 			// reconciler (ADR-005 §8, §9).
+			u.metrics.Incr(MetricMidtransErrors)
 			if recErr := u.breaker.RecordFailure(ctx); recErr != nil {
 				slog.WarnContext(ctx, "breaker record failure failed", slog.Any("err", recErr))
 			}

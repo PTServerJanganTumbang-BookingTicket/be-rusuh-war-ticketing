@@ -36,8 +36,9 @@ func hash(deviceID string) string {
 
 type quiet struct{}
 
-func (quiet) Incr(string)            {}
-func (quiet) Record(string, float64) {}
+func (quiet) Incr(string)              {}
+func (quiet) Record(string, float64)   {}
+func (quiet) IncrEvent(string, string) {}
 
 // /queue/me against the real Redis and a real Postgres: the token hash admission-ctl writes, then the booking row.
 func TestMeOnRealRedisAndPostgres(t *testing.T) {

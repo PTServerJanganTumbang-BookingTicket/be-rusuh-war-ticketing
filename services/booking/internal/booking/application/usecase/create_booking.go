@@ -192,6 +192,8 @@ func (c *CreateBooking) CreateFrom(ctx context.Context, g grantauth.Grant, parse
 
 	switch res.Outcome {
 	case domain.Placed:
+		// Counted only here: this call committed the HELD booking. A retry ends AlreadyPlaced and is not counted.
+		c.d.Metrics.IncrEvent(domain.MetricBookingsHeld, g.EventID)
 		return c.render(ctx, g, true)
 	case domain.AlreadyPlaced:
 		return c.existing(ctx, g)

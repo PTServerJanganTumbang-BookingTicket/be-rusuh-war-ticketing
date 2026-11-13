@@ -28,8 +28,10 @@ type countMetrics struct {
 	counts map[string]int
 }
 
-func (m *countMetrics) Inc(name string)       { m.mu.Lock(); m.counts[name]++; m.mu.Unlock() }
-func (m *countMetrics) Gauge(string, float64) {}
+func (m *countMetrics) Inc(name string)                    { m.mu.Lock(); m.counts[name]++; m.mu.Unlock() }
+func (m *countMetrics) Gauge(string, float64)              {}
+func (m *countMetrics) IncEvent(name, _ string)            { m.Inc(name) }
+func (m *countMetrics) GaugeEvent(string, string, float64) {}
 
 func TestAnExpiredHoldGivesItsSeatsNIKsAndGrantBackAndLeavesAPaymentInFlightAlone(t *testing.T) {
 	ctx := context.Background()

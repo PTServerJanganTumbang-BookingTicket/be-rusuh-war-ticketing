@@ -884,3 +884,35 @@ func TestAnEventIdThatIsMissingIsAValidationErrorNotAnInvalidGrant(t *testing.T)
 	wantAppError(t, err, http.StatusBadRequest, "VALIDATION_ERROR")
 	r.touchedNothingBeyondTheStatus(t)
 }
+
+// ---- metrics (docs/metrics.md)
+
+func TestAPlacedBookingCountsBookingsHeldOnceForItsEvent(t *testing.T) {
+	r := newCreateRig()
+	if _, err := r.create(guestGrant, order(seat("cat_vip", nikA))); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.m.counts[domain.MetricBookingsHeld+"/evt_a"]; got != 1 {
+		t.Fatalf("BookingsHeld{EventId=evt_a} = %d, want 1 (all: %v)", got, r.m.counts)
+	}
+}
+
+func TestARetryOfAPlacedBookingCountsNothing(t *testing.T) {
+	r := newCreateRig()
+	r.o.placeOutcome = domain.AlreadyPlaced
+	if _, err := r.create(guestGrant, order(seat("cat_vip", nikA))); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.m.counts[domain.MetricBookingsHeld+"/evt_a"]; got != 0 {
+		t.Fatalf("BookingsHeld{EventId=evt_a} = %d for an idempotent retry, want 0", got)
+	}
+}
+
+func TestARefusedBookingCountsNothing(t *testing.T) {
+	r := newCreateRig()
+	r.o.placeOutcome = domain.ClaimConflict
+	_, _ = r.create(guestGrant, order(seat("cat_vip", nikA)))
+	if got := r.m.counts[domain.MetricBookingsHeld+"/evt_a"]; got != 0 {
+		t.Fatalf("BookingsHeld{EventId=evt_a} = %d for a refused booking, want 0", got)
+	}
+}

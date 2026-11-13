@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -14,6 +15,7 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/apinizer"
+	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/emf"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/grantauth"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/idgen"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/pgutil"
@@ -82,7 +84,9 @@ func newMux(pool *pgxpool.Pool, rdb *goredis.Client, cfg paymentcfg.Config) (*Se
 	// lever exists to replace a fifteen-minute deploy, not to be synchronous.
 	switches := postgres.NewSwitchRepository(pool, cfg.Payment.SwitchCacheTTL, nil)
 
-	uc := usecase.New(repo, gateway, breaker, credentials, switches, usecase.Config{
+	// Metrics go to stdout as CloudWatch EMF lines (docs/metrics.md).
+	metrics := emf.New("Rusuh/Payment", os.Stdout)
+	uc := usecase.New(repo, gateway, breaker, credentials, switches, metrics, usecase.Config{
 		IconBase:            cfg.Payment.IconBase,
 		PaymentTTL:          cfg.Payment.TTL,
 		MinRetryRemaining:   cfg.Payment.MinRetryRemaining,

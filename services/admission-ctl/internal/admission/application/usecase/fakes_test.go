@@ -20,13 +20,31 @@ func (c *clock) Now() time.Time      { return c.t }
 func (c *clock) add(d time.Duration) { c.t = c.t.Add(d) }
 func newClock() *clock               { return &clock{t: time.Date(2026, 11, 10, 19, 0, 0, 0, time.UTC)} }
 
+// metrics keeps totals by name (counts, gauges) and, for per-event metrics, by "name/eventID" too.
 type metrics struct {
-	mu     sync.Mutex
-	counts map[string]int
-	gauges map[string]float64
+	mu          sync.Mutex
+	counts      map[string]int
+	gauges      map[string]float64
+	eventCounts map[string]int
+	eventGauges map[string][]float64 // every value written, in order
 }
 
-func newMetrics() *metrics { return &metrics{counts: map[string]int{}, gauges: map[string]float64{}} }
+func newMetrics() *metrics {
+	return &metrics{counts: map[string]int{}, gauges: map[string]float64{}, eventCounts: map[string]int{},
+		eventGauges: map[string][]float64{}}
+}
+func (m *metrics) IncEvent(n, ev string) {
+	m.mu.Lock()
+	m.counts[n]++
+	m.eventCounts[n+"/"+ev]++
+	m.mu.Unlock()
+}
+func (m *metrics) GaugeEvent(n, ev string, v float64) {
+	m.mu.Lock()
+	m.gauges[n] = v
+	m.eventGauges[n+"/"+ev] = append(m.eventGauges[n+"/"+ev], v)
+	m.mu.Unlock()
+}
 func (m *metrics) Inc(n string) {
 	m.mu.Lock()
 	m.counts[n]++

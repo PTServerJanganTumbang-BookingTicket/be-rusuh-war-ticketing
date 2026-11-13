@@ -411,6 +411,8 @@ func (j *Join) issue(ctx context.Context, ev rediskeys.Event, snap domain.EventS
 		return JoinResult{}, errUnavailable()
 	}
 
+	// Counted only here: a new place in the line. A rejoin that returns an existing place never reaches issue.
+	j.d.Metrics.IncrEvent(domain.MetricQueueJoined, ev.ID())
 	res := JoinResult{Outcome: Queued, Engagement: e, NowServing: snap.NowServing, EventName: snap.Name}
 	return res, nil
 }

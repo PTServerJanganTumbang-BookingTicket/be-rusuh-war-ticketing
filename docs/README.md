@@ -33,6 +33,7 @@ source below, the source wins and the plan gets fixed.
 Folders are created when their planning starts. Copy [`_template.md`](_template.md) for each endpoint.
 
 Cross-cutting references: [`redis-keys.md`](redis-keys.md) (every Redis key and channel) ·
+[`metrics.md`](metrics.md) (every CloudWatch metric, the FR-33–36 formulas, the dashboard) ·
 [`DEVELOPMENT-FLOW.md`](DEVELOPMENT-FLOW.md) (how we build: spec → review → red → green → verify).
 
 ## Conventions

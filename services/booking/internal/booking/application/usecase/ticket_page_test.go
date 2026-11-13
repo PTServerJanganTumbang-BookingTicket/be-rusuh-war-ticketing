@@ -65,7 +65,8 @@ func (f *fakeStock) Levels(context.Context, string, []string) (map[string]int64,
 
 type fakeMetrics struct{ counts map[string]int }
 
-func (m *fakeMetrics) Incr(name string) { m.counts[name]++ }
+func (m *fakeMetrics) Incr(name string)          { m.counts[name]++ }
+func (m *fakeMetrics) IncrEvent(name, ev string) { m.counts[name+"/"+ev]++ }
 
 type rig struct {
 	b  *fakeBookings

@@ -77,6 +77,8 @@ type NIKVerifier interface {
 // Metrics counts events by name.
 type Metrics interface {
 	Incr(name string)
+	// IncrEvent counts one event's metric, kept per event and in the all-events total (docs/metrics.md).
+	IncrEvent(name, eventID string)
 }
 
 // Details reads a booking for GET /bookings/{id} on the Aurora writer.

@@ -18,6 +18,7 @@ import (
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/pgutil"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/admission-ctl/internal/admission/application/usecase"
 	lambdaadapter "github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/admission-ctl/internal/admission/infrastructure/lambda"
+	emfmetrics "github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/admission-ctl/internal/admission/infrastructure/metrics"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/admission-ctl/internal/admission/infrastructure/postgres"
 	redisadapter "github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/admission-ctl/internal/admission/infrastructure/redis"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/admission-ctl/internal/config"
@@ -26,16 +27,6 @@ import (
 type systemClock struct{}
 
 func (systemClock) Now() time.Time { return time.Now() }
-
-// logMetrics writes metrics as structured log lines until the CloudWatch EMF adapter lands.
-type logMetrics struct{}
-
-func (logMetrics) Inc(name string) {
-	slog.Info("metric", slog.String("name", name), slog.Int("count", 1))
-}
-func (logMetrics) Gauge(name string, value float64) {
-	slog.Debug("gauge", slog.String("name", name), slog.Float64("value", value))
-}
 
 func main() {
 	dotenv.LoadEnv()
@@ -65,12 +56,12 @@ func main() {
 	defer db.Close()
 
 	bookings := postgres.NewBookings(db)
-	tick := usecase.NewTick(cfg.Tick, bookings, redisadapter.NewQueue(rdb), systemClock{}, logMetrics{})
+	// Metrics go to stdout as CloudWatch EMF lines (docs/metrics.md); the awslogs driver ships them.
+	metrics := emfmetrics.NewEMF(os.Stdout)
+	tick := usecase.NewTick(cfg.Tick, bookings, redisadapter.NewQueue(rdb), systemClock{}, metrics)
 	tick.UseEvents(redisadapter.NewEventSource(rdb), cfg.EventRefresh)
 	// A held booking nobody starts paying for within 10 minutes expires, and its seats and NIK locks go back.
 	tick.WithHeldSweep(bookings, redisadapter.NewHolds(rdb))
-	// Once a minute per open sale, Redis stock and NIK locks are compared with Aurora and repaired (0 turns it off).
-	tick.WithReconcile(usecase.NewReconciler(cfg.Reconcile, bookings, redisadapter.NewRepair(rdb), logMetrics{}))
 
 	// AWAITING_PAYMENT backstop sweep: poll Midtrans for bookings whose webhook never arrived.
 	if cfg.AwaitingSweepInterval > 0 && cfg.PaymentAPIFunction != "" {
@@ -87,6 +78,7 @@ func main() {
 			slog.String("function", cfg.PaymentAPIFunction))
 	}
 
+	tick.WithReconcile(usecase.NewReconciler(cfg.Reconcile, bookings, redisadapter.NewRepair(rdb), metrics))
 	slog.Info("admission-ctl starting", slog.Duration("interval", cfg.Tick.Interval), slog.Duration("eventRefresh", cfg.EventRefresh))
 
 	// Loop returns when ctx ends. Loop only checks ctx between ticks, but the Redis and Aurora calls inside a tick use

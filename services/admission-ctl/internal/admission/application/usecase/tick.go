@@ -42,7 +42,6 @@ const (
 	MetricStockDriftTooLarge = "StockDriftTooLarge"
 	MetricNikClaimRestored   = "NikClaimRestored"
 	MetricReconcileFailures  = "ReconcileFailures"
-	GaugeQueueDepth          = "QueueDepth"
 	GaugeStockDrift          = "StockDrift" // the largest absolute drift of the last reconciliation run
 	GaugeNikOrphans          = "NikOrphans" // nik:used keys with no nik_claims row (never deleted)
 	// Backstop sweep for AWAITING_PAYMENT bookings (awaiting-payment-sweep-plan.md).
@@ -51,6 +50,15 @@ const (
 	MetricAwaitingSweepSkipped   = "AwaitingSweepSkipped"
 	MetricAwaitingSweepDuplicate = "AwaitingSweepDuplicate"
 	MetricAwaitingSweepFailed    = "AwaitingSweepFailed"
+
+	// Per event (docs/metrics.md §5). The gauges are written at most once per Heartbeat per event.
+	MetricGranted   = "Granted" // a new GRANTED booking: the customer is let in
+	GaugeQueueDepth = "QueueDepth"
+	GaugeNowServing = "NowServing"
+	GaugeIssued     = "Issued"
+	GaugeRatePerMin = "RatePerMin"
+	// GaugeTickDuration is the slowest whole tick (every event) of the last Heartbeat; "Seconds" sets the EMF unit.
+	GaugeTickDuration = "TickDurationSeconds"
 )
 
 // Config holds the tunables of the tick (config.go in cmd/worker reads them from the environment).
@@ -121,6 +129,7 @@ type eventState struct {
 	rate          rateTracker
 	writtenRate   int64
 	rateWritten   bool
+	gaugesAt      time.Time // when the per-event gauges were last written
 }
 
 func (t *Tick) state(id string) *eventState {
@@ -150,6 +159,7 @@ func (t *Tick) Run(ctx context.Context) {
 func (t *Tick) Loop(ctx context.Context) {
 	ticker := time.NewTicker(t.cfg.Interval)
 	defer ticker.Stop()
+	timer := tickTimer{every: t.cfg.Heartbeat}
 	for {
 		select {
 		case <-ctx.Done():
@@ -157,11 +167,36 @@ func (t *Tick) Loop(ctx context.Context) {
 		case <-ticker.C:
 			start := time.Now()
 			t.Run(ctx)
-			if time.Since(start) > t.cfg.Interval {
+			took := time.Since(start)
+			if took > t.cfg.Interval {
 				t.metrics.Inc(MetricTickOverrun)
+			}
+			if worst, due := timer.observe(took, time.Now()); due {
+				t.metrics.Gauge(GaugeTickDuration, worst.Seconds())
 			}
 		}
 	}
+}
+
+// tickTimer keeps the slowest tick of each window, so TickDuration is written once per window, not twice a second.
+type tickTimer struct {
+	every time.Duration
+	start time.Time
+	worst time.Duration
+}
+
+// observe records one tick and reports the slowest tick of the window when the window is over.
+func (w *tickTimer) observe(took time.Duration, now time.Time) (time.Duration, bool) {
+	if w.start.IsZero() {
+		w.start = now
+	}
+	w.worst = max(w.worst, took)
+	if now.Sub(w.start) < w.every {
+		return 0, false
+	}
+	worst := w.worst
+	w.start, w.worst = now, 0
+	return worst, true
 }
 
 // RunEvent is one tick for one event: RECOVER, SNAPSHOT, COUNT, ADVANCE, FINISH, then the news.
@@ -173,8 +208,7 @@ func (t *Tick) RunEvent(ctx context.Context, ev domain.Event) error {
 	if err != nil {
 		return fmt.Errorf("snapshot now_serving: %w", err)
 	}
-	// Queue depth comes from the two counters, never from counting the sorted set (ZCARD).
-	t.metrics.Gauge(GaugeQueueDepth, float64(max(issued-ns, 0)))
+	t.writeGauges(ev.ID, st, ns, issued)
 	pending, err := t.queue.PendingCount(ctx, ev.ID, ns)
 	if err != nil {
 		return fmt.Errorf("snapshot pending: %w", err)
@@ -305,6 +339,12 @@ func (t *Tick) finish(ctx context.Context, eventID, queueToken string) bool {
 		t.metrics.Inc(MetricGrantInsertFailures)
 		slog.Warn("finish: cannot save the booking; the place stays pending", slog.String("token", queueToken), slog.Any("err", err))
 		return false
+	}
+	if b.ID == g.BookingID {
+		// This call saved the row. A later finish of the same token (RECOVER after a Redis failure) finds the row an
+		// earlier call saved, under that call's booking id, and does not count it again. The price: when every attempt of
+		// a call errors although one did commit, no call counts that grant (approximate counts, docs/metrics.md §3).
+		t.metrics.IncEvent(MetricGranted, eventID)
 	}
 	if b.Status != "" && b.Status != "GRANTED" {
 		// The row already moved on (lapsed, selecting...): never give it a fresh grant.
