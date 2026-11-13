@@ -249,7 +249,9 @@ RETURNING id, event_id, grant_token
 in **one transaction** with `DELETE FROM nik_claims WHERE booking_id = ANY($ids) RETURNING booking_id, nik_hmac` and the
 seat count per category from `booking_items` (§3.2a). After `COMMIT`, per booking, `release_hold.lua` gives back each
 category's stock and deletes `nik:used` in Redis, then `DEL grant:{token}`.
-`AWAITING_PAYMENT` and `PENDING_CANCELLATION` (a payment is in flight) belong to 07-payment, which asks Midtrans first.
+
+**Note:** `AWAITING_PAYMENT` bookings are handled by a separate backstop sweep that polls Midtrans first — see
+`docs/07-payment/README.md` §11. The HELD sweep only touches bookings where nobody started paying at all.
 
 The HELD sweep runs on a context the controller's shutdown cannot cancel, with its own 15 s deadline: once the transaction has
 committed the bookings are `EXPIRED` and nothing retries them, so a SIGTERM during a rolling deploy must not cancel the

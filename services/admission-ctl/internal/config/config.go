@@ -24,19 +24,26 @@ type Config struct {
 	Tick         usecase.Config
 	// Reconcile tunes the repair of Redis stock and NIK locks from Aurora (docs/05-booking/04-stock-reconciliation.md).
 	Reconcile usecase.ReconcileConfig
+	// AwaitingSweepInterval is how often to invoke payment-api's sweep_awaiting_payment operation.
+	// 0 turns the sweep off. Defaults to 60s.
+	AwaitingSweepInterval time.Duration
+	// PaymentAPIFunction is the Lambda function name for payment-api. Required if AwaitingSweepInterval > 0.
+	PaymentAPIFunction string
 }
 
 // Load reads and validates the environment.
 func Load() (Config, error) {
 	c := Config{
-		DatabaseURL:  envutil.Env("DATABASE_URL", ""),
-		RedisAddr:    envutil.Env("REDIS_ADDR", ""),
-		RedisPass:    envutil.Env("REDIS_PASSWORD", ""),
-		RedisCluster: envutil.EnvBool("REDIS_CLUSTER", true),
-		LogLevel:     envutil.Env("LOG_LEVEL", "info"),
-		LogFmt:       envutil.Env("LOG_FORMAT", "json"),
-		DBMaxConns:   int32(envutil.EnvInt("DB_MAX_CONNS", 4)),
-		EventRefresh: time.Duration(envutil.EnvInt("EVENT_REFRESH_SECONDS", 30)) * time.Second,
+		DatabaseURL:           envutil.Env("DATABASE_URL", ""),
+		RedisAddr:             envutil.Env("REDIS_ADDR", ""),
+		RedisPass:             envutil.Env("REDIS_PASSWORD", ""),
+		RedisCluster:          envutil.EnvBool("REDIS_CLUSTER", true),
+		LogLevel:              envutil.Env("LOG_LEVEL", "info"),
+		LogFmt:                envutil.Env("LOG_FORMAT", "json"),
+		DBMaxConns:            int32(envutil.EnvInt("DB_MAX_CONNS", 4)),
+		EventRefresh:          time.Duration(envutil.EnvInt("EVENT_REFRESH_SECONDS", 30)) * time.Second,
+		AwaitingSweepInterval: time.Duration(envutil.EnvInt("SWEEP_AWAITING_INTERVAL_SECONDS", 60)) * time.Second,
+		PaymentAPIFunction:    envutil.Env("PAYMENT_API_FUNCTION", ""),
 	}
 	t := usecase.DefaultConfig()
 	t.Interval = time.Duration(envutil.EnvInt("TICK_INTERVAL_MS", 500)) * time.Millisecond

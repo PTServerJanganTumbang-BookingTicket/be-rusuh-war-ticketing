@@ -56,6 +56,11 @@ func Load() (Config, error) {
 			SwitchCacheTTL: time.Duration(
 				envutil.EnvInt("PAYMENT_SWITCH_CACHE_SECONDS", 10)) * time.Second,
 		},
+		Sweep: Sweep{
+			GraceSeconds: envutil.EnvInt("SWEEP_GRACE_SECONDS", 120),
+			BatchSize:    envutil.EnvInt("SWEEP_BATCH_SIZE", 100),
+			StuckMinutes: envutil.EnvInt("SWEEP_STUCK_MINUTES", 30),
+		},
 	}
 
 	if err := cfg.validate(); err != nil {
@@ -107,6 +112,19 @@ func (c Config) validate() error {
 		// looks like a broken endpoint rather than a policy.
 		return fmt.Errorf("MIN_RETRY_REMAINING_SECONDS (%s) must be below PAYMENT_TTL_SECONDS (%s)",
 			c.Payment.MinRetryRemaining, c.Payment.TTL)
+	}
+	// Sweep config. §4.1 of the sweep plan: a grace of zero silently ignores
+	// the race between a payment landing and the sweep running.
+	if c.Sweep.GraceSeconds < 1 {
+		return fmt.Errorf("SWEEP_GRACE_SECONDS must be at least 1 to avoid racing with in-flight webhooks")
+	}
+	if c.Sweep.BatchSize < 1 {
+		return fmt.Errorf("SWEEP_BATCH_SIZE must be at least 1")
+	}
+	// F1: SettledTombstoneTTL must be positive. A zero here recreates the bug
+	// where settled:{queue_token} keys become permanent in Redis.
+	if c.Payment.SettledTombstoneTTL <= 0 {
+		return fmt.Errorf("SETTLED_TOMBSTONE_SECONDS must be positive: a zero TTL makes Redis keys permanent")
 	}
 	return nil
 }

@@ -45,6 +45,12 @@ const (
 	GaugeQueueDepth          = "QueueDepth"
 	GaugeStockDrift          = "StockDrift" // the largest absolute drift of the last reconciliation run
 	GaugeNikOrphans          = "NikOrphans" // nik:used keys with no nik_claims row (never deleted)
+	// Backstop sweep for AWAITING_PAYMENT bookings (awaiting-payment-sweep-plan.md).
+	MetricAwaitingSweptExpired   = "AwaitingSweptExpired"
+	MetricAwaitingSweptSettled   = "AwaitingSweptSettled" // non-zero means the webhook is broken
+	MetricAwaitingSweepSkipped   = "AwaitingSweepSkipped"
+	MetricAwaitingSweepDuplicate = "AwaitingSweepDuplicate"
+	MetricAwaitingSweepFailed    = "AwaitingSweepFailed"
 )
 
 // Config holds the tunables of the tick (config.go in cmd/worker reads them from the environment).
@@ -83,6 +89,12 @@ type Tick struct {
 
 	held  outbound.HeldBookings // nil: the HELD sweep is off (WithHeldSweep)
 	holds outbound.Holds
+
+	// paymentReconciler invokes payment-api to sweep AWAITING_PAYMENT bookings.
+	// nil: the sweep is off (WithAwaitingPaymentSweep).
+	paymentReconciler outbound.PaymentReconciler
+	awaitingInterval  time.Duration // how often to invoke the sweep
+	lastAwaitingSweep time.Time     // when the sweep last ran
 
 	source       outbound.Events // nil: tick cfg.Events
 	refreshEvery time.Duration

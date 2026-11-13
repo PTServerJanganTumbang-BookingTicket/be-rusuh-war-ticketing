@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -506,18 +507,24 @@ func (r *BookingRepository) ApplyNotification(ctx context.Context, in portout.No
 			out.Action = valueobject.ActionRecordOnly
 			break
 		}
-		// Free the NIKs. Without this the NIK stays locked for the event even
-		// though its booking is dead, and BR-02 would block the customer from
-		// ever buying again.
-		if _, err := tx.Exec(ctx,
-			`DELETE FROM nik_claims WHERE booking_id = $1`, b.ID); err != nil {
-			return out, wrapDB(err, "could not release NIK claims")
+		// Capture the seats and NIKs BEFORE deleting. The caller needs them
+		// for the Redis release that follows the commit; deleting first would
+		// lose the data.
+		seats, err := r.countSeatsByCategory(ctx, tx, b.ID)
+		if err != nil {
+			return out, err
+		}
+		niks, err := r.deleteNIKClaimsReturning(ctx, tx, b.ID)
+		if err != nil {
+			return out, err
 		}
 		if err := r.enqueueExpiredNotice(ctx, tx, b); err != nil {
 			return out, err
 		}
 		out.Applied = true
 		out.Booking.Status = entity.StatusExpired
+		out.Seats = seats
+		out.NIKs = niks
 
 	case valueobject.ActionIgnoreUnfunded, valueobject.ActionRecordOnly:
 		// Recorded above; nothing else to do.
@@ -556,6 +563,97 @@ func (r *BookingRepository) ApplyNotification(ctx context.Context, in portout.No
 
 	if err := tx.Commit(ctx); err != nil {
 		return out, wrapDB(err, "could not commit")
+	}
+	return out, nil
+}
+
+// countSeatsByCategory returns the per-category seat count of a booking.
+// Used by ActionExpire to capture the data needed for the Redis release.
+func (r *BookingRepository) countSeatsByCategory(ctx context.Context, tx pgx.Tx, bookingID string) ([]portout.SeatCount, error) {
+	rows, err := tx.Query(ctx,
+		`SELECT category_id, count(*) FROM booking_items WHERE booking_id = $1 GROUP BY category_id`,
+		bookingID)
+	if err != nil {
+		return nil, wrapDB(err, "could not count seats")
+	}
+	defer rows.Close()
+	var seats []portout.SeatCount
+	for rows.Next() {
+		var s portout.SeatCount
+		if err := rows.Scan(&s.CategoryID, &s.Qty); err != nil {
+			return nil, wrapDB(err, "could not scan seat count")
+		}
+		seats = append(seats, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, wrapDB(err, "could not iterate seat counts")
+	}
+	return seats, nil
+}
+
+// deleteNIKClaimsReturning deletes the NIK claims for a booking and returns
+// the nik_hmac values that were deleted. Without this the NIK stays locked
+// for the event even though its booking is dead, and BR-02 would block the
+// customer from ever buying again. The returned hashes are needed for the
+// Redis release that follows the commit.
+func (r *BookingRepository) deleteNIKClaimsReturning(ctx context.Context, tx pgx.Tx, bookingID string) ([]string, error) {
+	rows, err := tx.Query(ctx,
+		`DELETE FROM nik_claims WHERE booking_id = $1 RETURNING nik_hmac`,
+		bookingID)
+	if err != nil {
+		return nil, wrapDB(err, "could not release NIK claims")
+	}
+	defer rows.Close()
+	var niks []string
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
+			return nil, wrapDB(err, "could not scan NIK hash")
+		}
+		niks = append(niks, h)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, wrapDB(err, "could not iterate NIK claims")
+	}
+	return niks, nil
+}
+
+// DueAwaitingPayment returns AWAITING_PAYMENT bookings whose payment window
+// plus grace has elapsed. The query uses the partial index on
+// payment_expires_at WHERE status = 'AWAITING_PAYMENT' (migration 0019).
+//
+// Bookings with an empty payment_ref are included: they represent a charge
+// that timed out before Midtrans returned an order_id. The caller skips them
+// (there is no order to poll) and counts them for metrics; the charge
+// reconciler is the one that resolves them.
+func (r *BookingRepository) DueAwaitingPayment(ctx context.Context, now time.Time, graceSeconds, limit int) ([]portout.AwaitingCandidate, error) {
+	// The deadline is now minus the grace window. A booking whose
+	// payment_expires_at is before this cutoff is a candidate.
+	cutoff := now.Add(-time.Duration(graceSeconds) * time.Second)
+
+	rows, err := r.db.Query(ctx,
+		`SELECT id, COALESCE(payment_ref, ''), payment_expires_at
+		   FROM bookings
+		  WHERE status = 'AWAITING_PAYMENT'
+		    AND payment_expires_at < $1
+		  ORDER BY payment_expires_at
+		  LIMIT $2`,
+		cutoff, limit)
+	if err != nil {
+		return nil, wrapDB(err, "could not query due bookings")
+	}
+	defer rows.Close()
+
+	var out []portout.AwaitingCandidate
+	for rows.Next() {
+		var c portout.AwaitingCandidate
+		if err := rows.Scan(&c.ID, &c.PaymentRef, &c.PaymentExpiresAt); err != nil {
+			return nil, wrapDB(err, "could not scan candidate")
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, wrapDB(err, "could not iterate candidates")
 	}
 	return out, nil
 }

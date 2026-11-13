@@ -73,7 +73,12 @@ type StatusResult struct {
 	FraudStatus       string
 	StatusCode        string
 	GrossAmount       string
-	Raw               []byte
+	// SettlementTime is when the money moved, in Midtrans's "YYYY-MM-DD HH:mm:ss"
+	// WIB format. Present on settlement, absent on pending.
+	SettlementTime string
+	// TransactionTime is when the transaction was created, same format.
+	TransactionTime string
+	Raw             []byte
 }
 
 // ErrAlreadySettled reports that a cancel was refused because the payment had

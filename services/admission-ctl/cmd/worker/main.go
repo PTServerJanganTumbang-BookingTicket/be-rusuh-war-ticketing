@@ -9,12 +9,15 @@ import (
 	"syscall"
 	"time"
 
+	awscfg "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/lambda"
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/dotenv"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/logger"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/pkg/pgutil"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/admission-ctl/internal/admission/application/usecase"
+	lambdaadapter "github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/admission-ctl/internal/admission/infrastructure/lambda"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/admission-ctl/internal/admission/infrastructure/postgres"
 	redisadapter "github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/admission-ctl/internal/admission/infrastructure/redis"
 	"github.com/PTServerJanganTumbang-BookingTicket/be-rusuh-war-ticketing/services/admission-ctl/internal/config"
@@ -68,6 +71,22 @@ func main() {
 	tick.WithHeldSweep(bookings, redisadapter.NewHolds(rdb))
 	// Once a minute per open sale, Redis stock and NIK locks are compared with Aurora and repaired (0 turns it off).
 	tick.WithReconcile(usecase.NewReconciler(cfg.Reconcile, bookings, redisadapter.NewRepair(rdb), logMetrics{}))
+
+	// AWAITING_PAYMENT backstop sweep: poll Midtrans for bookings whose webhook never arrived.
+	if cfg.AwaitingSweepInterval > 0 && cfg.PaymentAPIFunction != "" {
+		awsCfg, err := awscfg.LoadDefaultConfig(ctx)
+		if err != nil {
+			slog.Error("Failed to load AWS config for payment-api sweep", slog.Any("err", err))
+			os.Exit(1)
+		}
+		lambdaClient := lambda.NewFromConfig(awsCfg)
+		paymentReconciler := lambdaadapter.NewPaymentReconciler(lambdaClient, cfg.PaymentAPIFunction)
+		tick.WithAwaitingPaymentSweep(paymentReconciler, cfg.AwaitingSweepInterval)
+		slog.Info("AWAITING_PAYMENT sweep enabled",
+			slog.Duration("interval", cfg.AwaitingSweepInterval),
+			slog.String("function", cfg.PaymentAPIFunction))
+	}
+
 	slog.Info("admission-ctl starting", slog.Duration("interval", cfg.Tick.Interval), slog.Duration("eventRefresh", cfg.EventRefresh))
 
 	// Loop returns when ctx ends. Loop only checks ctx between ticks, but the Redis and Aurora calls inside a tick use

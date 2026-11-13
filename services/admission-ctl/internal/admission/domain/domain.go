@@ -96,3 +96,11 @@ type Admission struct {
 	Open     int64 // every active status: GRANTED .. PENDING_CANCELLATION
 	Browsing int64 // GRANTED and SELECTING only
 }
+
+// SweepResult is the outcome of one backstop sweep invocation on payment-api.
+type SweepResult struct {
+	Expired   int // bookings moved to EXPIRED
+	Settled   int // bookings confirmed by the sweep (alarm: webhook is broken)
+	Skipped   int // bookings skipped (gateway unreachable or no payment_ref)
+	Duplicate int // bookings already processed by webhook or previous sweep
+}

@@ -93,6 +93,15 @@ type Events interface {
 	Discover(ctx context.Context) ([]domain.Event, error)
 }
 
+// PaymentReconciler invokes the payment-api Lambda to sweep AWAITING_PAYMENT
+// bookings whose webhook never arrived. The result reports how many were
+// expired, settled (alarm: the webhook is broken), or skipped (gateway
+// unreachable).
+type PaymentReconciler interface {
+	// SweepAwaitingPayment invokes {"op":"sweep_awaiting_payment"}.
+	SweepAwaitingPayment(ctx context.Context) (domain.SweepResult, error)
+}
+
 // Clock is the time source (frozen in tests).
 type Clock interface{ Now() time.Time }
 

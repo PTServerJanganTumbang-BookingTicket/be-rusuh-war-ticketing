@@ -809,7 +809,7 @@ func TestApplyNotification_DeclineAtLastAttempt_NotifiesTheCustomer(t *testing.T
 
 // Expiry frees the NIKs. Without that the NIK stays locked for the event even
 // though its booking is dead, and BR-02 would block the customer from ever
-// buying again.
+// buying again. The returned NIKs are needed for the Redis release.
 func TestApplyNotification_Expire_ReleasesNIKClaims(t *testing.T) {
 	tx := notifyTx(bookingValues(entity.StatusAwaitingPayment, withPaymentRef("RB-00912:1")))
 
@@ -819,7 +819,8 @@ func TestApplyNotification_Expire_ReleasesNIKClaims(t *testing.T) {
 
 	assert.True(t, out.Applied)
 	assert.Equal(t, entity.StatusExpired, out.Booking.Status)
-	require.Len(t, tx.execMatching("DELETE FROM nik_claims"), 1)
+	// NIK claims are deleted via Query (RETURNING) rather than Exec, so check queries
+	require.Len(t, tx.queryMatching("DELETE FROM nik_claims"), 1)
 	require.Len(t, tx.execMatching("INSERT INTO outbox"), 1)
 }
 
@@ -1029,3 +1030,8 @@ func TestApplyNotification_UnfundedCapture_DoesNotRecordCapture(t *testing.T) {
 	// The event itself is still in the log, where the full sequence belongs.
 	require.Len(t, tx.execMatching("INSERT INTO payment_events"), 1)
 }
+
+// Note: DueAwaitingPayment is covered by integration tests with pgtest.
+// Unit tests for the SQL shape would require extending mockDB with queryFn,
+// which is deliberately not done to keep these tests focused on the
+// repository's ordering and commit behavior, not its SQL generation.

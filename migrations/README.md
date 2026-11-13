@@ -38,6 +38,9 @@ exist`.
 | `0014_drop_consent_policy_version` | drops `consent_records.policy_version`, which was `NOT NULL` and no longer written — until this runs, every registration fails the constraint | `0001` |
 | `0015_bookings_paid_at` | adds `bookings.paid_at`, the gateway settlement time §5.4 reports. Until this runs, `paid_at` is substituted with the payment deadline | `0004` |
 | `0016_payment_method_switches` | append-only operator kill switch for a payment method or one bank under it. Subtracts from the code catalogue, never defines it | — |
+| `0017_bookings_payment_detail` | adds `bookings.payment_status`, the gateway's `transaction_status` behind the booking's current state | `0004` |
+| `0018_bookings_payment_instructions` | adds `bookings.payment_instructions` JSONB for the replay path (§5.2) | `0004` |
+| `0019_bookings_awaiting_payment_sweep` | partial index `bookings (payment_expires_at) WHERE status = 'AWAITING_PAYMENT'` for the AWAITING_PAYMENT backstop sweep (`services/admission-ctl` via `services/payment-api`) | `0004` |
 
 Every statement uses `IF NOT EXISTS`, so re-running a file is harmless. That
 is the only thing standing in for a migration runner, so keep it true: a

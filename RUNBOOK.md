@@ -343,6 +343,42 @@ storage hiccups is a worse outage than the one it exists for, and in that state
 
 ---
 
+## AWAITING_PAYMENT sweep metrics
+
+The backstop sweep runs in admission-ctl and invokes payment-api every
+`SWEEP_AWAITING_INTERVAL_SECONDS` (default 60) to poll Midtrans for bookings
+whose webhook never arrived.
+
+| Metric | What it means | What to do |
+|---|---|---|
+| `AwaitingSweptExpired` | Bookings expired by the sweep. Normal during a sale — these are payments that timed out at Midtrans. | Nothing; this is the sweep working. |
+| `AwaitingSweptSettled` | **Alarm.** Bookings confirmed by the sweep, not by the webhook. The webhook is broken. | Check Midtrans dashboard notification settings. Verify the webhook URL. Check payment-api logs for signature failures. |
+| `AwaitingSweepSkipped` | Bookings skipped: gateway unreachable, no `payment_ref`, or a non-terminal status like `pending`. | If high and sustained, check Midtrans connectivity. The sweep fails closed — it won't expire a booking it can't poll. |
+| `AwaitingSweepFailed` | The sweep invocation itself failed (admission-ctl → payment-api Lambda). | Check admission-ctl logs for IAM or Lambda errors. Verify `PAYMENT_API_FUNCTION` is set correctly. |
+
+**Non-zero `AwaitingSweptSettled` is the single most important alarm.** It means
+customers are paying for tickets but not receiving them, and only the sweep is
+catching them. The root cause is always in the webhook path — the sweep is the
+symptom, not the problem. Common causes:
+
+1. Webhook URL not configured in Midtrans dashboard.
+2. Signature secret key mismatch (`MIDTRANS_SIGNATURE_SECRET_KEY`).
+3. API Gateway rejecting the callback (check unified gateway logs).
+4. Lambda throttling or timeout (check payment-api metrics).
+
+To investigate:
+```bash
+# Recent sweep results
+aws logs filter-log-events --log-group-name /aws/lambda/rusuh-prod-payment-api \
+  --filter-pattern "sweep_awaiting_payment" --since 1h
+
+# Webhook activity (should see notifications)
+aws logs filter-log-events --log-group-name /aws/lambda/rusuh-prod-payment-api \
+  --filter-pattern "payment notification" --since 1h
+```
+
+---
+
 ## Promoting to `main`
 
 When the pipeline is proven, redeploy the one stack whose trust policy names

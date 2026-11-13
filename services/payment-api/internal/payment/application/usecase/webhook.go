@@ -123,6 +123,30 @@ func (u *PaymentUsecase) HandleNotification(ctx context.Context, n dto.Notificat
 			slog.WarnContext(ctx, "could not settle engagement credentials", slog.Any("err", err))
 		}
 	}
+
+	// Release the stock and NIK locks on expire. The database has already
+	// committed — the booking is EXPIRED and nik_claims are gone — so a failure
+	// here is logged but never fails the webhook: a non-2xx makes Midtrans
+	// retry a notification that was already applied, and retrying the release
+	// would double-credit inventory.
+	//
+	// Stock reconciliation (B5) repairs the keys if this fails; nik:used
+	// lapses on its TTL. The worst case is frozen inventory until the next
+	// reconciliation tick, which is minutes rather than hours.
+	if out.Applied && out.Action == valueobject.ActionExpire && u.holds != nil {
+		missing, err := u.holds.Release(ctx, out.EventID, out.Seats, out.NIKs)
+		if err != nil {
+			slog.ErrorContext(ctx, "could not release hold on expire; stock reconciliation will repair",
+				slog.String("booking_id", bookingID),
+				slog.String("event_id", out.EventID),
+				slog.Any("err", err))
+		}
+		if missing > 0 {
+			slog.WarnContext(ctx, "expire release found missing stock keys",
+				slog.String("booking_id", bookingID),
+				slog.Int("missing", missing))
+		}
+	}
 	return nil
 }
 
