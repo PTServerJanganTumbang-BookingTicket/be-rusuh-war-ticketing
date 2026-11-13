@@ -329,6 +329,33 @@ storage hiccups is a worse outage than the one it exists for, and in that state
 
 ---
 
+## Sale dashboard and alarms
+
+One stack, `rusuh-<env>-observability` (`infra/observability/template.yaml`), holds the dashboards
+`rusuh-<env>-sale` (the sale) and `rusuh-<env>-api` (every endpoint) and seven alarms that all notify the SNS topic `rusuh-<env>-alarms`. Metric names, formulas
+and the dashboard layout: `docs/metrics.md`. During a sale, keep the dashboard open with the time range set to the
+sale window and the event picked in the dropdown.
+
+**Setup, once:** the deploy role needs the `Observability` statement of `infra/bootstrap/github-oidc-role.yaml`
+(redeploy that stack), and the repository variable `ALARM_EMAIL` names who gets the alarms
+(`gh variable set ALARM_EMAIL --body team@example.com`). The address must click the confirmation email once. CI deploys
+the stack when `infra/observability/**` changes, or with `force_deploy=observability`.
+
+| Alarm | Means | Do this |
+|---|---|---|
+| `rusuh-<env>-queue-stalled` | No sse-server task has heard admission-ctl for > 30 s (NFR-14). Customers see "reconnecting", the queue is frozen. | Check the admission-ctl task: `aws logs tail /ecs/rusuh-<env>/admission-ctl --since 15m`. If it is running but silent, restart the service (`aws ecs update-service --cluster rusuh-<env> --service admission-ctl --force-new-deployment`). |
+| `rusuh-<env>-admission-ctl-down` | No running admission-ctl task for 2 min. Nobody is let in; expired bookings are not swept. | `aws ecs describe-services --cluster rusuh-<env> --services admission-ctl` → the stopped task's reason (image, secret, crash). Fix and redeploy. |
+| `rusuh-<env>-stock-negative` | The hold script refused a hold that would take stock below zero (NFR-04). | Compare Redis `stock:{ev}:*` with Aurora for the event. Reconciliation corrects Redis once the counter holds still; if the sale is busy, it may wait. |
+| `rusuh-<env>-late-settlement` | Midtrans settled money for a booking that had already expired. Booking marked disputed, customer emailed. | Refund by hand. The dashboard's *Disputed bookings* table lists event, booking, `order_id` and amount (FR-36). |
+| `rusuh-<env>-email-dlq` | E-tickets or notices failed every retry (NFR-10). | Read the message in `rusuh-<env>-notification-dlq`, fix the cause (SES, template), redrive the DLQ. |
+| `rusuh-<env>-api-5xx` | > 1 % of API requests answered 5xx over 5 min. | The dashboard's *Lambda errors and throttles* widget names the service; then `aws logs tail /aws/lambda/rusuh-<env>-<svc>`. |
+| `rusuh-<env>-tick-overrun` | admission-ctl ticks take > 500 ms, 20 times a minute, for 3 min. Admission slows for every event. | Look at *admission-ctl tick*, *Redis* and *Aurora* on the dashboard: usually Aurora scaling up from 0 ACU or a slow query. |
+
+**A failing or slow endpoint** (no alarm of its own): open the dashboard `rusuh-<env>-api`. The *Per route* table
+gives requests, success %, 4xx %, 5xx % and p50/p95/p99 latency per route for the time range; the two charts under
+it show when it started; the bottom row shows which Lambda errors, slows down or is throttled. Then
+`aws logs tail /aws/lambda/rusuh-<env>-<svc> --since 30m`.
+
 ## When something fails
 
 | Symptom | Do this |

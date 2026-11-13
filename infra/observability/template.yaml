@@ -1,0 +1,1069 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Sale dashboard, API health dashboard and alarms (docs/metrics.md §1.1, §8, §8a). Plain CloudFormation, no SAM transform (the account SCP blocks
+  change sets with the SAM transform). Reads the metrics the services emit as EMF (Rusuh/*) and the AWS built-ins.
+  Deploy after the service stacks: the dashboard names their functions, queues and log groups.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues: [dev, prod]
+
+  ApiId:
+    Type: String
+    Description: HTTP API id of the unified gateway (output ApiId of stack rusuh-{env}-api).
+
+  AuroraClusterId:
+    Type: String
+    Description: DBClusterIdentifier of the foundation Aurora cluster (physical id of AuroraCluster in rusuh-{env}-foundation).
+
+  AlarmEmail:
+    Type: String
+    Default: ""
+    Description: >
+      Address that receives every alarm (one SNS email subscription; the address confirms it once). Empty = the topic is
+      created without a subscriber; subscribe in the console.
+
+Conditions:
+  HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, ""]]
+
+Resources:
+  # ============================================================================
+  # Alarm topic
+  # ============================================================================
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub rusuh-${Environment}-alarms
+      DisplayName: !Sub Rusuh ${Environment} alarms
+
+  AlarmEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlarmEmail
+    Properties:
+      TopicArn: !Ref AlarmTopic
+      Protocol: email
+      Endpoint: !Ref AlarmEmail
+
+  # ============================================================================
+  # Alarms (docs/metrics.md §8). Each description says what it means and what to do; RUNBOOK.md has the detail.
+  # ============================================================================
+
+  # NFR-14. sse-server writes CtlHeartbeatAge every 10 s for every event that has listeners, also while admission-ctl
+  # is down (the age then keeps growing). The all-events Minimum is the freshest age any task saw: > 30 s = no task
+  # hears admission-ctl. No listeners = no data = nobody to serve, hence notBreaching.
+  QueueStalledAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub rusuh-${Environment}-queue-stalled
+      AlarmDescription: >
+        No sse-server task has heard admission-ctl for more than 30 s: the queue is frozen and customers see
+        "reconnecting". Check the admission-ctl task and its logs (/ecs/rusuh-{env}/admission-ctl). NFR-14.
+      Namespace: Rusuh/SSE
+      MetricName: CtlHeartbeatAge
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 30
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+      OKActions: [!Ref AlarmTopic]
+
+  # admission-ctl runs all the time, sale or not. No running task (or no data, which is the same thing) = nobody lets
+  # customers in and the sweeps stop.
+  AdmissionDownAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub rusuh-${Environment}-admission-ctl-down
+      AlarmDescription: >
+        admission-ctl has no running task for 2 minutes: nobody is let in, expired bookings are not swept. Check the
+        ECS service rusuh-{env}/admission-ctl (stopped task reason, image, secrets).
+      Namespace: AWS/ECS
+      MetricName: LiveTaskCount
+      Dimensions:
+        - Name: ClusterName
+          Value: !Sub rusuh-${Environment}
+        - Name: ServiceName
+          Value: admission-ctl
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      AlarmActions: [!Ref AlarmTopic]
+      OKActions: [!Ref AlarmTopic]
+
+  # NFR-04. The last guard of the hold script fired: stock would have gone below zero.
+  StockNegativeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub rusuh-${Environment}-stock-negative
+      AlarmDescription: >
+        The hold script refused a hold that would have taken stock below zero (oversell risk). Compare Redis stock with
+        Aurora for the event; stock reconciliation corrects Redis once the counter holds still. NFR-04.
+      Namespace: Rusuh/Booking
+      MetricName: StockNegative
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
+  # FR-36. Money arrived for a booking that had already expired: an operator refunds by hand.
+  LateSettlementAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub rusuh-${Environment}-late-settlement
+      AlarmDescription: >
+        Midtrans settled a payment for a booking that had already expired: the booking is marked disputed and the
+        customer was emailed. Refund by hand; the disputed list is on the sale dashboard (FR-36).
+      Namespace: Rusuh/Payment
+      MetricName: LateSettlement
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
+  # NFR-10. An email that failed all its retries.
+  EmailDlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub rusuh-${Environment}-email-dlq
+      AlarmDescription: >
+        Messages in the notification DLQ: e-tickets or notices that were not sent after every retry. Read the message,
+        fix the cause (SES, template) and redrive the DLQ. NFR-10.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !Sub rusuh-${Environment}-notification-dlq
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+      OKActions: [!Ref AlarmTopic]
+
+  # More than 1 % of API requests answered 5xx over 5 minutes.
+  Api5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub rusuh-${Environment}-api-5xx
+      AlarmDescription: >
+        More than 1 % of API requests answered 5xx over 5 minutes. Check the Lambda errors and throttles row of the sale
+        dashboard to find the service.
+      Metrics:
+        - Id: errors
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/ApiGateway
+              MetricName: 5xx
+              Dimensions:
+                - Name: ApiId
+                  Value: !Ref ApiId
+            Period: 300
+            Stat: Sum
+        - Id: requests
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/ApiGateway
+              MetricName: Count
+              Dimensions:
+                - Name: ApiId
+                  Value: !Ref ApiId
+            Period: 300
+            Stat: Sum
+        - Id: rate
+          Label: 5xx %
+          Expression: IF(requests > 0, 100 * errors / requests, 0)
+          ReturnData: true
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+      OKActions: [!Ref AlarmTopic]
+
+  # A tick longer than 500 ms delays the next one. 20 overruns in a minute (one tick in six) for 3 minutes = the
+  # controller no longer keeps up.
+  TickOverrunAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub rusuh-${Environment}-tick-overrun
+      AlarmDescription: >
+        admission-ctl ticks take longer than 500 ms for 3 minutes: admission slows for every event. Look at
+        TickDurationSeconds and at Aurora / Redis latency on the sale dashboard.
+      Namespace: Rusuh/Admission
+      MetricName: TickOverrun
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 3
+      DatapointsToAlarm: 3
+      Threshold: 20
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+      OKActions: [!Ref AlarmTopic]
+
+  # ============================================================================
+  # Sale dashboard (docs/metrics.md §1.1). Rows: 0 header · 1 headline tiles for the event picked in the dropdown ·
+  # 2 queue per event · 3 funnel · 4 health · 5 money and stock. The dropdown (variable EventId) sets the EventId of
+  # every metric widget that names one; SEARCH and Logs Insights widgets list every event.
+  # ============================================================================
+  SaleDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub rusuh-${Environment}-sale
+      DashboardBody: !Sub |
+        {
+          "start": "-PT3H",
+          "periodOverride": "inherit",
+          "variables": [
+            {
+              "type": "property",
+              "property": "EventId",
+              "inputType": "select",
+              "id": "EventId",
+              "label": "Event",
+              "visible": true,
+              "search": "{Rusuh/Queue,EventId} MetricName=\"QueueJoined\"",
+              "populateFrom": "EventId",
+              "defaultValue": "__FIRST"
+            }
+          ],
+          "widgets": [
+            {
+              "type": "text", "x": 0, "y": 0, "width": 24, "height": 2,
+              "properties": {
+                "markdown": "## Rusuh ${Environment} — sale\nPick the **event** in the dropdown above (row 1 and the drop-out bars follow it). Set the **time range to the sale window**: the tiles and tables add up that range. Rows 2 and 3 list every event. Definitions: `docs/metrics.md` · what to do on an alarm: `RUNBOOK.md`."
+              }
+            },
+
+            {
+              "type": "metric", "x": 0, "y": 2, "width": 4, "height": 4,
+              "properties": {
+                "title": "Waiting now (FR-33)", "view": "singleValue", "region": "${AWS::Region}", "period": 60,
+                "metrics": [ [ "Rusuh/Admission", "QueueDepth", "EventId", "-", { "stat": "Maximum", "label": "waiting" } ] ]
+              }
+            },
+            {
+              "type": "metric", "x": 4, "y": 2, "width": 4, "height": 4,
+              "properties": {
+                "title": "Joined the queue", "view": "singleValue", "region": "${AWS::Region}", "setPeriodToTimeRange": true,
+                "metrics": [ [ "Rusuh/Queue", "QueueJoined", "EventId", "-", { "stat": "Sum", "label": "places" } ] ]
+              }
+            },
+            {
+              "type": "metric", "x": 8, "y": 2, "width": 4, "height": 4,
+              "properties": {
+                "title": "Confirmed bookings", "view": "singleValue", "region": "${AWS::Region}", "setPeriodToTimeRange": true,
+                "metrics": [ [ "Rusuh/Payment", "BookingsConfirmed", "EventId", "-", { "stat": "Sum", "label": "confirmed" } ] ]
+              }
+            },
+            {
+              "type": "metric", "x": 12, "y": 2, "width": 4, "height": 4,
+              "properties": {
+                "title": "Conversion % (FR-34)", "view": "singleValue", "region": "${AWS::Region}", "setPeriodToTimeRange": true,
+                "metrics": [
+                  [ { "expression": "100 * confirmed / joined", "id": "conversion", "label": "confirmed / joined" } ],
+                  [ "Rusuh/Queue", "QueueJoined", "EventId", "-", { "stat": "Sum", "id": "joined", "visible": false } ],
+                  [ "Rusuh/Payment", "BookingsConfirmed", "EventId", "-", { "stat": "Sum", "id": "confirmed", "visible": false } ]
+                ]
+              }
+            },
+            {
+              "type": "metric", "x": 16, "y": 2, "width": 4, "height": 4,
+              "properties": {
+                "title": "Expiry % (FR-35)", "view": "singleValue", "region": "${AWS::Region}", "setPeriodToTimeRange": true,
+                "metrics": [
+                  [ { "expression": "100 * (heldExpired + payExpired) / held", "id": "expiry", "label": "expired / held" } ],
+                  [ "Rusuh/Booking", "BookingsHeld", "EventId", "-", { "stat": "Sum", "id": "held", "visible": false } ],
+                  [ "Rusuh/Admission", "BookingsHeldExpired", "EventId", "-", { "stat": "Sum", "id": "heldExpired", "visible": false } ],
+                  [ "Rusuh/Payment", "BookingsPaymentExpired", "EventId", "-", { "stat": "Sum", "id": "payExpired", "visible": false } ]
+                ]
+              }
+            },
+            {
+              "type": "alarm", "x": 20, "y": 2, "width": 4, "height": 4,
+              "properties": {
+                "title": "Alarms",
+                "sortBy": "stateUpdatedTimestamp",
+                "alarms": [
+                  "${QueueStalledAlarm.Arn}", "${AdmissionDownAlarm.Arn}", "${StockNegativeAlarm.Arn}",
+                  "${LateSettlementAlarm.Arn}", "${EmailDlqAlarm.Arn}", "${Api5xxAlarm.Arn}", "${TickOverrunAlarm.Arn}"
+                ]
+              }
+            },
+
+            {
+              "type": "metric", "x": 0, "y": 6, "width": 8, "height": 6,
+              "properties": {
+                "title": "Waiting per event (FR-33)", "view": "timeSeries", "region": "${AWS::Region}", "period": 60,
+                "metrics": [ [ { "expression": "SEARCH('{Rusuh/Admission,EventId} MetricName=\"QueueDepth\"', 'Maximum', 60)", "id": "depth" } ] ],
+                "yAxis": { "left": { "min": 0, "label": "people" } }
+              }
+            },
+            {
+              "type": "metric", "x": 8, "y": 6, "width": 8, "height": 6,
+              "properties": {
+                "title": "Now serving vs issued, per event", "view": "timeSeries", "region": "${AWS::Region}", "period": 60,
+                "metrics": [
+                  [ { "expression": "SEARCH('{Rusuh/Admission,EventId} MetricName=\"NowServing\"', 'Maximum', 60)", "id": "serving" } ],
+                  [ { "expression": "SEARCH('{Rusuh/Admission,EventId} MetricName=\"Issued\"', 'Maximum', 60)", "id": "issued" } ]
+                ],
+                "yAxis": { "left": { "min": 0, "label": "ticket number" } }
+              }
+            },
+            {
+              "type": "metric", "x": 16, "y": 6, "width": 8, "height": 6,
+              "properties": {
+                "title": "Admission rate and live connections, per event", "view": "timeSeries", "region": "${AWS::Region}", "period": 60,
+                "metrics": [
+                  [ { "expression": "SEARCH('{Rusuh/Admission,EventId} MetricName=\"RatePerMin\"', 'Maximum', 60)", "id": "rate" } ],
+                  [ { "expression": "SEARCH('{Rusuh/SSE,EventId} MetricName=\"SSEConnections\"', 'Maximum', 60)", "id": "conns", "yAxis": "right" } ]
+                ],
+                "yAxis": { "left": { "min": 0, "label": "admitted / min" }, "right": { "min": 0, "label": "connections" } }
+              }
+            },
+
+            {
+              "type": "log", "x": 0, "y": 12, "width": 16, "height": 7,
+              "properties": {
+                "title": "Funnel per event (FR-33–35): totals for the time range",
+                "region": "${AWS::Region}", "view": "table",
+                "query": "SOURCE '/aws/lambda/rusuh-${Environment}-queue' | SOURCE '/aws/lambda/rusuh-${Environment}-booking' | SOURCE '/aws/lambda/rusuh-${Environment}-payment-api' | SOURCE '/ecs/rusuh-${Environment}/admission-ctl' | filter ispresent(EventId)\n| stats sum(QueueJoined) as joined, sum(Granted) as granted, sum(BookingsHeld) as held, sum(BookingsConfirmed) as confirmed, sum(BookingsHeldExpired) as held_expired, sum(BookingsPaymentExpired) as pay_expired by EventId\n| fields EventId, joined, granted, held, confirmed, confirmed * 100 / joined as conversion_pct, confirmed * 100 / granted as grant_use_pct, (held_expired + pay_expired) * 100 / held as expiry_pct\n| sort joined desc"
+              }
+            },
+            {
+              "type": "metric", "x": 16, "y": 12, "width": 8, "height": 7,
+              "properties": {
+                "title": "Where people drop out (FR-35)", "view": "bar", "region": "${AWS::Region}", "setPeriodToTimeRange": true,
+                "metrics": [
+                  [ "Rusuh/Admission", "BookingsLapsed", "EventId", "-", { "stat": "Sum", "label": "lapsed: never opened the page" } ],
+                  [ "Rusuh/Admission", "BookingsSelectingExpired", "EventId", "-", { "stat": "Sum", "label": "no booking in 5 min" } ],
+                  [ "Rusuh/Admission", "BookingsHeldExpired", "EventId", "-", { "stat": "Sum", "label": "held, never pressed Pay" } ],
+                  [ "Rusuh/Payment", "BookingsPaymentExpired", "EventId", "-", { "stat": "Sum", "label": "Midtrans expired" } ]
+                ]
+              }
+            },
+
+            {
+              "type": "metric", "x": 0, "y": 19, "width": 4, "height": 6,
+              "properties": {
+                "title": "Latency p95 (NFR-06 < 1 s)", "view": "timeSeries", "region": "${AWS::Region}", "period": 60,
+                "metrics": [
+                  [ "AWS/ApiGateway", "Latency", "ApiId", "${ApiId}", { "stat": "p95", "label": "API (all routes)" } ],
+                  [ "AWS/Lambda", "Duration", "FunctionName", "rusuh-${Environment}-queue", { "stat": "p95", "label": "queue Lambda" } ],
+                  [ "AWS/Lambda", "Duration", "FunctionName", "rusuh-${Environment}-events", { "stat": "p95", "label": "events Lambda" } ]
+                ],
+                "annotations": { "horizontal": [ { "label": "1 s", "value": 1000 } ] },
+                "yAxis": { "left": { "min": 0, "label": "ms" } }
+              }
+            },
+            {
+              "type": "metric", "x": 4, "y": 19, "width": 4, "height": 6,
+              "properties": {
+                "title": "API 5xx, Lambda errors and throttles", "view": "timeSeries", "region": "${AWS::Region}", "period": 60,
+                "metrics": [
+                  [ "AWS/ApiGateway", "5xx", "ApiId", "${ApiId}", { "stat": "Sum", "label": "API 5xx" } ],
+                  [ { "expression": "SEARCH('{AWS/Lambda,FunctionName} MetricName=\"Errors\" rusuh-${Environment}', 'Sum', 60)", "id": "errors" } ],
+                  [ { "expression": "SEARCH('{AWS/Lambda,FunctionName} MetricName=\"Throttles\" rusuh-${Environment}', 'Sum', 60)", "id": "throttles" } ]
+                ],
+                "yAxis": { "left": { "min": 0 } }
+              }
+            },
+            {
+              "type": "metric", "x": 8, "y": 19, "width": 4, "height": 6,
+              "properties": {
+                "title": "Queue freshness (NFR-14 < 30 s)", "view": "timeSeries", "region": "${AWS::Region}", "period": 60,
+                "metrics": [
+                  [ "Rusuh/SSE", "CtlHeartbeatAge", { "stat": "Minimum", "label": "freshest (alarm)" } ],
+                  [ "Rusuh/SSE", "CtlHeartbeatAge", { "stat": "Maximum", "label": "stalest" } ]
+                ],
+                "annotations": { "horizontal": [ { "label": "30 s", "value": 30 } ] },
+                "yAxis": { "left": { "min": 0, "label": "seconds" } }
+              }
+            },
+            {
+              "type": "metric", "x": 12, "y": 19, "width": 4, "height": 6,
+              "properties": {
+                "title": "admission-ctl tick", "view": "timeSeries", "region": "${AWS::Region}", "period": 60,
+                "metrics": [
+                  [ "Rusuh/Admission", "TickDurationSeconds", { "stat": "Maximum", "label": "slowest tick (s)" } ],
+                  [ "Rusuh/Admission", "TickOverrun", { "stat": "Sum", "label": "overruns / min", "yAxis": "right" } ],
+                  [ "AWS/ECS", "LiveTaskCount", "ClusterName", "rusuh-${Environment}", "ServiceName", "admission-ctl", { "stat": "Minimum", "label": "running tasks", "yAxis": "right" } ]
+                ],
+                "annotations": { "horizontal": [ { "label": "500 ms interval", "value": 0.5 } ] },
+                "yAxis": { "left": { "min": 0, "label": "seconds" }, "right": { "min": 0 } }
+              }
+            },
+            {
+              "type": "metric", "x": 16, "y": 19, "width": 4, "height": 6,
+              "properties": {
+                "title": "Redis", "view": "timeSeries", "region": "${AWS::Region}", "period": 60,
+                "metrics": [
+                  [ "AWS/ElastiCache", "EngineCPUUtilization", "CacheClusterId", "rusuh-${Environment}", { "stat": "Maximum", "label": "engine CPU %" } ],
+                  [ "AWS/ElastiCache", "DatabaseMemoryUsagePercentage", "CacheClusterId", "rusuh-${Environment}", "CacheNodeId", "0001", { "stat": "Maximum", "label": "memory %" } ]
+                ],
+                "yAxis": { "left": { "min": 0, "max": 100, "label": "%" } }
+              }
+            },
+            {
+              "type": "metric", "x": 20, "y": 19, "width": 4, "height": 6,
+              "properties": {
+                "title": "Aurora", "view": "timeSeries", "region": "${AWS::Region}", "period": 60,
+                "metrics": [
+                  [ "AWS/RDS", "ServerlessDatabaseCapacity", "DBClusterIdentifier", "${AuroraClusterId}", { "stat": "Maximum", "label": "ACU" } ],
+                  [ "AWS/RDS", "DatabaseConnections", "DBClusterIdentifier", "${AuroraClusterId}", { "stat": "Maximum", "label": "connections", "yAxis": "right" } ]
+                ],
+                "yAxis": { "left": { "min": 0, "label": "ACU" }, "right": { "min": 0 } }
+              }
+            },
+
+            {
+              "type": "metric", "x": 0, "y": 25, "width": 6, "height": 6,
+              "properties": {
+                "title": "Stock safety (NFR-04): should stay 0", "view": "timeSeries", "region": "${AWS::Region}", "period": 60,
+                "metrics": [
+                  [ "Rusuh/Booking", "StockNegative", { "stat": "Sum" } ],
+                  [ "Rusuh/Booking", "HoldCommitUnknown", { "stat": "Sum" } ],
+                  [ "Rusuh/Admission", "ReleaseFailed", { "stat": "Sum" } ],
+                  [ "Rusuh/Admission", "StockDrift", { "stat": "Maximum", "label": "largest stock drift" } ]
+                ],
+                "yAxis": { "left": { "min": 0 } }
+              }
+            },
+            {
+              "type": "metric", "x": 6, "y": 25, "width": 6, "height": 6,
+              "properties": {
+                "title": "Money and email: should stay 0", "view": "timeSeries", "region": "${AWS::Region}", "period": 60,
+                "metrics": [
+                  [ "Rusuh/Payment", "LateSettlement", { "stat": "Sum", "label": "late settlements (refund by hand)" } ],
+                  [ "Rusuh/Payment", "MidtransErrors", { "stat": "Sum", "label": "Midtrans call errors" } ],
+                  [ "AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", "rusuh-${Environment}-notification-dlq", { "stat": "Maximum", "label": "emails in DLQ" } ]
+                ],
+                "yAxis": { "left": { "min": 0 } }
+              }
+            },
+            {
+              "type": "log", "x": 12, "y": 25, "width": 12, "height": 6,
+              "properties": {
+                "title": "Disputed bookings (FR-36): refund by hand",
+                "region": "${AWS::Region}", "view": "table",
+                "query": "SOURCE '/aws/lambda/rusuh-${Environment}-payment-api' | filter alarm = \"LatePaymentRefund\"\n| fields @timestamp, event_id, booking_id, order_id, gross_amount\n| sort @timestamp desc"
+              }
+            }
+          ]
+        }
+
+  # ============================================================================
+  # API health dashboard (docs/metrics.md §8a): per route from the API access log, per service from Lambda's metrics.
+  # Separate from the sale dashboard so that one stays short enough to read during a sale. No alarms of its own.
+  # ============================================================================
+  ApiDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub rusuh-${Environment}-api
+      DashboardBody: !Sub |
+        {
+          "start": "-PT3H",
+          "widgets": [
+            {
+              "type": "text",
+              "x": 0,
+              "y": 0,
+              "width": 24,
+              "height": 2,
+              "properties": {
+                "markdown": "## Rusuh ${Environment} — API health\nSet the time range to what you want to look at. **Success** = 2xx/3xx, **4xx** = client errors (often expected: 409 sold out, 429 rate limited, 401), **error rate** = 5xx only. Per-route numbers come from the API access log `/aws/apigateway/rusuh-${Environment}-api`; latency exists only for requests after the access-log change. Definitions: `docs/metrics.md` §8a."
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 2,
+              "width": 6,
+              "height": 4,
+              "properties": {
+                "title": "Requests (whole API)",
+                "view": "singleValue",
+                "region": "${AWS::Region}",
+                "setPeriodToTimeRange": true,
+                "metrics": [
+                  [
+                    "AWS/ApiGateway",
+                    "Count",
+                    "ApiId",
+                    "${ApiId}",
+                    {
+                      "stat": "Sum",
+                      "label": "requests"
+                    }
+                  ]
+                ]
+              }
+            },
+            {
+              "type": "metric",
+              "x": 6,
+              "y": 2,
+              "width": 6,
+              "height": 4,
+              "properties": {
+                "title": "Success % (2xx/3xx)",
+                "view": "singleValue",
+                "region": "${AWS::Region}",
+                "setPeriodToTimeRange": true,
+                "metrics": [
+                  [
+                    {
+                      "expression": "IF(req > 0, 100 * (req - c4 - c5) / req, 0)",
+                      "id": "ok",
+                      "label": "success %"
+                    }
+                  ],
+                  [
+                    "AWS/ApiGateway",
+                    "Count",
+                    "ApiId",
+                    "${ApiId}",
+                    {
+                      "stat": "Sum",
+                      "id": "req",
+                      "visible": false
+                    }
+                  ],
+                  [
+                    "AWS/ApiGateway",
+                    "4xx",
+                    "ApiId",
+                    "${ApiId}",
+                    {
+                      "stat": "Sum",
+                      "id": "c4",
+                      "visible": false
+                    }
+                  ],
+                  [
+                    "AWS/ApiGateway",
+                    "5xx",
+                    "ApiId",
+                    "${ApiId}",
+                    {
+                      "stat": "Sum",
+                      "id": "c5",
+                      "visible": false
+                    }
+                  ]
+                ]
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 2,
+              "width": 6,
+              "height": 4,
+              "properties": {
+                "title": "Error rate % (5xx)",
+                "view": "singleValue",
+                "region": "${AWS::Region}",
+                "setPeriodToTimeRange": true,
+                "metrics": [
+                  [
+                    {
+                      "expression": "IF(req > 0, 100 * c5 / req, 0)",
+                      "id": "err",
+                      "label": "5xx %"
+                    }
+                  ],
+                  [
+                    "AWS/ApiGateway",
+                    "Count",
+                    "ApiId",
+                    "${ApiId}",
+                    {
+                      "stat": "Sum",
+                      "id": "req",
+                      "visible": false
+                    }
+                  ],
+                  [
+                    "AWS/ApiGateway",
+                    "5xx",
+                    "ApiId",
+                    "${ApiId}",
+                    {
+                      "stat": "Sum",
+                      "id": "c5",
+                      "visible": false
+                    }
+                  ]
+                ]
+              }
+            },
+            {
+              "type": "metric",
+              "x": 18,
+              "y": 2,
+              "width": 6,
+              "height": 4,
+              "properties": {
+                "title": "Latency (whole API)",
+                "view": "timeSeries",
+                "region": "${AWS::Region}",
+                "period": 60,
+                "metrics": [
+                  [
+                    "AWS/ApiGateway",
+                    "Latency",
+                    "ApiId",
+                    "${ApiId}",
+                    {
+                      "stat": "p50",
+                      "label": "p50"
+                    }
+                  ],
+                  [
+                    "AWS/ApiGateway",
+                    "Latency",
+                    "ApiId",
+                    "${ApiId}",
+                    {
+                      "stat": "p95",
+                      "label": "p95"
+                    }
+                  ]
+                ],
+                "annotations": {
+                  "horizontal": [
+                    {
+                      "label": "1 s",
+                      "value": 1000
+                    }
+                  ]
+                },
+                "yAxis": {
+                  "left": {
+                    "min": 0,
+                    "label": "ms"
+                  }
+                }
+              }
+            },
+            {
+              "type": "log",
+              "x": 0,
+              "y": 6,
+              "width": 24,
+              "height": 8,
+              "properties": {
+                "title": "Per route: totals for the time range",
+                "region": "${AWS::Region}",
+                "view": "table",
+                "query": "SOURCE '/aws/apigateway/rusuh-${Environment}-api' | filter routeKey != \"-\"\n| stats count(*) as requests, sum(status >= 200 and status < 400) * 100 / count(*) as success_pct, sum(status >= 400 and status < 500) * 100 / count(*) as client_err_pct, sum(status >= 500) * 100 / count(*) as error_pct, pct(responseLatency, 50) as p50_ms, pct(responseLatency, 95) as p95_ms, pct(responseLatency, 99) as p99_ms by routeKey\n| sort requests desc"
+              }
+            },
+            {
+              "type": "log",
+              "x": 0,
+              "y": 14,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "5xx per route over time",
+                "region": "${AWS::Region}",
+                "view": "timeSeries",
+                "query": "SOURCE '/aws/apigateway/rusuh-${Environment}-api' | filter routeKey != \"-\" and status >= 500\n| stats count(*) as errors by bin(5m), routeKey"
+              }
+            },
+            {
+              "type": "log",
+              "x": 12,
+              "y": 14,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "p95 latency per route over time (ms)",
+                "region": "${AWS::Region}",
+                "view": "timeSeries",
+                "query": "SOURCE '/aws/apigateway/rusuh-${Environment}-api' | filter routeKey != \"-\" and ispresent(responseLatency)\n| stats pct(responseLatency, 95) as p95_ms by bin(5m), routeKey"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 20,
+              "width": 6,
+              "height": 6,
+              "properties": {
+                "title": "Invocations per service",
+                "view": "timeSeries",
+                "region": "${AWS::Region}",
+                "period": 60,
+                "metrics": [
+                  [
+                    {
+                      "expression": "SEARCH('{AWS/Lambda,FunctionName} MetricName=\"Invocations\" rusuh-${Environment}', 'Sum', 60)",
+                      "id": "invocations"
+                    }
+                  ]
+                ],
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 6,
+              "y": 20,
+              "width": 6,
+              "height": 6,
+              "properties": {
+                "title": "Error % per service (Lambda errors / invocations)",
+                "view": "timeSeries",
+                "region": "${AWS::Region}",
+                "period": 60,
+                "metrics": [
+                  [
+                    {
+                      "expression": "IF(i0 > 0, 100 * e0 / i0, 0)",
+                      "id": "r0",
+                      "label": "events"
+                    }
+                  ],
+                  [
+                    "AWS/Lambda",
+                    "Invocations",
+                    "FunctionName",
+                    "rusuh-${Environment}-events",
+                    {
+                      "stat": "Sum",
+                      "id": "i0",
+                      "visible": false
+                    }
+                  ],
+                  [
+                    "AWS/Lambda",
+                    "Errors",
+                    "FunctionName",
+                    "rusuh-${Environment}-events",
+                    {
+                      "stat": "Sum",
+                      "id": "e0",
+                      "visible": false
+                    }
+                  ],
+                  [
+                    {
+                      "expression": "IF(i1 > 0, 100 * e1 / i1, 0)",
+                      "id": "r1",
+                      "label": "queue"
+                    }
+                  ],
+                  [
+                    "AWS/Lambda",
+                    "Invocations",
+                    "FunctionName",
+                    "rusuh-${Environment}-queue",
+                    {
+                      "stat": "Sum",
+                      "id": "i1",
+                      "visible": false
+                    }
+                  ],
+                  [
+                    "AWS/Lambda",
+                    "Errors",
+                    "FunctionName",
+                    "rusuh-${Environment}-queue",
+                    {
+                      "stat": "Sum",
+                      "id": "e1",
+                      "visible": false
+                    }
+                  ],
+                  [
+                    {
+                      "expression": "IF(i2 > 0, 100 * e2 / i2, 0)",
+                      "id": "r2",
+                      "label": "booking"
+                    }
+                  ],
+                  [
+                    "AWS/Lambda",
+                    "Invocations",
+                    "FunctionName",
+                    "rusuh-${Environment}-booking",
+                    {
+                      "stat": "Sum",
+                      "id": "i2",
+                      "visible": false
+                    }
+                  ],
+                  [
+                    "AWS/Lambda",
+                    "Errors",
+                    "FunctionName",
+                    "rusuh-${Environment}-booking",
+                    {
+                      "stat": "Sum",
+                      "id": "e2",
+                      "visible": false
+                    }
+                  ],
+                  [
+                    {
+                      "expression": "IF(i3 > 0, 100 * e3 / i3, 0)",
+                      "id": "r3",
+                      "label": "payment-api"
+                    }
+                  ],
+                  [
+                    "AWS/Lambda",
+                    "Invocations",
+                    "FunctionName",
+                    "rusuh-${Environment}-payment-api",
+                    {
+                      "stat": "Sum",
+                      "id": "i3",
+                      "visible": false
+                    }
+                  ],
+                  [
+                    "AWS/Lambda",
+                    "Errors",
+                    "FunctionName",
+                    "rusuh-${Environment}-payment-api",
+                    {
+                      "stat": "Sum",
+                      "id": "e3",
+                      "visible": false
+                    }
+                  ],
+                  [
+                    {
+                      "expression": "IF(i4 > 0, 100 * e4 / i4, 0)",
+                      "id": "r4",
+                      "label": "user"
+                    }
+                  ],
+                  [
+                    "AWS/Lambda",
+                    "Invocations",
+                    "FunctionName",
+                    "rusuh-${Environment}-user",
+                    {
+                      "stat": "Sum",
+                      "id": "i4",
+                      "visible": false
+                    }
+                  ],
+                  [
+                    "AWS/Lambda",
+                    "Errors",
+                    "FunctionName",
+                    "rusuh-${Environment}-user",
+                    {
+                      "stat": "Sum",
+                      "id": "e4",
+                      "visible": false
+                    }
+                  ],
+                  [
+                    {
+                      "expression": "IF(i5 > 0, 100 * e5 / i5, 0)",
+                      "id": "r5",
+                      "label": "nik-verify"
+                    }
+                  ],
+                  [
+                    "AWS/Lambda",
+                    "Invocations",
+                    "FunctionName",
+                    "rusuh-${Environment}-nik-verify",
+                    {
+                      "stat": "Sum",
+                      "id": "i5",
+                      "visible": false
+                    }
+                  ],
+                  [
+                    "AWS/Lambda",
+                    "Errors",
+                    "FunctionName",
+                    "rusuh-${Environment}-nik-verify",
+                    {
+                      "stat": "Sum",
+                      "id": "e5",
+                      "visible": false
+                    }
+                  ],
+                  [
+                    {
+                      "expression": "IF(i6 > 0, 100 * e6 / i6, 0)",
+                      "id": "r6",
+                      "label": "notification"
+                    }
+                  ],
+                  [
+                    "AWS/Lambda",
+                    "Invocations",
+                    "FunctionName",
+                    "rusuh-${Environment}-notification",
+                    {
+                      "stat": "Sum",
+                      "id": "i6",
+                      "visible": false
+                    }
+                  ],
+                  [
+                    "AWS/Lambda",
+                    "Errors",
+                    "FunctionName",
+                    "rusuh-${Environment}-notification",
+                    {
+                      "stat": "Sum",
+                      "id": "e6",
+                      "visible": false
+                    }
+                  ],
+                  [
+                    {
+                      "expression": "IF(i7 > 0, 100 * e7 / i7, 0)",
+                      "id": "r7",
+                      "label": "outbox-publisher"
+                    }
+                  ],
+                  [
+                    "AWS/Lambda",
+                    "Invocations",
+                    "FunctionName",
+                    "rusuh-${Environment}-outbox-publisher",
+                    {
+                      "stat": "Sum",
+                      "id": "i7",
+                      "visible": false
+                    }
+                  ],
+                  [
+                    "AWS/Lambda",
+                    "Errors",
+                    "FunctionName",
+                    "rusuh-${Environment}-outbox-publisher",
+                    {
+                      "stat": "Sum",
+                      "id": "e7",
+                      "visible": false
+                    }
+                  ]
+                ],
+                "yAxis": {
+                  "left": {
+                    "min": 0,
+                    "label": "%"
+                  }
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 20,
+              "width": 6,
+              "height": 6,
+              "properties": {
+                "title": "Duration p95 per service",
+                "view": "timeSeries",
+                "region": "${AWS::Region}",
+                "period": 60,
+                "metrics": [
+                  [
+                    {
+                      "expression": "SEARCH('{AWS/Lambda,FunctionName} MetricName=\"Duration\" rusuh-${Environment}', 'p95', 60)",
+                      "id": "duration"
+                    }
+                  ]
+                ],
+                "annotations": {
+                  "horizontal": [
+                    {
+                      "label": "1 s",
+                      "value": 1000
+                    }
+                  ]
+                },
+                "yAxis": {
+                  "left": {
+                    "min": 0,
+                    "label": "ms"
+                  }
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 18,
+              "y": 20,
+              "width": 6,
+              "height": 6,
+              "properties": {
+                "title": "Throttles and concurrency",
+                "view": "timeSeries",
+                "region": "${AWS::Region}",
+                "period": 60,
+                "metrics": [
+                  [
+                    {
+                      "expression": "SEARCH('{AWS/Lambda,FunctionName} MetricName=\"Throttles\" rusuh-${Environment}', 'Sum', 60)",
+                      "id": "throttles"
+                    }
+                  ],
+                  [
+                    {
+                      "expression": "SEARCH('{AWS/Lambda,FunctionName} MetricName=\"ConcurrentExecutions\" rusuh-${Environment}', 'Maximum', 60)",
+                      "id": "conc",
+                      "yAxis": "right"
+                    }
+                  ]
+                ],
+                "yAxis": {
+                  "left": {
+                    "min": 0,
+                    "label": "throttles"
+                  },
+                  "right": {
+                    "min": 0,
+                    "label": "concurrent"
+                  }
+                }
+              }
+            }
+          ]
+        }
+
+Outputs:
+  DashboardUrl:
+    Description: The sale dashboard.
+    Value: !Sub https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards/dashboard/rusuh-${Environment}-sale
+  ApiDashboardUrl:
+    Description: The API health dashboard (per route, per service).
+    Value: !Sub https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards/dashboard/rusuh-${Environment}-api
+  AlarmTopicArn:
+    Description: SNS topic every alarm notifies; add subscribers here.
+    Value: !Ref AlarmTopic
