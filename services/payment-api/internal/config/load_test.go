@@ -240,6 +240,8 @@ func TestLoad_OverridesAreRead(t *testing.T) {
 	t.Setenv("DATABASE_MAX_CONNS", "8")
 	t.Setenv("PAYMENT_ICON_BASE", "https://cdn.example/i")
 	t.Setenv("APP_BASE_URL", "https://rush-my-ticket.my.id")
+	// RFC 5737 documentation IPs — do NOT use in production
+	t.Setenv("MIDTRANS_WEBHOOK_IP_ALLOWLIST", "192.0.2.1,198.51.100.0/24")
 
 	cfg, err := Load()
 	require.NoError(t, err)
@@ -259,6 +261,8 @@ func TestLoad_PaymentPageIsTheAppBaseURLPlusTheConfiguredPath(t *testing.T) {
 	t.Setenv("APP_ENV", "production")
 	t.Setenv("APP_BASE_URL", "https://rush-my-ticket.my.id/")
 	t.Setenv("PAYMENT_WEB_PATH", "/pay/{booking_id}")
+	// RFC 5737 documentation IP — do NOT use in production
+	t.Setenv("MIDTRANS_WEBHOOK_IP_ALLOWLIST", "192.0.2.1")
 
 	cfg, err := Load()
 	require.NoError(t, err)
@@ -271,6 +275,8 @@ func TestLoad_AppBaseURLMustBeHTTPSOutsideLocal(t *testing.T) {
 	setRequired(t)
 	t.Setenv("APP_ENV", "production")
 	t.Setenv("APP_BASE_URL", "http://rush-my-ticket.my.id")
+	// RFC 5737 documentation IP — do NOT use in production
+	t.Setenv("MIDTRANS_WEBHOOK_IP_ALLOWLIST", "192.0.2.1")
 	_, err := Load()
 	require.ErrorContains(t, err, "APP_BASE_URL must be https")
 }
@@ -281,6 +287,8 @@ func TestLoad_AnUnsetAppBaseURLIsRefusedOutsideLocal(t *testing.T) {
 	clearDefaulted(t)
 	setRequired(t)
 	t.Setenv("APP_ENV", "production")
+	// RFC 5737 documentation IP — do NOT use in production
+	t.Setenv("MIDTRANS_WEBHOOK_IP_ALLOWLIST", "192.0.2.1")
 	_, err := Load()
 	require.ErrorContains(t, err, "APP_BASE_URL must be https")
 }
@@ -310,5 +318,151 @@ func TestLoad_PaymentWebPathMustHoldTheBookingIDOnceAndNothingAfterThePath(t *te
 			_, err := Load()
 			require.ErrorContains(t, err, "PAYMENT_WEB_PATH")
 		})
+	}
+}
+
+// ── Webhook IP allowlist tests ────────────────────────────────────────────────
+// Test IPs below are from RFC 5737 documentation ranges (192.0.2.0/24,
+// 198.51.100.0/24, 203.0.113.0/24). Do NOT use these in production allowlists;
+// they are reserved for documentation examples.
+
+func TestParseIPAllowlist_Empty(t *testing.T) {
+	result, err := ParseIPAllowlist("")
+	require.NoError(t, err)
+	assert.Nil(t, result)
+}
+
+func TestParseIPAllowlist_SingleIP(t *testing.T) {
+	result, err := ParseIPAllowlist("192.0.2.1")
+	require.NoError(t, err)
+	require.Len(t, result, 1)
+	// Single IP becomes /32
+	assert.Equal(t, "192.0.2.1/32", result[0].String())
+}
+
+func TestParseIPAllowlist_SingleCIDR(t *testing.T) {
+	result, err := ParseIPAllowlist("198.51.100.0/24")
+	require.NoError(t, err)
+	require.Len(t, result, 1)
+	assert.Equal(t, "198.51.100.0/24", result[0].String())
+}
+
+func TestParseIPAllowlist_MultipleEntries(t *testing.T) {
+	result, err := ParseIPAllowlist("192.0.2.1,198.51.100.0/24,203.0.113.5")
+	require.NoError(t, err)
+	require.Len(t, result, 3)
+	assert.Equal(t, "192.0.2.1/32", result[0].String())
+	assert.Equal(t, "198.51.100.0/24", result[1].String())
+	assert.Equal(t, "203.0.113.5/32", result[2].String())
+}
+
+func TestParseIPAllowlist_WhitespaceHandling(t *testing.T) {
+	result, err := ParseIPAllowlist("  192.0.2.1 , 198.51.100.0/24  ,203.0.113.5  ")
+	require.NoError(t, err)
+	require.Len(t, result, 3)
+}
+
+// F8: strings.TrimSpace handles \n, \r, \v, \f — not just space and tab.
+// A trailing newline from a console paste or file must not break startup.
+func TestParseIPAllowlist_TrimsNewlinesAndCarriageReturns(t *testing.T) {
+	// Trailing newline
+	result, err := ParseIPAllowlist("192.0.2.1\n")
+	require.NoError(t, err)
+	require.Len(t, result, 1)
+	assert.Equal(t, "192.0.2.1/32", result[0].String())
+
+	// Trailing carriage return
+	result, err = ParseIPAllowlist("192.0.2.1\r")
+	require.NoError(t, err)
+	require.Len(t, result, 1)
+	assert.Equal(t, "192.0.2.1/32", result[0].String())
+
+	// CRLF
+	result, err = ParseIPAllowlist("192.0.2.1\r\n")
+	require.NoError(t, err)
+	require.Len(t, result, 1)
+
+	// Between entries
+	result, err = ParseIPAllowlist("192.0.2.1\n,\n198.51.100.0/24\n")
+	require.NoError(t, err)
+	require.Len(t, result, 2)
+}
+
+// F8: A value that is only whitespace must behave as empty, not parse error.
+func TestParseIPAllowlist_WhitespaceOnlyTreatedAsEmpty(t *testing.T) {
+	for _, ws := range []string{" ", "\t", "\n", "\r\n", "  \t  \n"} {
+		result, err := ParseIPAllowlist(ws)
+		require.NoError(t, err, "whitespace-only %q should not error", ws)
+		assert.Empty(t, result, "whitespace-only %q should produce empty result", ws)
+	}
+}
+
+func TestParseIPAllowlist_InvalidIPReturnsError(t *testing.T) {
+	_, err := ParseIPAllowlist("not-an-ip")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid IP or CIDR")
+}
+
+func TestParseIPAllowlist_InvalidCIDRReturnsError(t *testing.T) {
+	_, err := ParseIPAllowlist("192.168.1.0/33") // Invalid CIDR mask
+	require.Error(t, err)
+}
+
+func TestParseIPAllowlist_IPv6Supported(t *testing.T) {
+	result, err := ParseIPAllowlist("::1,2001:db8::/32")
+	require.NoError(t, err)
+	require.Len(t, result, 2)
+	assert.Equal(t, "::1/128", result[0].String())
+	assert.Equal(t, "2001:db8::/32", result[1].String())
+}
+
+// Outside local environment, an empty allowlist must be rejected.
+// This ensures fail-closed behavior in production.
+func TestLoad_WebhookIPAllowlistRequiredOutsideLocal(t *testing.T) {
+	setRequired(t)
+	t.Setenv("APP_ENV", "production")
+	t.Setenv("APP_BASE_URL", "https://rush-my-ticket.my.id")
+	t.Setenv("MIDTRANS_WEBHOOK_IP_ALLOWLIST", "")
+
+	_, err := Load()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "MIDTRANS_WEBHOOK_IP_ALLOWLIST")
+}
+
+// In local environment, an empty allowlist is allowed (for dev convenience).
+func TestLoad_WebhookIPAllowlistOptionalInLocal(t *testing.T) {
+	setRequired(t)
+	t.Setenv("APP_ENV", "local")
+	t.Setenv("MIDTRANS_WEBHOOK_IP_ALLOWLIST", "")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	assert.Empty(t, cfg.Midtrans.WebhookIPAllowlist)
+}
+
+// Invalid IP in the allowlist should fail at startup, not at runtime.
+func TestLoad_InvalidWebhookIPAllowlistFailsAtStartup(t *testing.T) {
+	setRequired(t)
+	t.Setenv("MIDTRANS_WEBHOOK_IP_ALLOWLIST", "valid.ip.1.1,not-an-ip,8.8.8.8")
+
+	_, err := Load()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "MIDTRANS_WEBHOOK_IP_ALLOWLIST")
+}
+
+// Test the full Midtrans sandbox IP list from the task description.
+func TestLoad_IPAllowlistMultipleEntries(t *testing.T) {
+	setRequired(t)
+	// Test fixtures using RFC 5737 documentation IPs. Do NOT use in production.
+	ips := "192.0.2.1,198.51.100.5,203.0.113.10"
+	t.Setenv("MIDTRANS_WEBHOOK_IP_ALLOWLIST", ips)
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Len(t, cfg.Midtrans.WebhookIPAllowlist, 3)
+
+	// All should be /32 (single IPs)
+	for _, p := range cfg.Midtrans.WebhookIPAllowlist {
+		assert.Equal(t, 32, p.Bits())
 	}
 }

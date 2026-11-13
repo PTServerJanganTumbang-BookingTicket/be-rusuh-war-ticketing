@@ -1,6 +1,11 @@
 package config
 
-import "time"
+import (
+	"fmt"
+	"net/netip"
+	"strings"
+	"time"
+)
 
 // Config is the root configuration for payment-api.
 type Config struct {
@@ -112,13 +117,20 @@ type Midtrans struct {
 	BreakerThreshold int
 	BreakerOpenFor   time.Duration
 
-	// WebhookIPAllowlist is the set of IPs allowed to call POST /payments/webhook.
-	// Defense-in-depth alongside signature verification: the signature proves
-	// authenticity, the allowlist limits who can even attempt a guess.
+	// WebhookIPAllowlist is the set of CIDR blocks allowed to call
+	// POST /payments/webhook. Defense-in-depth alongside signature
+	// verification: the signature proves authenticity, the allowlist limits
+	// who can even attempt a guess.
 	//
-	// Comma-separated in the environment variable. An empty list disables the
-	// check, which is acceptable for local development but logs a warning.
-	WebhookIPAllowlist []string
+	// Comma-separated in the environment variable, supports both single IPs
+	// (widened to /32) and CIDR ranges. Midtrans publishes their
+	// IPs at https://docs.midtrans.com/docs/ip-address — sandbox and
+	// production differ.
+	//
+	// An empty list is accepted for local development but REJECTED outside
+	// local: failing closed means a misconfigured deployment blocks all
+	// webhooks rather than accepting them from anywhere.
+	WebhookIPAllowlist []netip.Prefix
 }
 
 // Payment holds the window and attempt rules.
@@ -176,3 +188,37 @@ type Sweep struct {
 
 // IsLocal reports whether this is a local development run.
 func (a App) IsLocal() bool { return a.Env == "local" }
+
+// ParseIPAllowlist parses a comma-separated list of IPs or CIDR blocks into
+// a slice of netip.Prefix. Single IPs without a mask are treated as /32.
+// Returns an error if any entry is invalid.
+func ParseIPAllowlist(raw string) ([]netip.Prefix, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	var result []netip.Prefix
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		// Try parsing as CIDR first
+		prefix, err := netip.ParsePrefix(entry)
+		if err == nil {
+			result = append(result, prefix)
+			continue
+		}
+		// Fall back to single IP (add /32 for IPv4, /128 for IPv6)
+		addr, err := netip.ParseAddr(entry)
+		if err != nil {
+			return nil, fmt.Errorf("invalid IP or CIDR %q: %w", entry, err)
+		}
+		bits := 32
+		if addr.Is6() {
+			bits = 128
+		}
+		prefix = netip.PrefixFrom(addr, bits)
+		result = append(result, prefix)
+	}
+	return result, nil
+}

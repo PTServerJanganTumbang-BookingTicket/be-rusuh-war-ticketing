@@ -350,6 +350,7 @@ the stack when `infra/observability/**` changes, or with `force_deploy=observabi
 | `rusuh-<env>-email-dlq` | E-tickets or notices failed every retry (NFR-10). | Read the message in `rusuh-<env>-notification-dlq`, fix the cause (SES, template), redrive the DLQ. |
 | `rusuh-<env>-api-5xx` | > 1 % of API requests answered 5xx over 5 min. | The dashboard's *Lambda errors and throttles* widget names the service; then `aws logs tail /aws/lambda/rusuh-<env>-<svc>`. |
 | `rusuh-<env>-tick-overrun` | admission-ctl ticks take > 500 ms, 20 times a minute, for 3 min. Admission slows for every event. | Look at *admission-ctl tick*, *Redis* and *Aurora* on the dashboard: usually Aurora scaling up from 0 ACU or a slow query. |
+| `rusuh-<env>-webhook-forbidden-ip` | A webhook request came from an IP outside the allowlist. | **Check the logged IP against https://docs.midtrans.com/docs/ip-address FIRST.** If Midtrans changed their IPs, settlements are being dropped NOW — update the SSM parameter `/rusuh/<env>/midtrans/webhook-ip-allowlist` and redeploy payment-api. If the IP is not Midtrans's, someone is probing; the 200 response reveals nothing, but review access patterns. |
 
 **A failing or slow endpoint** (no alarm of its own): open the dashboard `rusuh-<env>-api`. The *Per route* table
 gives requests, success %, 4xx %, 5xx % and p50/p95/p99 latency per route for the time range; the two charts under

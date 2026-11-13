@@ -328,6 +328,24 @@ Resources:
       RetentionInDays: 14
 
   # ============================================================================
+  # CloudWatch Metric Filter — webhook IP rejections
+  # ============================================================================
+  # A caller hitting POST /payments/webhook from an IP outside the allowlist is
+  # either an attack or a misconfiguration (Midtrans changed their published
+  # ranges). Both need a human. The handler answers 200 by design, so this
+  # metric is the ONLY signal — it will never appear in 4xx/5xx counts.
+  WebhookForbiddenIPFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref PaymentApiLogGroup
+      FilterPattern: '{ $.msg = "webhook_forbidden_ip" }'
+      MetricTransformations:
+        - MetricNamespace: Rusuh/Payment
+          MetricName: WebhookForbiddenIP
+          MetricValue: "1"
+          DefaultValue: 0
+
+  # ============================================================================
   # HTTP API (API Gateway v2) — ONLY if EnableDirectApiAccess is true
   # ============================================================================
   PaymentApiApi:

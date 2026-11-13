@@ -1041,6 +1041,42 @@ Resources:
       Type: String
       Value: !Ref MidtransSignatureSecretKeySecret
 
+  # ── Midtrans webhook IP allowlist ───────────────────────────────────────
+  #
+  # ── Midtrans webhook IP allowlist ───────────────────────────────────────
+  #
+  # HTTP API Gateway (v2) does not support WAF or resource policies — only
+  # REST APIs (v1) do. IP filtering must be enforced in the Lambda handler
+  # itself. This parameter holds the authoritative allowlist; payment-api
+  # reads it at startup via {{resolve:ssm:...}}.
+  #
+  # The value is a comma-separated list of CIDR blocks. Midtrans publishes
+  # their IPs at https://docs.midtrans.com/docs/ip-address — sandbox and
+  # production differ.
+  #
+  # IMPORTANT:
+  # - This resource owns the parameter's EXISTENCE, not its contents. The
+  #   placeholder value below is a valid CIDR that no real caller can match,
+  #   so a forgotten update fails closed rather than opening the endpoint.
+  # - Set the real CIDRs out of band after foundation deploys, then redeploy
+  #   payment-api. The {{resolve:ssm:...}} is evaluated at deploy time, so
+  #   editing the parameter alone does NOT affect running Lambdas.
+  # - Outside local, an empty value makes payment-api refuse to start (fail
+  #   closed by design). In local, an empty value disables the check.
+  # - A rejection answers 200 (not 403) and surfaces as WebhookForbiddenIP
+  #   metric, not as a failed request in access logs.
+  SsmMidtransWebhookIPAllowlist:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /rusuh/${Environment}/midtrans/webhook-ip-allowlist
+      Type: String
+      Value: "127.0.0.1/32"
+      Description: >
+        Comma-separated CIDR blocks; a single host is written /32.
+        Get from https://docs.midtrans.com/docs/ip-address. The default
+        placeholder (127.0.0.1/32) matches no real caller — set real values
+        out of band after deploy, then redeploy payment-api.
+
   SsmRedisAddr:
     Type: AWS::SSM::Parameter
     Properties:

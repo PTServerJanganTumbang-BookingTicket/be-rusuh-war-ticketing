@@ -90,8 +90,11 @@ var ErrAlreadySettled = errors.New("payment: transaction already settled")
 //
 // A WRITE dependency, which is why a timeout is never treated as a failure: the
 // charge may well have been created. The breaker opens, the request answers
-// 503, payment_ref stays NULL, and the charge reconciler resolves the truth
-// later (ADR-005 §8, §9).
+// 503, and payment_ref stays NULL. Nothing then resolves that charge
+// automatically — the AWAITING_PAYMENT sweep skips bookings with no
+// payment_ref — so the HELD sweep expires the booking, and if the charge
+// existed and is paid later the late-settlement path (FR-36) raises it for an
+// operator (ADR-005 §8, §9).
 type IMidtransClient interface {
 	Charge(ctx context.Context, req ChargeRequest) (ChargeResult, error)
 

@@ -81,7 +81,9 @@ func (u *PaymentUsecase) HandleNotification(ctx context.Context, n dto.Notificat
 	}
 	if err != nil {
 		// A real failure. Returning the error lets the HTTP layer log it; the
-		// response is still 200, and the charge reconciler is the backstop.
+		// response is still 200, and the AWAITING_PAYMENT sweep is the backstop:
+		// the booking has a payment_ref, so the sweep polls the gateway and
+		// applies whatever truth it finds.
 		return err
 	}
 

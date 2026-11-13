@@ -17,9 +17,10 @@ the leader lease + standby is **deferred to production** (§6).
 
 **Queue-domain scope of this file:** RECOVER, ADVANCE, LAPSED sweep, broadcast,
 `rate_per_min`, FULL_BOOKED → CLOSED. The booking and payment sweeps, stock/NIK
-reconciliation and the charge reconciler run in the same loop but are planned in `05-booking/` and
+reconciliation run in the same loop but are specified in `05-booking/` and
 `07-payment/`. Built so far: the SELECTING → EXPIRED sweep (`05-booking/01-get-ticket-selection-page.md` §3.2),
-right after the LAPSED sweep in the same `Sweep`.
+right after the LAPSED sweep in the same `Sweep`, and the AWAITING_PAYMENT backstop sweep
+(`07-payment/README.md` §11), which this loop invokes on its own interval.
 
 ## 2. One tick
 

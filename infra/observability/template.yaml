@@ -114,6 +114,30 @@ Resources:
       TreatMissingData: notBreaching
       AlarmActions: [!Ref AlarmTopic]
 
+  # Webhook IP allowlist: a caller hit POST /payments/webhook from an IP outside the allowlist.
+  # Either Midtrans changed their published ranges (every settlement is being dropped), or
+  # someone is probing. Compare the logged ip against https://docs.midtrans.com/docs/ip-address.
+  WebhookForbiddenIPAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub rusuh-${Environment}-webhook-forbidden-ip
+      AlarmDescription: >
+        A caller hit POST /payments/webhook from an IP outside the allowlist. Either Midtrans
+        changed their published ranges — in which case every settlement is being dropped right
+        now — or someone is probing. Compare the logged ip against
+        https://docs.midtrans.com/docs/ip-address FIRST; the two cases look identical in this
+        metric and differ only there.
+      Namespace: Rusuh/Payment
+      MetricName: WebhookForbiddenIP
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+      OKActions: [!Ref AlarmTopic]
+
   # FR-36. Money arrived for a booking that had already expired: an operator refunds by hand.
   LateSettlementAlarm:
     Type: AWS::CloudWatch::Alarm

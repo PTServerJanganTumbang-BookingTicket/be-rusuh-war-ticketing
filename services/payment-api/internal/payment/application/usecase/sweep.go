@@ -94,7 +94,7 @@ func NewSweep(
 //     never arrived.
 //
 // For each candidate:
-//  1. Skip if payment_ref is empty (charge reconciler's problem).
+//  1. Skip if payment_ref is empty: no order exists at the gateway to poll.
 //  2. Poll the gateway for the transaction status.
 //  3. If gateway unreachable: skip, count — fail closed.
 //  4. Use valueobject.Decide to determine the action.
@@ -114,11 +114,14 @@ func (u *SweepUsecase) SweepAwaitingPayment(ctx context.Context) (SweepResult, e
 	for _, c := range candidates {
 		// Skip bookings without a payment_ref — they have no order at the
 		// gateway to poll. These are charges that timed out before Midtrans
-		// returned; the charge reconciler handles them.
+		// returned. Nothing resolves them automatically: the HELD sweep expires
+		// the booking, and if the charge did exist and is paid later, the
+		// late-settlement path (ActionLateSettlement, FR-36) raises it for an
+		// operator. The stuck warning below is the only signal before that.
 		if c.PaymentRef == "" {
 			result.Skipped++
 			if c.PaymentExpiresAt.Before(stuckThreshold) {
-				slog.WarnContext(ctx, "sweep: booking stuck without payment_ref; charge reconciler should resolve",
+				slog.WarnContext(ctx, "sweep: booking stuck without payment_ref; needs manual reconciliation",
 					slog.String("booking_id", c.ID),
 					slog.Time("deadline", c.PaymentExpiresAt))
 			}

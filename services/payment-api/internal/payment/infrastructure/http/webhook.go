@@ -24,17 +24,25 @@ import (
 //     a free oracle. An ignored notification looks identical to an accepted
 //     one from the outside.
 //   - A 500 for our own bug would make Midtrans redeliver something that will
-//     fail again. The charge reconciler is the backstop instead.
+//     fail again. The AWAITING_PAYMENT sweep is the backstop instead: it polls
+//     the gateway before expiring and counts AwaitingSweptSettled when it finds
+//     a booking the webhook should have confirmed.
 //
 // Everything interesting is therefore in the log, not the response.
 func (c *PaymentController) Webhook(w http.ResponseWriter, r *http.Request) {
 	// IP allowlist check — defense in depth alongside signature verification.
-	// An empty allowlist disables the check (local dev).
+	// An empty allowlist disables the check (local dev only; config validation
+	// rejects an empty allowlist outside local).
 	if len(c.webhookIPAllowlist) > 0 {
 		ip := webhookClientIP(r)
-		if _, ok := c.webhookIPAllowlist[ip]; !ok {
-			slog.WarnContext(r.Context(), "webhook from non-allowlisted IP",
-				slog.String("ip", ip))
+		if !c.webhookIPAllowed(ip) {
+			// ERROR level, not WARN: this is a security event. The
+			// WebhookForbiddenIPFilter metric filter (template-cfn.yaml) extracts
+			// WebhookForbiddenIP from this log line, and the alarm in
+			// observability/template.yaml fires on any non-zero count.
+			slog.ErrorContext(r.Context(), "webhook_forbidden_ip",
+				slog.String("ip", ip),
+				slog.String("reason", "source IP not in allowlist"))
 			c.ack(w)
 			return
 		}

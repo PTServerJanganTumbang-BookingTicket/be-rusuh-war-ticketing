@@ -12,9 +12,10 @@ import (
 // grantauth.MiddlewareWithSession: the WebView payment page reaches them with
 // X-Payment-Session instead of the grant headers (ADR-007). The webhook
 // is NOT. That asymmetry is the design: the webhook is called by Midtrans,
-// which holds no grant, and is protected instead by an API Gateway resource
-// policy (IP allowlist) plus the signature_key inside the body
-// (api-contracts §5.5).
+// which holds no grant, and is protected instead by an in-handler IP allowlist
+// (webhookIPAllowed) plus the signature_key inside the body (api-contracts §5.5).
+// HTTP API Gateway (v2) does not support WAF or resource policies — only REST
+// APIs (v1) do — so the check lives in the handler itself.
 func RegisterRoutes(mux *http.ServeMux, h Payment, guard func(http.Handler) http.Handler) {
 	customer := func(pattern string, fn http.HandlerFunc) {
 		mux.Handle(pattern, guard(fn))

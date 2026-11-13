@@ -177,9 +177,11 @@ the two apart, so neither should the status code.
 
 - **A timeout is not a decline.** The instrument may exist at the gateway. The
   transaction rolls back with `payment_ref` still NULL, the breaker counts a
-  failure, the client gets 503 — and the charge reconciler in `admission-ctl`
-  resolves the truth. Re-sending the charge here is the one thing that must not
-  happen.
+  failure, and the client gets 503. Nothing resolves that charge automatically:
+  the AWAITING_PAYMENT sweep skips bookings with no `payment_ref`, so the HELD
+  sweep expires the booking and, if the charge existed and is paid later, the
+  late-settlement path (FR-36) raises it for an operator. Re-sending the charge
+  here is the one thing that must not happen.
 - **A synchronous refusal commits.** `payment_attempts` has to move, or the next
   charge reuses an `order_id` Midtrans has already seen and the customer cannot
   retry at all. The booking returns to `HELD`, not `EXPIRED`: the payment

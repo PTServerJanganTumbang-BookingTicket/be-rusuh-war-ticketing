@@ -102,9 +102,11 @@ recover a valid signature byte by byte. A mismatch means ignore the notification
 entirely — do not process it, do not change any status, and do not say why.
 
 Midtrans also recommends a second check: call Get Transaction Status and compare.
-That check **already exists** in this system as the charge reconciler in
-`admission-ctl` (every 5 minutes, read-only), so the webhook does not call it
-inline and add latency to the path that matters most.
+That check **already exists** in this system as the AWAITING_PAYMENT backstop
+sweep (README §11): payment-api polls Get Transaction Status for bookings whose
+webhook never arrived, invoked by `admission-ctl` on its own interval
+(`SWEEP_AWAITING_INTERVAL_SECONDS`, 60 s by default). So the webhook does not
+call it inline and add latency to the path that matters most.
 
 ## 4. Idempotency
 
@@ -179,8 +181,8 @@ Notes that are easy to get wrong:
 | 500 on our own failure | Midtrans redelivers while our database is down, which is when a retry storm is least affordable |
 
 So everything interesting is in the log, not the response, and the
-acknowledgement is byte-identical whatever happened. The charge reconciler is
-the backstop for the cases a 5xx would otherwise have escalated.
+acknowledgement is byte-identical whatever happened. The AWAITING_PAYMENT sweep
+is the backstop for the cases a 5xx would otherwise have escalated.
 
 An unparseable body also gets a 200: retrying it will not make it parseable, and
 the use case is never called with a half-decoded payload.

@@ -3,6 +3,7 @@ package http
 import (
 	"errors"
 	"net/http"
+	"net/netip"
 
 	"github.com/go-playground/validator/v10"
 
@@ -24,22 +25,40 @@ type Payment interface {
 type PaymentController struct {
 	usecase            portin.IPaymentUsecase
 	validate           *validator.Validate
-	webhookIPAllowlist map[string]struct{}
+	webhookIPAllowlist []netip.Prefix
 }
 
 // NewPayment creates a PaymentController behind the Payment interface.
-// webhookIPs is the allowlist for POST /payments/webhook; an empty slice
-// disables the check (acceptable for local dev, logs a warning).
-func NewPayment(uc portin.IPaymentUsecase, webhookIPs []string) Payment {
-	allow := make(map[string]struct{}, len(webhookIPs))
-	for _, ip := range webhookIPs {
-		allow[ip] = struct{}{}
-	}
+// webhookIPs is the allowlist of CIDR blocks for POST /payments/webhook;
+// an empty slice disables the check (acceptable for local dev only — the
+// config validator rejects an empty allowlist outside local).
+func NewPayment(uc portin.IPaymentUsecase, webhookIPs []netip.Prefix) Payment {
 	return &PaymentController{
 		usecase:            uc,
 		validate:           validator.New(),
-		webhookIPAllowlist: allow,
+		webhookIPAllowlist: webhookIPs,
 	}
+}
+
+// webhookIPAllowed reports whether the given IP is within any of the
+// configured allowlist CIDR blocks.
+func (c *PaymentController) webhookIPAllowed(ip string) bool {
+	if len(c.webhookIPAllowlist) == 0 {
+		return true // empty allowlist disables the check (local dev)
+	}
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return false // unparseable IP is never allowed
+	}
+	// Unmap IPv4-mapped IPv6 addresses (::ffff:192.0.2.1 → 192.0.2.1) so that
+	// a v4 allowlist matches regardless of how the gateway reports the IP.
+	addr = addr.Unmap()
+	for _, prefix := range c.webhookIPAllowlist {
+		if prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }
 
 // WriteError maps an error onto the response envelope, carrying the Appendix A

@@ -232,8 +232,8 @@ func (c *Client) Expire(ctx context.Context, orderID string) error {
 	return err
 }
 
-// Status is the read-only lookup the charge reconciler uses to find out what
-// happened to a charge that timed out.
+// Status is the read-only lookup the AWAITING_PAYMENT sweep uses to find out
+// what happened to a charge whose webhook never arrived.
 func (c *Client) Status(ctx context.Context, orderID string) (portout.StatusResult, error) {
 	raw, err := c.do(ctx, http.MethodGet, "/v2/"+orderID+"/status", nil)
 	if err != nil {

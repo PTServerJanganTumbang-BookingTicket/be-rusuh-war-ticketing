@@ -13,6 +13,11 @@ import (
 // Load reads configuration from environment variables and returns a validated
 // Config. Call once at startup, after dotenv.LoadEnv().
 func Load() (Config, error) {
+	allowlist, err := ParseIPAllowlist(os.Getenv("MIDTRANS_WEBHOOK_IP_ALLOWLIST"))
+	if err != nil {
+		return Config{}, fmt.Errorf("MIDTRANS_WEBHOOK_IP_ALLOWLIST: %w", err)
+	}
+
 	cfg := Config{
 		App: App{
 			Env:          envutil.Env("APP_ENV", "local"),
@@ -46,7 +51,7 @@ func Load() (Config, error) {
 			Timeout:            envutil.EnvDuration("MIDTRANS_TIMEOUT_MS", 10*time.Second),
 			BreakerThreshold:   envutil.EnvInt("PAYMENT_BREAKER_FAILURE_THRESHOLD", 5),
 			BreakerOpenFor:     envutil.EnvDuration("PAYMENT_BREAKER_OPEN_SECONDS", 30*time.Second),
-			WebhookIPAllowlist: parseIPAllowlist(os.Getenv("MIDTRANS_WEBHOOK_IP_ALLOWLIST")),
+			WebhookIPAllowlist: allowlist,
 		},
 		Payment: Payment{
 			TTL:                 envutil.EnvDuration("PAYMENT_TTL_SECONDS", 600*time.Second),
@@ -96,6 +101,16 @@ func (c Config) validate() error {
 	if c.App.DevicePepper == "" {
 		return fmt.Errorf("DEVICE_PEPPER is required and has no default: without it every guest grant fails the device check")
 	}
+
+	// FAIL CLOSED: empty webhook IP allowlist is only acceptable for local dev.
+	// Outside local, a misconfigured allowlist should block all webhooks
+	// (causing visible failures) rather than silently accept from anywhere.
+	if !c.App.IsLocal() && len(c.Midtrans.WebhookIPAllowlist) == 0 {
+		return fmt.Errorf("MIDTRANS_WEBHOOK_IP_ALLOWLIST is required outside local: " +
+			"an empty allowlist would accept webhooks from anywhere. " +
+			"Get IPs from https://docs.midtrans.com/docs/ip-address")
+	}
+
 	if err := c.App.validatePaymentPage(); err != nil {
 		return err
 	}
@@ -152,21 +167,4 @@ func (a App) validatePaymentPage() error {
 			BookingIDPlaceholder, p)
 	}
 	return nil
-}
-
-// parseIPAllowlist splits a comma-separated list of IPs into a slice, trimming
-// whitespace from each entry and dropping empty strings.
-func parseIPAllowlist(raw string) []string {
-	if raw == "" {
-		return nil
-	}
-	parts := strings.Split(raw, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
 }
