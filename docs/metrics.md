@@ -5,7 +5,7 @@
 | **Services** | `queue`, `booking`, `payment-api`, `admission-ctl`, `sse-server`, `pkg/emf` |
 | **Requirements** | FR-33 (active queue) · FR-34 (conversion queue → purchase) · FR-35 (expiry rate) · FR-36 (disputed list) · NFR-06 (p95 < 1 s) · NFR-09 (real-time observability) · NFR-10 (email DLQ) · NFR-14 (`CtlHeartbeatAge`) |
 | **Sources** | impl-plan §8.6 (`CtlHeartbeatAge`), §12 (`metrics-scraper`, replaced here) · `TODO-WRAPUP.md` T8 (emit), T9 (dashboard + alarms) |
-| **Status** | Part A (emit) built; Part B (dashboard, alarms) next |
+| **Status** | Part A (emit) built; Part B (dashboard, alarms) written, not deployed |
 
 ## 1. Purpose
 
@@ -271,15 +271,99 @@ FR-36 (`order_id` and amount) is served by this query, with `event_id` and `gros
 SELECT status, COUNT(*) FROM bookings WHERE event_id = $1 GROUP BY status;
 ```
 
-## 8. Dashboard and alarms (T9, for reference)
+## 8. Dashboard and alarms (T9)
 
-Built in T9 from these names. The dashboard layout is §1.1.
+Stack `rusuh-{env}-observability`, template `infra/observability/template.yaml` (plain CloudFormation: the account SCP
+blocks change sets with the SAM transform). The dashboard `rusuh-{env}-sale` follows §1.1. Every alarm notifies the SNS
+topic `rusuh-{env}-alarms` (email subscriber from the repository variable `ALARM_EMAIL`); what to do for each is in
+`RUNBOOK.md` "Sale dashboard and alarms".
 
-- Alarms to one SNS topic, email: `CtlHeartbeatAge` Minimum > 30 s, `StockNegative` > 0, `LateSettlement` > 0,
-  DLQ depth > 0, API 5xx > 1 %, `TickOverrun` sustained.
+| Alarm | Metric | Fires when | Missing data |
+|---|---|---|---|
+| `queue-stalled` | `Rusuh/SSE` `CtlHeartbeatAge`, all events, **Minimum** | > 30 s for 1 min (NFR-14) | not breaching |
+| `admission-ctl-down` | `AWS/ECS` `LiveTaskCount`, service `admission-ctl` | < 1 for 2 min | **breaching** |
+| `stock-negative` | `Rusuh/Booking` `StockNegative` | > 0 | not breaching |
+| `late-settlement` | `Rusuh/Payment` `LateSettlement`, all events | > 0 | not breaching |
+| `email-dlq` | `AWS/SQS` messages visible in `rusuh-{env}-notification-dlq` | > 0 | not breaching |
+| `api-5xx` | `AWS/ApiGateway` `5xx / Count` (HTTP API, `ApiId`) | > 1 % over 5 min | not breaching |
+| `tick-overrun` | `Rusuh/Admission` `TickOverrun` | ≥ 20 / min for 3 min | not breaching |
 
 The `CtlHeartbeatAge` threshold is **30 s** (NFR-14, impl-plan §8.6): three missed 10 s heartbeats, and a leader
-handover fits inside it.
+handover fits inside it. Missing data is not an outage there: sse-server keeps writing the age for every event that has
+listeners while admission-ctl is down (the age keeps growing), so no data only means nobody is listening. The case
+"admission-ctl is gone" is covered by `admission-ctl-down` instead, where missing data does mean down (the service runs
+all the time, sale or not).
+
+The API latency widget shows the whole API's p95 and the queue / events Lambdas' p95: the HTTP API has no per-route
+metrics (detailed metrics are off), so NFR-06's "queue position and home page" is read from those two Lambdas.
+
+## 8a. API health per route
+
+The sale dashboard answers "is the sale going well"; this answers "is each endpoint healthy": requests, success rate,
+error rate and latency **per route** (`GET /events`, `POST /events/{event_id}/queue/join`, …) and per service.
+
+Example: `GET /events` served 1,098 requests in the last 14 days: 605 answered 2xx/3xx (55 % success), 2 answered 4xx,
+491 answered 5xx (45 % error rate). That is read from the access logs that already exist.
+
+### Rules
+
+1. **Per route from the API access logs**, not from API Gateway detailed metrics. The HTTP API already writes one JSON
+   line per request to `/aws/apigateway/rusuh-{env}-api` (`routeKey`, `status`). Logs Insights groups them by route at
+   no extra cost. Detailed metrics would add ~6 billed metrics per route (~30 routes, roughly $50 a month) and are
+   only needed for per-route **alarms**, which this plan does not add.
+2. **Latency needs two fields in the access log format** (`infra/api-gateway/template.yaml`, stage `AccessLogSettings`):
+   `"responseLatency":"$context.responseLatency"` (ms, what the caller waited) and
+   `"integrationLatency":"$context.integrationLatency"` (ms, the Lambda's part). Logs before the change have no latency.
+3. **Three outcomes, never two:**
+   - success = 2xx and 3xx;
+   - client error = 4xx (often expected: 409 sold out, 429 rate limited, 401 no session);
+   - server error = 5xx, **the error rate** (our fault; the existing `api-5xx` alarm watches it for the whole API).
+   Rates are `outcome / requests × 100` over the dashboard's time range.
+4. `routeKey = "-"` (no route matched, e.g. CORS preflight) is left out of the tables.
+5. **Per service from Lambda's own metrics** (free): `Invocations`, `Errors` (as % of invocations), `Duration` p50/p95,
+   `Throttles`, `ConcurrentExecutions`, one line per `rusuh-{env}-*` function.
+6. **A second dashboard, `rusuh-{env}-api`**, in the same stack: the sale dashboard stays short enough to read during a
+   sale.
+
+### Dashboard `rusuh-{env}-api`
+
+```
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│ HEADER: time range = what you want to look at · routes from access logs          │
+├──────────────┬──────────────┬──────────────┬─────────────────────────────────────┤
+│ Requests     │ Success %    │ 5xx %        │ p95 latency (whole API, 1 s line)   │
+│ (whole API)  │ (whole API)  │ (whole API)  │                                     │
+├──────────────┴──────────────┴──────────────┴─────────────────────────────────────┤
+│ PER ROUTE (table): route · requests · success % · 4xx % · 5xx % · p50 · p95 · p99│
+├────────────────────────────────────────┬─────────────────────────────────────────┤
+│ 5xx per route over time                │ p95 latency per route over time          │
+├────────────────────────────────────────┴─────────────────────────────────────────┤
+│ PER SERVICE (Lambda): invocations · error % · duration p95 · throttles · concurrency │
+└──────────────────────────────────────────────────────────────────────────────────┘
+```
+
+Per-route table (Logs Insights on `/aws/apigateway/rusuh-{env}-api`):
+
+```
+filter routeKey != "-"
+| stats count(*) as requests,
+        sum(status >= 200 and status < 400) * 100 / count(*) as success_pct,
+        sum(status >= 400 and status < 500) * 100 / count(*) as client_err_pct,
+        sum(status >= 500) * 100 / count(*)                  as error_pct,
+        pct(responseLatency, 50) as p50_ms, pct(responseLatency, 95) as p95_ms, pct(responseLatency, 99) as p99_ms
+  by routeKey
+| sort requests desc
+```
+
+The two "over time" widgets are the same query `by bin(1m), routeKey` (5xx count; `pct(responseLatency, 95)`).
+
+### Checklist
+
+- [x] `infra/api-gateway/template.yaml`: add `responseLatency` and `integrationLatency` to the access log format
+- [x] `infra/observability/template.yaml`: dashboard `rusuh-{env}-api` as above (no new alarms); the per-route
+      queries were run on the real access log (25 routes)
+- [x] `RUNBOOK.md`: where to look for a failing endpoint
+- [ ] after a deploy: the table lists every called route with a p95; the whole-API numbers match the table's totals
 
 ## 9. Tests
 
@@ -346,31 +430,30 @@ flowchart LR
 
 ### Part B — dashboard and alarms (T9, ~2 h)
 
-- [ ] **6. Deploy to dev and make first data.** CloudWatch creates a metric only on its first data point: until then
-      `SEARCH` widgets are empty and Logs Insights cannot see the fields. Open a sale on two events, join, book, pay with
+- [ ] **6. Deploy and make first data.** Only `prod` exists in this account. CloudWatch creates a metric only on its
+      first data point: until then `SEARCH` widgets are empty, the dropdown has no events and Logs Insights cannot see
+      the fields. Merge `feat/metrics` so CI deploys the services, then open a sale on two events, join, book, pay with
       the Midtrans sandbox, let one booking expire. *Done:* `Rusuh/Admission`, `Rusuh/Queue`, `Rusuh/Booking`,
       `Rusuh/Payment` appear under CloudWatch → Metrics, each with an `EventId` dimension.
-- [ ] **7. Draft the board in the console** (~45 min): create `rusuh-dev-sale` with the rows and widgets of §1.1. Add
-      the `EventId` dropdown variable and check the OPEN item in §1.1 (can the Logs Insights tables follow it?).
-      Log groups for the Logs Insights widgets: `/aws/lambda/rusuh-dev-queue`, `/aws/lambda/rusuh-dev-booking`,
-      `/aws/lambda/rusuh-dev-payment-api`, `/ecs/rusuh-dev/admission-ctl` (check the exact Lambda names in the console).
-      *Done:* switching the dropdown changes row 1; row 2 shows one line per event; row 3 one row per event.
-- [ ] **8. Move it into code** (~30 min): Actions → View/edit source, copy the JSON into
-      `infra/observability/template.yaml` as an `AWS::CloudWatch::Dashboard`; replace `dev` with `${Environment}`
-      (`!Sub`). *Done:* delete the console board, deploy the stack, the board comes back identical.
-- [ ] **9. Alarms** (~30 min), same template: one `AWS::SNS::Topic` with the team's email subscription (each address
-      confirms once) and the alarms of §8 on the all-events totals. `TreatMissingData: notBreaching` everywhere except
-      `CtlHeartbeatAge`, where missing data during a sale means admission-ctl is gone. *Done:* the alarm status tile in
-      row 1 lists every alarm as OK.
-- [ ] **10. CI:** deploy `infra/observability` from `cicd.yml` like the ECS stack, on changes to
-      `infra/observability/**`.
+- [x] **7. Dashboard** — written straight into the template from §1.1 instead of drafted in the console (the metric
+      names were fixed by Part A). Still to check once data exists: switching the dropdown changes row 1; row 2 shows
+      one line per event; row 3 one row per event; whether the Logs Insights tables can follow the dropdown (§1.1).
+- [x] **8. Template:** `infra/observability/template.yaml` (`AWS::CloudWatch::Dashboard`, `${Environment}`, `ApiId`,
+      `AuroraClusterId` parameters). `cfn-lint` and `aws cloudformation validate-template` pass.
+- [x] **9. Alarms** in the same template: the SNS topic, the optional email subscription and the seven alarms of §8.
+      *Done when deployed:* the alarm status tile in row 1 lists every alarm as OK (or `INSUFFICIENT_DATA` before the
+      first data point).
+- [x] **10. CI:** job `deploy-observability` in `cicd.yml`, on changes to `infra/observability/**` or
+      `force_deploy=observability`, after the gateway. It looks up `ApiId` and the Aurora cluster id from the
+      `rusuh-{env}-api` and `rusuh-{env}-foundation` stacks. Needs, once: the deploy role's new `Observability`
+      statement (`infra/bootstrap/github-oidc-role.yaml`, redeploy that stack) and the variable `ALARM_EMAIL`.
 
 ### Part C — prove it (~30 min)
 
 - [ ] **11. Two-event smoke run:** row 2 draws two lines; row 3 has two rows; the §2 self-check closes for each event;
       the totals match `SELECT status, COUNT(*) FROM bookings WHERE event_id = $1 GROUP BY status`.
-- [ ] **12. Alarm drill and screenshots:** stop admission-ctl for 40 s during a sale → `CtlHeartbeatAge` alarm email
-      arrives, then clears. Screenshot the board and the email for the presentation.
+- [ ] **12. Alarm drill and screenshots:** during a sale with listeners, stop admission-ctl (scale the service to 0) for
+      about 2 min → `queue-stalled` and `admission-ctl-down` emails arrive; scale back to 1 → both clear. Screenshot the board and the email for the presentation.
 
 **Short cut (~3.5 h, every MUST covered):** in step 3 only the funnel counters and the queue gauges; in step 7 only rows
 0–3; in step 9 only `CtlHeartbeatAge`, `StockNegative` and `LateSettlement`.

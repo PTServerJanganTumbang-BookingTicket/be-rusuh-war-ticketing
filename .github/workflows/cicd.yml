@@ -26,7 +26,7 @@ on:
       force_deploy:
         description: >
           Force deploy specific services regardless of changed files.
-          Comma-separated: booking,queue,events,nik-verify,user,notification,outbox-publisher,ecs,sse,admission,all
+          Comma-separated: booking,queue,events,nik-verify,user,notification,outbox-publisher,ecs,sse,admission,observability,all
           Use "all" to redeploy everything. Use "sse" for sse-server only, "admission" for admission-ctl only.
         type: string
         default: ""
@@ -58,6 +58,7 @@ jobs:
       pkg: ${{ steps.filter.outputs.pkg }}
       infra: ${{ steps.filter.outputs.infra }}
       api_gateway: ${{ steps.filter.outputs.api_gateway }}
+      observability: ${{ steps.filter.outputs.observability }}
       migrations: ${{ steps.filter.outputs.migrations }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -114,6 +115,8 @@ jobs:
               - 'infra/ecs/**'
             api_gateway:
               - 'infra/api-gateway/**'
+            observability:
+              - 'infra/observability/**'
             migrations:
               - 'migrations/**'
               - 'infra/migrator/**'
@@ -170,6 +173,7 @@ jobs:
       admission: ${{ steps.env.outputs.admission }}
       foundation_changed: ${{ needs.detect-changes.outputs.infra }}
       api_gateway_changed: ${{ needs.detect-changes.outputs.api_gateway }}
+      observability_changed: ${{ steps.env.outputs.observability }}
       any_service_changed: ${{ steps.env.outputs.any_service_changed }}
     steps:
       - id: env
@@ -185,6 +189,7 @@ jobs:
           S: ${{ needs.detect-changes.outputs.sse_server }}
           A: ${{ needs.detect-changes.outputs.admission_ctl }}
           E: ${{ needs.detect-changes.outputs.ecs_infra }}
+          OBS: ${{ needs.detect-changes.outputs.observability }}
           FORCE: ${{ inputs.force_deploy }}
         run: |
           set -eu
@@ -232,6 +237,7 @@ jobs:
           echo "ecs=$ecs"             >> "$GITHUB_OUTPUT"
           echo "sse=$sse"             >> "$GITHUB_OUTPUT"
           echo "admission=$admission" >> "$GITHUB_OUTPUT"
+          echo "observability=$(is_changed "$OBS" "observability")" >> "$GITHUB_OUTPUT"
 
           any=false
           for f in "$b" "$q" "$v" "$u" "$n" "$t" "$o" "$p"; do
@@ -1100,6 +1106,49 @@ jobs:
               "Environment=${ENV}" \
               "ApiDomainName=${{ vars.API_DOMAIN_NAME || '' }}" \
               "ApiCertificateArn=${{ vars.API_CERTIFICATE_ARN || '' }}" \
+            --tags Project=rusuh ManagedBy=github-actions
+
+  # ── Sale dashboard and alarms (infra/observability, docs/metrics.md §1.1, §8) ──
+  # Plain CloudFormation. Runs when infra/observability changed (or force_deploy includes "observability"), after the
+  # gateway, whose ApiId the dashboard reads. The Aurora id is looked up from the foundation stack.
+  deploy-observability:
+    name: Deploy sale dashboard and alarms
+    needs: [resolve-env, deploy-api-gateway]
+    if: >-
+      always() &&
+      needs.resolve-env.outputs.observability_changed == 'true' &&
+      needs.deploy-api-gateway.result != 'failure'
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-env.outputs.environment }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Deploy sale dashboard and alarms
+        env:
+          ENV: ${{ needs.resolve-env.outputs.environment }}
+          ALARM_EMAIL: ${{ vars.ALARM_EMAIL || '' }}
+        run: |
+          set -euo pipefail
+          api_id=$(aws cloudformation describe-stacks --stack-name "rusuh-${ENV}-api" \
+                     --query "Stacks[0].Outputs[?OutputKey=='ApiId'].OutputValue" --output text)
+          aurora_id=$(aws cloudformation describe-stack-resource --stack-name "rusuh-${ENV}-foundation" \
+                        --logical-resource-id AuroraCluster --query StackResourceDetail.PhysicalResourceId --output text)
+          echo "ApiId=${api_id} AuroraClusterId=${aurora_id}"
+          aws cloudformation deploy \
+            --template-file infra/observability/template.yaml \
+            --stack-name "rusuh-${ENV}-observability" \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides \
+              "Environment=${ENV}" \
+              "ApiId=${api_id}" \
+              "AuroraClusterId=${aurora_id}" \
+              "AlarmEmail=${ALARM_EMAIL}" \
             --tags Project=rusuh ManagedBy=github-actions
 
   # ══════════════════════════════════════════════════════════════════════════
