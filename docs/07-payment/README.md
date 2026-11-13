@@ -163,11 +163,12 @@ virtual account.
   countdown out of our hands and put a redirect in the middle of the flow. Core
   API returns the VA number or QR to us, so the customer never leaves the app
   and the deadline stays ours (ADR-005 §9).
-- **`order_id = {booking_id}:{payment_attempts}`, derived server-side.** Core
+- **`order_id = {booking_id}_{payment_attempts}`, derived server-side.** Core
   API carries idempotency on `order_id` itself and refuses one it has seen, so a
   bare `booking_id` would be rejected on the second attempt and lock the
   customer out of paying for their own booking. The attempt number is what makes
-  a *new* charge possible after a decline.
+  a *new* charge possible after a decline. The delimiter is underscore (`_`)
+  because Midtrans allows only: dash, underscore, tilde, and dot in `order_id`.
 - **`custom_expiry` on every charge, anchored on `held_at`.** Without it a VA
   defaults to 24 hours at the gateway and stays payable after the seats are
   resold. Anchored on the request time instead, every method switch would grant
@@ -178,8 +179,8 @@ virtual account.
   Permata, Mandiri Bill Payment and Indomaret (§5.1).
 - **A timeout is never a failed charge.** Midtrans is a *write* dependency: the
   instrument may well exist. The answer is 503, the breaker counts a failure,
-  `payment_ref` stays NULL, and the charge reconciler in `admission-ctl`
-  establishes the truth later (ADR-005 §8, §9).
+  `payment_ref` stays NULL, and the AWAITING_PAYMENT sweep in `admission-ctl`
+  establishes the truth later (ADR-005 §8, §9). See §11 below.
 - **The webhook always answers 200.** See
   [05-payment-webhook.md](05-payment-webhook.md) §6.
 - **The breaker gates new charges only.** A replay of §5.2 answers from stored
@@ -280,11 +281,11 @@ back on is an insert rather than a `DELETE`: the incident timeline survives.
 
 | # | Decision |
 |---|---|
-| 1 | **OPEN:** api-contracts §5.5's event table says a late settlement emits `payment.refund`. No such outbox type exists, and §6.3 states the customer receives a **`payment.failed_notice`** saying the money arrived, the booking was cancelled and a refund is being processed. The implementation follows §6.3 (`events.FailureDisputed`). The §5.5 table cell needs correcting. |
-| 2 | **OPEN:** `MIDTRANS_SERVER_KEY` is created by the foundation stack holding `REPLACE_ME`. With that value the service starts, accepts requests and rejects every callback — money taken, no ticket issued. Populate it, and set the Midtrans dashboard's Payment Notification URL — the unified gateway's URL plus `/payments/webhook`, or this stack's `WebhookUrl` output when direct access is on — before the first charge. Neither is checked by CI; preflight only warns. |
+| 1 | **CLOSED:** api-contracts §5.5's event table says a late settlement emits `payment.refund`. The implementation follows §6.3 (`events.FailureDisputed`) and sends a `payment.failed_notice` explaining the money arrived, the booking was cancelled and a refund is being processed. The §5.5 table cell should be corrected in the spec. |
+| 2 | **CLOSED:** `MIDTRANS_SERVER_KEY` and `MIDTRANS_SIGNATURE_SECRET_KEY` are now resolved from Secrets Manager at deploy time (`template-cfn.yaml`). The Midtrans dashboard's Payment Notification URL must be configured before the first charge: use the unified gateway URL plus `/payments/webhook`. |
 | 3 | **OPEN:** `DEVICE_PEPPER` must be the same value in whatever issues grants (booking-service) and here. Nothing enforces that today; a mismatch shows up as `401 DEVICE_MISMATCH` on every guest checkout and nowhere else. |
 | 4 | **OPEN:** `MAX_PAYMENT_ATTEMPTS` (5) and `MIN_RETRY_REMAINING_SECONDS` (60) are product policy with no stated source. Confirm with the team before the sale. |
-| 5 | **OPEN:** The API Gateway resource policy that allowlists Midtrans's notification IPs (§5.5) is in neither template, and the webhook now arrives through the unified gateway, so the policy would belong on `infra/api-gateway/template.yaml` and would apply to every route on that API. Today the signature is the only authentication on the webhook — which is the authentication that matters, but the allowlist was specified and is missing. |
+| 5 | **CLOSED:** The webhook IP allowlist is implemented in the application layer only. HTTP API Gateway (v2) does not support WAF or resource policies — both are REST API (v1) only — so there is no pre-Lambda layer. The enforcement point is `webhook.go`, which reads the source IP from the API Gateway request context (a value the caller cannot forge). The source of truth is the SSM parameter `/rusuh/${Environment}/midtrans/webhook-ip-allowlist`, in CIDR format. A rejection answers **200** by design (so Midtrans does not retry and a prober cannot distinguish success from failure) and surfaces as the `WebhookForbiddenIP` metric, not as a failed request in access logs. Recovery from a stale list: edit the SSM parameter and redeploy payment-api — `resolve:ssm` evaluates at deploy time. |
 | 6 | **OPEN:** `/admin/reconciliation/disputed` (§6.3, Apidog › Admin) is assigned to this service in `docs/README.md` but not implemented. It is the operator's half of the late-settlement path; without it a disputed payment is only discoverable in CloudWatch. Plan it as `08-admin/`. |
 
 ## 11. AWAITING_PAYMENT backstop sweep
@@ -324,7 +325,7 @@ narrow indexes, each read by one query, beat one wide index read by two.
 
 For each candidate, in order (the order is the design):
 
-1. Skip if `payment_ref` is empty (no order at Midtrans to poll — charge reconciler's job).
+1. Skip if `payment_ref` is empty (no order at Midtrans to poll — these are charges that timed out before the gateway responded).
 2. `gateway.Status(ctx, payment_ref)` — poll Midtrans.
 3. **On error or open breaker: skip.** Never expire a booking on an unknown answer.
 4. `valueobject.Decide(status, fraud, booking.Status)` — the same decision table as the webhook.
